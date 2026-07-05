@@ -1,0 +1,36 @@
+@import 'tailwindcss' source(none);
+@source '../**/*.{js,ts,jsx,tsx}';
+
+@import 'tw-animate-css';
+
+/* Custom shimmer animation for agent UI */
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+/* Pulse border opacity for running tool cards */
+@keyframes pulse-border {
+  0%, 100% {
+    border-color: color-mix(in srgb, var(--accent-blue) 25%, transparent);
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--accent-blue) 60%, transparent);
+  }
+}
+
+/* Slide-in for newly appearing tool cards */
+@keyframes slide-in-up {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

@@ -1,0 +1,29 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "npm run prisma gen cd",
+			"type": "shell",
+			"command": "npm run prisma:generate",
+			"group": "build"
+		},
+		{
+			"label": "prisma gen in server",
+			"type": "shell",
+			"command": "npm run prisma:generate",
+			"group": "build"
+		},
+		{
+			"label": "regen",
+			"type": "shell",
+			"command": "npm run prisma:generate",
+			"group": "build"
+		},
+		{
+			"label": "regen",
+			"type": "shell",
+			"command": "npm run prisma:generate",
+			"group": "build"
+		}
+	]
+}

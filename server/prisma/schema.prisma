@@ -1,0 +1,537 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Default: SQLite. The whole DB is a single file next to the schema
+// (typically `server/prisma/dev.db`), which is the right choice for a
+// personal-machine deployment — no daemon, no port, trivial to back
+// up. For a multi-user or hosted deployment, switch `provider` to
+// `"mysql"` or `"postgresql"` and set `DATABASE_URL` accordingly.
+// See docs/PERSONAL_DEPLOY.md for the full rationale.
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model AppUser {
+  id                     String                  @id @default(cuid())
+  email                  String                  @unique
+  passwordHash           String?
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  settings               ProviderSetting[]
+  conversations          Conversation[]
+  workspaces             Workspace[]
+  agentRules             AgentRule[]
+  agentSkills            AgentSkill[]
+  agentIntegrations      AgentIntegration[]
+  agentMcpServers        AgentMcpServer[]
+  autoApprovePatterns    AutoApprovePattern[]
+  serviceApiKeys         ServiceApiKey[]
+  agentTasks             AgentTask[]
+  notificationChannels   NotificationChannel[]
+  scheduledTasks         ScheduledTask[]
+  integrationCredentials IntegrationCredential[]
+}
+
+model Workspace {
+  id                   String                @id @default(cuid())
+  userId               String
+  name                 String
+  path                 String
+  isActive             Boolean               @default(false)
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  conversations        Conversation[]
+  agentRuns            AgentRun[]
+  agentCheckpoints     AgentCheckpoint[]
+  agentProcessSessions AgentProcessSession[]
+  agentRules           AgentRule[]
+  autoApprovePatterns  AutoApprovePattern[]
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model ProviderSetting {
+  id               String           @id @default(cuid())
+  userId           String
+  provider         String
+  displayName      String?
+  isCustom         Boolean          @default(false)
+  enabled          Boolean          @default(true)
+  baseUrl          String
+  apiKeyEncrypted  String?
+  autoSwitchApiKey Boolean          @default(false)
+  models           Json?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  apiKeys          ProviderApiKey[]
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+}
+
+model ProviderApiKey {
+  id                String   @id @default(cuid())
+  providerSettingId String
+  name              String
+  apiKeyEncrypted   String
+  isActive          Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  providerSetting ProviderSetting @relation(fields: [providerSettingId], references: [id], onDelete: Cascade)
+
+  @@index([providerSettingId, isActive])
+}
+
+model Conversation {
+  id                     String               @id @default(cuid())
+  userId                 String
+  workspaceId            String?
+  title                  String
+  memorySummary          String?
+  memorySummaryUpdatedAt DateTime?
+  memorySummaryMessageId String?
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+  messages               Message[]
+  agentRuns              AgentRun[]
+  agentRules             AgentRule[]
+  autoApprovePatterns    AutoApprovePattern[]
+  agentTasks             AgentTask[]
+  scheduledTasks         ScheduledTask[]
+  AppUser                AppUser              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace              Workspace?           @relation(fields: [workspaceId], references: [id])
+
+  @@index([userId, updatedAt])
+  @@index([workspaceId])
+}
+
+model Message {
+  id                 String     @id @default(cuid())
+  conversationId     String
+  role               String
+  mode               String?
+  content            String
+  memoryText         String?
+  metadata           Json?
+  model              String?
+  provider           String?
+  /// Per-message reasoning / thinking-mode depth. Translated to the
+  /// provider's native field shape (reasoning_effort for OpenAI,
+  /// thinking_budget for Gemini, thinking+budget_tokens for Claude,
+  /// etc.) by `server/src/lib/agent/reasoning-translator.ts`.
+  /// Values: "off" | "low" | "medium" | "high" | "max" | null
+  /// (null = unset, use provider default).
+  reasoningEffort    String?
+  createdAt          DateTime   @default(now())
+  triggeredAgentRuns AgentRun[] @relation("AgentRunTriggerMessage")
+  assistantAgentRuns AgentRun[] @relation("AgentRunAssistantMessage")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+model AgentRun {
+  id                  String                @id @default(cuid())
+  conversationId      String
+  workspaceId         String?
+  triggerMessageId    String?
+  assistantMessageId  String?
+  mode                String                @default("agent")
+  status              String                @default("pending")
+  provider            String?
+  model               String?
+  /// Per-run reasoning / thinking-mode depth. Same value space as
+  /// `Message.reasoningEffort` ("off"|"low"|"medium"|"high"|"max").
+  /// Stored on the run record so the agent history view can show
+  /// what effort was used and replay it on resume.
+  reasoningEffort     String?
+  title               String?
+  promptPreview       String?
+  responsePreview     String?
+  runSummary          String?
+  errorMessage        String?
+  capabilitySnapshot  Json?
+  approvalSummary     Json?
+  verificationStatus  String?
+  verificationSummary Json?
+  tokenUsage          Json?
+  iterationCount      Int                   @default(0)
+  startedAt           DateTime              @default(now())
+  completedAt         DateTime?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  steps               AgentRunStep[]
+  toolCalls           AgentToolCall[]
+  checkpoints         AgentCheckpoint[]
+  processSessions     AgentProcessSession[]
+
+  conversation     Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  workspace        Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  triggerMessage   Message?     @relation("AgentRunTriggerMessage", fields: [triggerMessageId], references: [id], onDelete: SetNull)
+  assistantMessage Message?     @relation("AgentRunAssistantMessage", fields: [assistantMessageId], references: [id], onDelete: SetNull)
+
+  @@unique([assistantMessageId])
+  @@index([conversationId, createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([status, updatedAt])
+  @@index([provider, model])
+  @@index([triggerMessageId])
+}
+
+model AgentRunStep {
+  id               String            @id @default(cuid())
+  runId            String
+  iteration        Int
+  reasoning        String?
+  response         String?
+  responsePreview  String?
+  toolCallCount    Int               @default(0)
+  toolFailureCount Int               @default(0)
+  timestamp        DateTime          @default(now())
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  toolCalls        AgentToolCall[]
+  checkpoints      AgentCheckpoint[]
+
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, iteration])
+  @@index([runId, timestamp])
+}
+
+model AgentToolCall {
+  id               String               @id @default(cuid())
+  runId            String
+  stepId           String?
+  externalCallId   String?
+  name             String
+  category         String?
+  status           String               @default("pending")
+  parameters       Json?
+  resultData       Json?
+  outputPreview    String?
+  errorMessage     String?
+  requiresApproval Boolean              @default(false)
+  approvedByUser   Boolean?
+  approvalId       String?
+  riskLevel        String?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  checkpoints      AgentCheckpoint[]
+  processSession   AgentProcessSession?
+
+  run  AgentRun      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  step AgentRunStep? @relation(fields: [stepId], references: [id], onDelete: SetNull)
+
+  @@index([runId, createdAt])
+  @@index([stepId, createdAt])
+  @@index([externalCallId])
+  @@index([status, updatedAt])
+  @@index([approvalId])
+}
+
+model AgentCheckpoint {
+  id            String    @id @default(cuid())
+  runId         String
+  stepId        String?
+  toolCallId    String?
+  workspaceId   String?
+  path          String
+  status        String    @default("created")
+  diffPreview   String?
+  beforeContent String?
+  afterContent  String?
+  restoreNote   String?
+  restoredAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  run       AgentRun       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  step      AgentRunStep?  @relation(fields: [stepId], references: [id], onDelete: SetNull)
+  toolCall  AgentToolCall? @relation(fields: [toolCallId], references: [id], onDelete: SetNull)
+  workspace Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
+  @@index([runId, createdAt])
+  @@index([stepId, createdAt])
+  @@index([toolCallId, createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([status, updatedAt])
+}
+
+model AgentProcessSession {
+  id            String    @id @default(cuid())
+  runId         String
+  workspaceId   String?
+  toolCallId    String?   @unique
+  kind          String    @default("command")
+  status        String    @default("running")
+  command       String
+  cwd           String
+  pid           Int?
+  exitCode      Int?
+  stdoutPreview String?
+  stderrPreview String?
+  outputSummary String?
+  startedAt     DateTime  @default(now())
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  run       AgentRun       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  workspace Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  toolCall  AgentToolCall? @relation(fields: [toolCallId], references: [id], onDelete: SetNull)
+
+  @@index([runId, createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([status, updatedAt])
+}
+
+model AgentRule {
+  id             String   @id @default(cuid())
+  userId         String
+  workspaceId    String?
+  conversationId String?
+  name           String
+  content        String
+  scope          String   @default("workspace")
+  priority       Int      @default(50)
+  enabled        Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user         AppUser       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace    Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([userId, scope, enabled])
+  @@index([workspaceId])
+  @@index([conversationId])
+}
+
+model AgentSkill {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String
+  description String?
+  source      String?
+  version     String?
+  enabled     Boolean  @default(true)
+  config      Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+  @@index([userId, enabled])
+}
+
+model AgentIntegration {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  provider  String
+  type      String   @default("database")
+  enabled   Boolean  @default(true)
+  status    String   @default("disconnected")
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider, name])
+  @@index([userId, type, enabled])
+}
+
+model AgentMcpServer {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  endpoint  String
+  transport String   @default("http")
+  enabled   Boolean  @default(true)
+  authType  String   @default("none")
+  config    Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+  @@index([userId, enabled])
+}
+
+model UsageRecord {
+  id               String   @id @default(cuid())
+  userId           String
+  provider         String
+  model            String
+  mode             String   @default("chat")
+  promptTokens     Int      @default(0)
+  completionTokens Int      @default(0)
+  totalTokens      Int      @default(0)
+  recordedAt       DateTime @default(now())
+
+  @@index([userId, recordedAt])
+  @@index([userId, provider])
+  @@index([userId, model])
+}
+
+model ServiceApiKey {
+  id              String   @id @default(cuid())
+  userId          String
+  service         String
+  name            String
+  apiKeyEncrypted String
+  isActive        Boolean  @default(false)
+  autoSwitch      Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, service, name])
+  @@index([userId, service, isActive])
+}
+
+model AutoApprovePattern {
+  id             String    @id @default(cuid())
+  userId         String
+  workspaceId    String?
+  conversationId String?
+  name           String
+  pattern        String
+  matchType      String    @default("exact")
+  toolName       String?
+  scope          String    @default("workspace")
+  enabled        Boolean   @default(true)
+  useCount       Int       @default(0)
+  lastUsedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user         AppUser       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace    Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([userId, scope, enabled])
+  @@index([workspaceId])
+  @@index([conversationId])
+  @@index([toolName, enabled])
+}
+
+model AgentTask {
+  id             String   @id @default(cuid())
+  conversationId String
+  userId         String
+  /// Stable id used by the agent in tool calls (e.g. "task-1", "task-2").
+  /// Distinct from the primary key so we can use cuid() for the row and
+  /// preserve whatever the LLM chose.
+  taskId         String
+  content        String
+  status         String   @default("pending")
+  /// Display order, lowest first. The agent can supply this via update_task
+  /// (not yet exposed) or we compute it from createdAt.
+  order          Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         AppUser      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, taskId])
+  @@index([conversationId, status])
+  @@index([userId])
+}
+
+// §3.3 — Outbound webhook channels (Slack / Discord / Teams / Telegram /
+// generic). The agent's `send_notification` tool reads from this table
+// to resolve a channel name to a URL. The URL is stored encrypted.
+model NotificationChannel {
+  id                  String    @id @default(cuid())
+  userId              String
+  name                String
+  kind                String    @default("generic")
+  webhookUrlEncrypted String
+  enabled             Boolean   @default(true)
+  useCount            Int       @default(0)
+  lastUsedAt          DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+  @@index([userId, enabled])
+}
+
+// §2.4 — Scheduled tasks (cron / one-shot / interval). The scheduler
+// picks rows whose `nextRunAt <= now`, fires an independent agent run
+// with the stored payload, and recomputes `nextRunAt`.
+model ScheduledTask {
+  id             String    @id @default(cuid())
+  userId         String
+  conversationId String?
+  name           String
+  /// "at" | "every" | "cron" — matches the `schedule.kind` param the
+  /// agent supplies.
+  scheduleKind   String
+  /// For "at": ISO timestamp. For "every": milliseconds. For "cron":
+  /// 5-field cron expression. For null: disabled.
+  scheduleExpr   String?
+  /// IANA tz like "America/Los_Angeles". Defaults to UTC.
+  scheduleTz     String?
+  /// JSON payload the scheduler feeds back into the agent when it fires.
+  payload        String
+  /// Last computed fire time. The scheduler tick looks for rows where
+  /// `enabled = true AND (nextRunAt IS NULL OR nextRunAt <= now())`.
+  nextRunAt      DateTime?
+  lastRunAt      DateTime?
+  lastRunStatus  String?
+  lastError      String?
+  enabled        Boolean   @default(true)
+  runCount       Int       @default(0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user         AppUser       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([userId, enabled])
+  @@index([nextRunAt, enabled])
+}
+
+// §3.2 — OAuth tokens / SMTP credentials for integration tools. Stores
+// `provider` + arbitrary encrypted secret. Tools (send_email, etc.) read
+// the active row per user.
+model IntegrationCredential {
+  id                  String    @id @default(cuid())
+  userId              String
+  /// "smtp" | "google" | "microsoft" | etc.
+  provider            String
+  /// Free-form key the tool uses to look up the credential (e.g. "default", "work").
+  accountName         String
+  /// Encrypted JSON blob — SMTP creds, OAuth refresh token, etc.
+  credentialEncrypted String
+  /// Optional metadata (email address, workspace id, expiry).
+  metadata            Json?
+  isActive            Boolean   @default(true)
+  lastUsedAt          DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider, accountName])
+  @@index([userId, provider, isActive])
+}

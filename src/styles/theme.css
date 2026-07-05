@@ -1,0 +1,1190 @@
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --font-size: 16px;
+  --background: #ffffff;
+  --foreground: oklch(0.145 0 0);
+  --card: #fafafa;
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: #030213;
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.95 0.0058 264.53);
+  --secondary-foreground: #030213;
+  --muted: #ececf0;
+  --muted-foreground: #717182;
+  --accent: #e9ebef;
+  --accent-foreground: #030213;
+  --destructive: #d4183d;
+  --destructive-foreground: #ffffff;
+  --border: rgba(0, 0, 0, 0.1);
+  --input: transparent;
+  --input-background: #f3f3f5;
+  --switch-background: #cbced4;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: #030213;
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+
+  /* ----------------------------------------------------------------- */
+  /* Legacy / app-specific tokens — keep the rest of the codebase happy */
+  /* ----------------------------------------------------------------- */
+  --app: #ffffff;
+  --card-2: #f7f7f8;
+  --card-3: #f0f0f2;
+  --card-4: #e6e6ea;
+  --card-5: #d8d8dc;
+  --card-strong: #f3f3f5;
+  --card-hover: #ececf0;
+  --border-card: rgba(0, 0, 0, 0.08);
+  --border-card-strong: rgba(0, 0, 0, 0.14);
+  --text-primary: #030213;
+  --text-secondary: #4B5563;
+  --text-muted: #4B5563;
+  --text-muted-foreground: var(--muted-foreground);
+  /* Slight tint for fade gradients — visible on both white and dark
+     backgrounds. In light mode it's a very light gray; in dark mode
+     it's a deep gray. */
+  --fade-tint: rgba(255, 255, 255, 0.85);
+  --fade-tint-strong: rgba(255, 255, 255, 0.95);
+  --accent-blue: #2563eb;
+  --accent-yellow: #ca8a04;
+  --accent-orange: #ea580c;
+  --accent-red: #d4183d;
+  --accent-green: #16A34A;
+  /* Reasoning / thinking-mode accent (used by the model-selector
+     effort dropdown + closed-state badge). Distinct from accent-blue
+     (selected model) and accent-orange (active provider) so the
+     three states are visually separable at a glance. */
+  --accent-purple: #7c3aed;
+
+  /* Brand panel — fixed dark surface for the login brand panel */
+  --brand-bg: #08090a;
+  --brand-surface: #191a1b;
+  --brand-text: #f7f8f8;
+  --brand-text-secondary: #d0d6e0;
+  --brand-text-muted: #8a8f98;
+  --brand-accent: #BE4C4C;
+  --brand-border: rgba(255, 255, 255, 0.08);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.145 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.985 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.396 0.141 25.723);
+  --destructive-foreground: oklch(0.637 0.237 25.331);
+  --border: oklch(0.269 0 0);
+  --input: oklch(0.269 0 0);
+  --ring: oklch(0.439 0 0);
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(0.269 0 0);
+  --sidebar-ring: oklch(0.439 0 0);
+
+  /* ----------------------------------------------------------------- */
+  /* Legacy / app-specific tokens — dark mode values preserve the       */
+  /* original hex codes that the rest of the app was built around.     */
+  /* ----------------------------------------------------------------- */
+  --app: #0C0C0C;
+  --card-2: #161A1F;
+  --card-3: #181B20;
+  --card-4: #1A1E23;
+  --card-5: #252525;
+  --card-strong: #13161B;
+  --card-hover: #252A31;
+  --border-card: #24272D;
+  --border-card-strong: #2A2F36;
+  --text-primary: #F3F3F3;
+  --text-secondary: #C7CCD3;
+  --text-muted: #B6BCC4;
+  --text-muted-foreground: var(--muted-foreground);
+  /* Slight tint for fade gradients — visible on both white and dark
+     backgrounds. In dark mode this is a deep near-black tint. */
+  --fade-tint: rgba(12, 12, 12, 0.85);
+  --fade-tint-strong: rgba(12, 12, 12, 0.95);
+  --accent-blue: #8FB3FF;
+  --accent-yellow: #F0BE72;
+  --accent-orange: #F0BE72;
+  --accent-red: #F08B8B;
+  --accent-green: #4ADE80;
+  --accent-purple: #B197FC;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-background: var(--input-background);
+  --color-switch-background: var(--switch-background);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+
+  /* Legacy / app-specific tokens — registered as Tailwind colors so
+     `bg-app`, `border-card`, `text-secondary`, etc. all resolve
+     correctly in both light and dark themes. */
+  --color-app: var(--app);
+  --color-card-2: var(--card-2);
+  --color-card-3: var(--card-3);
+  --color-card-4: var(--card-4);
+  --color-card-5: var(--card-5);
+  --color-card-strong: var(--card-strong);
+  --color-card-hover: var(--card-hover);
+  --color-border-card: var(--border-card);
+  --color-fade-tint: var(--fade-tint);
+  --color-fade-tint-strong: var(--fade-tint-strong);
+  --color-border-card-strong: var(--border-card-strong);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-accent-blue: var(--accent-blue);
+  --color-accent-yellow: var(--accent-yellow);
+  --color-accent-orange: var(--accent-orange);
+  --color-accent-red: var(--accent-red);
+  --color-accent-green: var(--accent-green);
+  --color-accent-purple: var(--accent-purple);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-brand-bg: var(--brand-bg);
+  --color-brand-surface: var(--brand-surface);
+  --color-brand-text: var(--brand-text);
+  --color-brand-text-secondary: var(--brand-text-secondary);
+  --color-brand-text-muted: var(--brand-text-muted);
+  --color-brand-accent: var(--brand-accent);
+  --color-brand-border: var(--brand-border);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', sans-serif;
+  }
+
+  /**
+  * Default typography styles for HTML elements (h1-h4, p, label, button, input).
+  * These are in @layer base, so Tailwind utility classes (like text-sm, text-lg) automatically override them.
+  */
+
+  html {
+    font-size: var(--font-size);
+  }
+
+  h1 {
+    font-size: var(--text-2xl);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h2 {
+    font-size: var(--text-xl);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h3 {
+    font-size: var(--text-lg);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h4 {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  label {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  button {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  input {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-normal);
+    line-height: 1.5;
+  }
+}
+
+/* ── Login page — network topology (theme-aware) ──────────────── */
+.login-network {
+  /* Light mode defaults */
+  --login-bg: #f7f8fa;
+  --login-fg: #1a1a2e;
+  --login-muted: #6b7280;
+  --login-accent: #3dba7a;
+  --login-border: rgba(0, 0, 0, 0.08);
+  --login-grid-opacity: 0.12;
+  --login-grid-color: rgba(0, 0, 0, var(--login-grid-opacity));
+  --login-node-color: #1a1a2e;
+  --login-node-pulse: #3dba7a;
+  --login-connection-color: rgba(0, 0, 0, 0.07);
+  --login-label-color: rgba(0, 0, 0, 0.15);
+  --login-status-idle: rgba(0, 0, 0, 0.18);
+  --login-card-bg: rgba(247, 248, 250, 0.52);
+  --login-card-border: rgba(0, 0, 0, 0.06);
+  --login-card-shadow: 0 8px 32px -8px rgba(0, 0, 0, 0.08);
+  --login-logo-fill: var(--login-fg);
+  --login-logo-bg: rgba(0, 0, 0, 0.05);
+  --login-logo-stroke: rgba(0, 0, 0, 0.08);
+
+  /* Override shadcn tokens for login context */
+  --background: var(--login-bg);
+  --foreground: var(--login-fg);
+  --primary: var(--login-accent);
+  --primary-foreground: #ffffff;
+  --muted: rgba(0, 0, 0, 0.04);
+  --muted-foreground: var(--login-muted);
+  --border: var(--login-border);
+  --input: rgba(0, 0, 0, 0.04);
+  --input-background: rgba(0, 0, 0, 0.03);
+  --ring: rgba(61, 186, 122, 0.3);
+  --destructive: #d4183d;
+
+  background: var(--login-bg);
+  color: var(--login-fg);
+}
+
+/* Dark mode overrides */
+.dark .login-network {
+  --login-bg: #08090c;
+  --login-fg: #e4e4e8;
+  --login-muted: #73737e;
+  --login-border: rgba(255, 255, 255, 0.06);
+  --login-grid-opacity: 0.08;
+  --login-grid-color: rgba(255, 255, 255, var(--login-grid-opacity));
+  --login-node-color: #ffffff;
+  --login-node-pulse: #3dba7a;
+  --login-connection-color: rgba(255, 255, 255, 0.06);
+  --login-label-color: rgba(255, 255, 255, 0.15);
+  --login-status-idle: rgba(255, 255, 255, 0.18);
+  --login-card-bg: rgba(8, 9, 12, 0.5);
+  --login-card-border: rgba(255, 255, 255, 0.05);
+  --login-card-shadow: 0 0 40px -8px rgba(61, 186, 122, 0.04),
+    0 8px 32px -8px rgba(0, 0, 0, 0.5);
+  --login-logo-fill: #e4e4e8;
+  --login-logo-bg: rgba(255, 255, 255, 0.06);
+  --login-logo-stroke: rgba(255, 255, 255, 0.1);
+
+  --background: var(--login-bg);
+  --foreground: var(--login-fg);
+  --primary: var(--login-accent);
+  --primary-foreground: #08090c;
+  --muted: rgba(255, 255, 255, 0.05);
+  --muted-foreground: var(--login-muted);
+  --border: var(--login-border);
+  --input: rgba(255, 255, 255, 0.05);
+  --input-background: rgba(255, 255, 255, 0.03);
+  --ring: rgba(61, 186, 122, 0.3);
+  --destructive: #e54545;
+}
+
+/* Dot grid pattern */
+.login-dot-grid {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(
+    circle,
+    var(--login-grid-color) 1px,
+    transparent 1px
+  );
+  background-size: 40px 40px;
+  pointer-events: none;
+}
+
+/* Glass form card — integrated with network topology */
+.login-glass-card {
+  position: relative;
+  background: var(--login-card-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--login-card-border);
+  box-shadow: var(--login-card-shadow);
+}
+
+/* Corner bracket accents — echo the HUD / coordinate aesthetic */
+.login-glass-card::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  border-radius: inherit;
+  z-index: 1;
+  background:
+    linear-gradient(var(--login-accent), var(--login-accent)) 0 0 / 18px 1px no-repeat,
+    linear-gradient(var(--login-accent), var(--login-accent)) 0 0 / 1px 18px no-repeat,
+    linear-gradient(var(--login-accent), var(--login-accent)) 100% 0 / 18px 1px no-repeat,
+    linear-gradient(var(--login-accent), var(--login-accent)) 100% 0 / 1px 18px no-repeat,
+    linear-gradient(var(--login-accent), var(--login-accent)) 0 100% / 18px 1px no-repeat,
+    linear-gradient(var(--login-accent), var(--login-accent)) 0 100% / 1px 18px no-repeat,
+    linear-gradient(var(--login-accent), var(--login-accent)) 100% 100% / 18px 1px no-repeat,
+    linear-gradient(var(--login-accent), var(--login-accent)) 100% 100% / 1px 18px no-repeat;
+  opacity: 0.25;
+}
+
+/* Subtle inner dot grid — echo the background dot pattern */
+.login-glass-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background-image: radial-gradient(
+    circle,
+    var(--login-grid-color) 0.5px,
+    transparent 0.5px
+  );
+  background-size: 24px 24px;
+  opacity: 0.3;
+  z-index: 0;
+}
+
+/* Ensure card content sits above the pseudo-elements */
+.login-glass-card > * {
+  position: relative;
+  z-index: 2;
+}
+
+/* Force monospace font on inputs and placeholders inside the login card */
+.login-glass-card input,
+.login-glass-card input::placeholder {
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+/* Node pulse ring animation */
+@keyframes login-pulse-ring {
+  0%, 100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0;
+    transform: scale(2.8);
+  }
+}
+
+.node-pulse {
+  animation: login-pulse-ring 4s ease-in-out infinite;
+  transform-origin: center;
+  transform-box: fill-box;
+}
+
+/* Data stream animation */
+@keyframes login-data-stream {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.stream-line {
+  stroke-dasharray: 6 24;
+  animation: login-data-stream var(--stream-dur, 4s) linear infinite;
+}
+
+/* Scan line */
+@keyframes login-scan-sweep {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100vh);
+  }
+}
+
+.login-scan-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(61, 186, 122, 0.5) 30%,
+    rgba(61, 186, 122, 0.8) 50%,
+    rgba(61, 186, 122, 0.5) 70%,
+    transparent 100%
+  );
+  opacity: 0.06;
+  animation: login-scan-sweep 12s linear infinite;
+  pointer-events: none;
+}
+
+/* Monospace font utility */
+.font-mono-tech {
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+}
+
+/* Status indicator */
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-dot--active {
+  background: var(--login-accent);
+  box-shadow: 0 0 8px var(--login-accent);
+}
+
+.status-dot--idle {
+  background: var(--login-status-idle);
+}
+
+/* Network SVG container */
+.login-network-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.login-network-layer svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* Floating label */
+.login-float-label {
+  position: absolute;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--login-label-color);
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+}
+
+/* Coordinate label */
+.login-coord-label {
+  position: absolute;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--login-label-color);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ── Sidebar panel — matches login card aesthetic ──────────────── */
+.sidebar-panel {
+  position: relative;
+  background: color-mix(in srgb, var(--card) 55%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+/* Corner bracket accents */
+.sidebar-panel::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  border-radius: inherit;
+  z-index: 1;
+  background:
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 0 / 14px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 0 / 1px 14px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 0 / 14px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 0 / 1px 14px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 100% / 14px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 100% / 1px 14px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 100% / 14px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 100% / 1px 14px no-repeat;
+  opacity: 0.2;
+}
+
+/* Subtle inner dot grid */
+.sidebar-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background-image: radial-gradient(
+    circle,
+    var(--border) 0.5px,
+    transparent 0.5px
+  );
+  background-size: 20px 20px;
+  opacity: 0.15;
+  z-index: 0;
+}
+
+/* Ensure sidebar content sits above pseudo-elements */
+.sidebar-panel > * {
+  position: relative;
+  z-index: 2;
+}
+
+/* Monospace font for sidebar text */
+.sidebar-panel .sidebar-text {
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+}
+
+/* Monospace font on sidebar inputs and placeholders */
+.sidebar-panel input,
+.sidebar-panel input::placeholder {
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+/* ── Dropdown panel — matches sidebar/login card aesthetic ──────── */
+.dropdown-panel {
+  background: color-mix(in srgb, var(--card) 75%, transparent);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  position: relative;
+}
+
+/* Corner bracket accents for dropdowns */
+.dropdown-panel::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  border-radius: inherit;
+  z-index: 1;
+  background:
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 0 / 10px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 0 / 1px 10px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 0 / 10px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 0 / 1px 10px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 100% / 10px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 100% / 1px 10px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 100% / 10px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 100% / 1px 10px no-repeat;
+  opacity: 0.2;
+}
+
+/* Subtle inner dot grid for dropdowns */
+.dropdown-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background-image: radial-gradient(
+    circle,
+    var(--border) 0.5px,
+    transparent 0.5px
+  );
+  background-size: 16px 16px;
+  opacity: 0.1;
+  z-index: 0;
+}
+
+/* Ensure dropdown content sits above pseudo-elements */
+.dropdown-panel > * {
+  position: relative;
+  z-index: 2;
+}
+
+/* ── Mode toggle panel — matches sidebar/login card aesthetic ──── */
+.mode-toggle-panel {
+  background: color-mix(in srgb, var(--card) 60%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+/* Corner bracket accents for mode toggle (compact) */
+.mode-toggle-panel::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  border-radius: inherit;
+  z-index: 1;
+  background:
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 0 / 8px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 0 / 1px 8px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 0 / 8px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 0 / 1px 8px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 100% / 8px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 100% / 1px 8px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 100% / 8px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 100% / 1px 8px no-repeat;
+  opacity: 0.25;
+}
+
+/* Subtle inner dot grid for mode toggle */
+.mode-toggle-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background-image: radial-gradient(
+    circle,
+    var(--border) 0.5px,
+    transparent 0.5px
+  );
+  background-size: 12px 12px;
+  opacity: 0.1;
+  z-index: 0;
+}
+
+/* Ensure mode toggle content sits above pseudo-elements */
+.mode-toggle-panel > * {
+  position: relative;
+  z-index: 2;
+}
+
+/* Monospace uppercase labels for mode toggle buttons */
+.mode-toggle-panel button {
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* ── Workspace chip — compact glassmorphism button ────────────── */
+.workspace-chip {
+  position: relative;
+  background: color-mix(in srgb, var(--card) 70%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Corner bracket accents for workspace chip */
+.workspace-chip::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  border-radius: inherit;
+  z-index: 1;
+  background:
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 0 / 8px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 0 / 1px 8px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 0 / 8px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 0 / 1px 8px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 100% / 8px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 100% / 1px 8px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 100% / 8px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 100% / 1px 8px no-repeat;
+  opacity: 0.35;
+}
+
+/* Subtle inner dot grid for workspace chip */
+.workspace-chip::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background-image: radial-gradient(
+    circle,
+    var(--border) 0.5px,
+    transparent 0.5px
+  );
+  background-size: 10px 10px;
+  opacity: 0.12;
+  z-index: 0;
+}
+
+/* Ensure workspace chip content sits above pseudo-elements */
+.workspace-chip > * {
+  position: relative;
+  z-index: 2;
+}
+
+/* ── Dialog panel — matches sidebar/login glassmorphism ───────── */
+.dialog-panel {
+  background: color-mix(in srgb, var(--card) 85%, transparent);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+/* Corner bracket accents for dialogs */
+.dialog-panel::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  border-radius: inherit;
+  z-index: 1;
+  background:
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 0 / 16px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 0 / 1px 16px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 0 / 16px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 0 / 1px 16px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 100% / 16px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 0 100% / 1px 16px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 100% / 16px 1px no-repeat,
+    linear-gradient(var(--accent-green), var(--accent-green)) 100% 100% / 1px 16px no-repeat;
+  opacity: 0.25;
+}
+
+/* Subtle inner dot grid for dialogs */
+.dialog-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background-image: radial-gradient(
+    circle,
+    var(--border) 0.5px,
+    transparent 0.5px
+  );
+  background-size: 20px 20px;
+  opacity: 0.08;
+  z-index: 0;
+}
+
+/* Monospace styling for dialog headings, labels, and text */
+.dialog-panel h2,
+.dialog-panel label,
+.dialog-panel p,
+.dialog-panel span,
+.dialog-panel button {
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+}
+
+/* Monospace font on dialog inputs and placeholders */
+.dialog-panel input,
+.dialog-panel input::placeholder {
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+/* ── Analytics panels — HUD / blueprint aesthetic ───────────────────────── */
+.analytics-panel {
+  position: relative;
+  background: color-mix(in srgb, var(--card) 80%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.analytics-panel::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  border-radius: inherit;
+  z-index: 1;
+  background:
+    linear-gradient(var(--accent-blue), var(--accent-blue)) 0 0 / 12px 1px no-repeat,
+    linear-gradient(var(--accent-blue), var(--accent-blue)) 0 0 / 1px 12px no-repeat,
+    linear-gradient(var(--accent-blue), var(--accent-blue)) 100% 0 / 12px 1px no-repeat,
+    linear-gradient(var(--accent-blue), var(--accent-blue)) 100% 0 / 1px 12px no-repeat,
+    linear-gradient(var(--accent-blue), var(--accent-blue)) 0 100% / 12px 1px no-repeat,
+    linear-gradient(var(--accent-blue), var(--accent-blue)) 0 100% / 1px 12px no-repeat,
+    linear-gradient(var(--accent-blue), var(--accent-blue)) 100% 100% / 12px 1px no-repeat,
+    linear-gradient(var(--accent-blue), var(--accent-blue)) 100% 100% / 1px 12px no-repeat;
+  opacity: 0.2;
+}
+
+.analytics-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background-image: radial-gradient(circle, var(--border) 0.5px, transparent 0.5px);
+  background-size: 16px 16px;
+  opacity: 0.06;
+  z-index: 0;
+}
+
+.analytics-panel > * {
+  position: relative;
+  z-index: 2;
+}
+
+.analytics-panel .panel-label {
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+}
+
+.analytics-panel .panel-title {
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.analytics-panel .panel-desc {
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 10px;
+  color: var(--muted-foreground);
+}
+
+.analytics-panel .panel-value {
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+}
+
+.analytics-panel .panel-badge {
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  background: color-mix(in srgb, var(--card) 60%, transparent);
+}
+
+.analytics-panel .panel-card {
+  border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  background: color-mix(in srgb, var(--card) 60%, transparent);
+}
+
+.analytics-panel code {
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 10px;
+  color: var(--accent-purple);
+}
+
+/* ── Toast notifications — matches blueprint aesthetic ─────────── */
+.toaster [data-sonner-toast] {
+  background: color-mix(in srgb, var(--card) 85%, transparent);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: 8px;
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--foreground);
+  padding: 10px 14px;
+}
+
+.toaster [data-sonner-toast] [data-title] {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.toaster [data-sonner-toast] [data-description] {
+  font-size: 10px;
+  color: var(--muted-foreground);
+  margin-top: 2px;
+}
+
+.toaster [data-sonner-toast] [data-close-button] {
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  color: var(--muted-foreground);
+  border-radius: 4px;
+}
+
+.toaster [data-sonner-toast] [data-close-button]:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+/* KaTeX Math Equation Styling — theme-aware (works in light + dark) */
+.katex {
+  font-size: 1.1em;
+  color: var(--text-primary);
+}
+
+.katex .mord,
+.katex .mbin,
+.katex .mrel,
+.katex .mopen,
+.katex .mclose,
+.katex .mpunct,
+.katex .minner {
+  color: var(--text-primary);
+}
+
+.katex .mop {
+  color: var(--text-muted-foreground);
+}
+
+.katex .mord.text {
+  color: var(--text-foreground);
+}
+
+.katex .mspace {
+  color: transparent;
+}
+
+/* Display mode (block equations) */
+.katex-display {
+  margin: 1.5em 0;
+  padding: 1.25rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.katex-display > .katex {
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* Inline equations */
+.katex-inline {
+  padding: 0.15em 0.3em;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  white-space: nowrap;
+}
+
+/* Fractions */
+.katex .frac-line {
+  border-bottom-color: var(--foreground);
+}
+
+/* Square roots */
+.katex .sqrt > .root {
+  color: var(--text-foreground);
+}
+
+.katex .sqrt > .vlist-t {
+  border-left-color: var(--foreground);
+}
+
+/* Matrices and arrays */
+.katex .arraycolsep {
+  color: var(--text-primary);
+}
+
+.katex .vertical-separator {
+  border-right-color: var(--foreground);
+}
+
+/* Delimiters (parentheses, brackets, etc.) */
+.katex .delimsizing,
+.katex .delim-size1,
+.katex .delim-size2,
+.katex .delim-size3,
+.katex .delim-size4 {
+  color: var(--text-muted-foreground);
+}
+
+/* Accents and decorations */
+.katex .accent-body,
+.katex .accent {
+  color: var(--text-muted-foreground);
+}
+
+/* Subscripts and superscripts */
+.katex .msupsub {
+  color: var(--text-primary);
+}
+
+/* Special symbols */
+.katex .mord.mathnormal {
+  color: var(--text-primary);
+  font-style: italic;
+}
+
+/* Greek letters */
+.katex .mord.text.mathit {
+  color: var(--text-foreground);
+}
+
+/* Operators like sum, integral */
+.katex .op-symbol {
+  color: var(--text-muted-foreground);
+}
+
+/* Error styling */
+.katex-error {
+  color: var(--accent-red);
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-red) 30%, transparent);
+  padding: 0.25em 0.5em;
+  border-radius: 0.25rem;
+}
+
+/* ── Global scrollbar — thumb only, transparent track, hidden arrows ───── */
+* {
+  scrollbar-color: color-mix(in srgb, var(--muted) 70%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+  background: transparent;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-track-piece {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-button {
+  display: none;
+  height: 0;
+  width: 0;
+}
+
+*::-webkit-scrollbar-button:single-button,
+*::-webkit-scrollbar-button:vertical:start:decrement,
+*::-webkit-scrollbar-button:vertical:end:increment,
+*::-webkit-scrollbar-button:horizontal:start:decrement,
+*::-webkit-scrollbar-button:horizontal:end:increment {
+  display: none;
+  height: 0;
+  width: 0;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted) 70%, transparent);
+  background-clip: padding-box;
+  border: 1px solid transparent;
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--muted) 90%, transparent);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ── Sidebar scroll container ──────────────────────────────────────────── */
+.sidebar-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted) 70%, transparent);
+  border-radius: 9999px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--muted) 90%, transparent);
+}
+
+.sidebar-scroll::-webkit-scrollbar-button {
+  display: none !important;
+  height: 0 !important;
+  width: 0 !important;
+}
+
+.sidebar-scroll {
+  scrollbar-color: color-mix(in srgb, var(--muted) 70%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+/* ── Markdown preview in file viewer ── */
+.markdown-preview h1 { font-size: 16px; font-weight: 700; margin: 12px 0 6px; }
+.markdown-preview h2 { font-size: 14px; font-weight: 600; margin: 10px 0 4px; border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent); padding-bottom: 3px; }
+.markdown-preview h3 { font-size: 12px; font-weight: 600; margin: 8px 0 3px; }
+.markdown-preview h4, .markdown-preview h5, .markdown-preview h6 { font-size: 11px; font-weight: 600; margin: 6px 0 2px; }
+.markdown-preview p { margin: 4px 0; line-height: 1.6; }
+.markdown-preview ul, .markdown-preview ol { margin: 4px 0; padding-left: 18px; }
+.markdown-preview li { margin: 1px 0; }
+.markdown-preview code { background: color-mix(in srgb, var(--card-3) 80%, transparent); border: 1px solid color-mix(in srgb, var(--border) 40%, transparent); border-radius: 3px; padding: 0 4px; font-size: 10px; }
+.markdown-preview pre { background: color-mix(in srgb, var(--card-3) 80%, transparent); border: 1px solid color-mix(in srgb, var(--border) 40%, transparent); border-radius: 4px; padding: 8px; margin: 6px 0; overflow-x: auto; }
+.markdown-preview pre code { background: none; border: none; padding: 0; font-size: 10px; }
+.markdown-preview blockquote { border-left: 2px solid color-mix(in srgb, var(--border) 60%, transparent); margin: 6px 0; padding: 2px 10px; color: color-mix(in srgb, var(--muted-foreground) 80%, transparent); }
+.markdown-preview hr { border: none; border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent); margin: 8px 0; }
+.markdown-preview a { color: var(--accent-blue, #3b82f6); text-decoration: underline; text-underline-offset: 2px; }
+.markdown-preview table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 10px; }
+.markdown-preview th, .markdown-preview td { border: 1px solid color-mix(in srgb, var(--border) 40%, transparent); padding: 3px 6px; text-align: left; }
+.markdown-preview th { background: color-mix(in srgb, var(--card-3) 80%, transparent); font-weight: 600; text-transform: uppercase; font-size: 9px; letter-spacing: 0.05em; }
+.markdown-preview img { max-width: 100%; border-radius: 4px; }
+.markdown-preview strong { font-weight: 600; }
+.markdown-preview em { font-style: italic; }

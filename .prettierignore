@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+server/node_modules/
+
+# Build outputs
+dist/
+web-dist/
+server/dist/
+
+# Prisma
+server/prisma/migrations/
+
+# Generated / cached
+*.tsbuildinfo
+package-lock.json
+pnpm-lock.yaml
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.*
+server/.env
+server/.env.*
+
+# Logs
+*.log
+server-build.log
+
+# Docs (auto-generated)
+dump.txt

@@ -1,0 +1,38 @@
+
+  <!DOCTYPE html>
+  <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+      <meta name="description" content="Rapa - Full-stack AI Agent Platform" />
+      <meta name="theme-color" content="#0C0C0C" />
+      <link rel="icon" type="image/svg+xml" href="/src/assets/react.svg" />
+      <title>Rapa Agent</title>
+    </head>
+
+    <body>
+      <div id="root"></div>
+      <script>
+        // Apply the persisted theme before React mounts to prevent a flash
+        // of the wrong theme on first paint. Mirrors the logic in
+        // src/app/hooks/use-theme.tsx — keep the two in sync.
+        (function () {
+          try {
+            var stored = localStorage.getItem("rapa_theme");
+            var mode = (stored === "light" || stored === "dark" || stored === "system") ? stored : "dark";
+            var resolved = mode;
+            if (mode === "system") {
+              resolved = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+            }
+            if (resolved === "dark") document.documentElement.classList.add("dark");
+            else document.documentElement.classList.remove("dark");
+            document.documentElement.style.colorScheme = resolved;
+            var meta = document.querySelector('meta[name="theme-color"]');
+            if (meta) meta.setAttribute("content", resolved === "dark" ? "#0C0C0C" : "#FAFAFA");
+          } catch (_) { /* localStorage may be unavailable */ }
+        })();
+      </script>
+      <script type="module" src="/src/main.tsx"></script>
+    </body>
+  </html>
+  
