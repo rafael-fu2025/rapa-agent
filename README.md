@@ -106,7 +106,7 @@ PostgreSQL and updating the connection string. See
 
 ```mermaid
 flowchart TB
-    subgraph Browser["🌐 Browser  (http://localhost:5173)"]
+    subgraph Browser["Browser  (http://localhost:5173)"]
         direction TB
         subgraph FE["React 18 + Vite 6 + TypeScript + Tailwind 4 + Radix UI"]
             direction TB
@@ -120,7 +120,7 @@ flowchart TB
 
     Browser -- "fetch / SSE / WebSocket" --> Backend
 
-    subgraph Backend["⚙️ Fastify 5 backend  (http://127.0.0.1:8787)"]
+    subgraph Backend["Fastify 5 backend  (http://127.0.0.1:8787)"]
         direction TB
         subgraph Transport["Transport"]
             direction TB
@@ -155,7 +155,7 @@ flowchart TB
 
     Backend -- "Prisma 6 ORM" --> DB
 
-    DB[("🗄️ SQLite (default)<br/>or MySQL / Postgres<br/><br/>file:./prisma/dev.db<br/>(just change the provider)")]
+    DB[("SQLite (default)<br/>or MySQL / Postgres<br/><br/>file:./prisma/dev.db<br/>(just change the provider)")]
 
     classDef frontend fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#e2e8f0
     classDef backend fill:#1e293b,stroke:#10b981,stroke-width:2px,color:#e2e8f0
