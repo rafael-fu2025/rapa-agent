@@ -104,41 +104,74 @@ PostgreSQL and updating the connection string. See
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│  Browser (http://localhost:5173)                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐    │
-│  │  React 18 + Vite 6 + TypeScript + Tailwind 4 + Radix UI           │    │
-│  │  - Routes (chat / agent / settings / workspaces / login)         │    │
-│  │  - 40+ shadcn-style components in src/app/components/ui         │    │
-│  │  - File tree, command palette, terminal, file viewer             │    │
-│  └────────────────────┬─────────────────────────────────────────────┘    │
-│                       │ fetch / SSE / WebSocket                           │
-└───────────────────────┼──────────────────────────────────────────────────┘
-                        │
-                        ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│  Fastify 5 backend (http://127.0.0.1:8787)                                │
-│  ┌──────────────────────────────────────────────────────────────────┐    │
-│  │  Server-Sent Events for chat / agent streaming                    │    │
-│  │  WebSocket only for /ws/pty (terminal)                             │    │
-│  │  REST + Zod-validated JSON for everything else                    │    │
-│  │  - Agent loop:                                                  │    │
-│  │      callLLM() → parseResponse() → executeTools() → repeat         │    │
-│  │      with: stall detector, circuit breaker, retry,                │    │
-│  │      schema correction, sub-agent delegation,                    │    │
-│  │      QA rules, complexity-adaptive thresholds                     │    │
-│  │  - 50+ tool classes, all extending a single Tool base              │    │
-│  │  - 30+ REST routes under /api/*                                   │    │
-│  └────────────────────┬─────────────────────────────────────────────┘    │
-│                       │ Prisma 6 ORM                                      │
-└───────────────────────┼──────────────────────────────────────────────────┘
-                        │
-                        ▼
-              ┌────────────────────┐
-              │  SQLite (default)  │   file:./prisma/dev.db
-              │  or MySQL/Postgres │   (just change the provider)
-              └────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Browser["🌐 Browser  (http://localhost:5173)"]
+        direction TB
+        subgraph FE["React 18 + Vite 6 + TypeScript + Tailwind 4 + Radix UI"]
+            direction TB
+            FE1["Routes<br/>(chat · agent · settings · workspaces · login)"]
+            FE2["40+ shadcn-style components<br/>in src/app/components/ui"]
+            FE3["File tree · Command palette · Terminal · File viewer"]
+            FE1 ~~~ FE2
+            FE2 ~~~ FE3
+        end
+    end
+
+    Browser -- "fetch / SSE / WebSocket" --> Backend
+
+    subgraph Backend["⚙️ Fastify 5 backend  (http://127.0.0.1:8787)"]
+        direction TB
+        subgraph Transport["Transport"]
+            direction TB
+            T1["SSE for chat / agent streaming"]
+            T2["WebSocket only for /ws/pty (terminal)"]
+            T3["REST + Zod-validated JSON for everything else"]
+            T1 ~~~ T2
+            T2 ~~~ T3
+        end
+        subgraph AgentLoop["Agent loop (iterative)"]
+            direction LR
+            L1["callLLM()"] --> L2["parseResponse()"] --> L3["executeTools()"] --> L4["repeat"]
+        end
+        subgraph Resilience["Resilience & quality"]
+            direction TB
+            R1["Stall detector · Circuit breaker · Retry"]
+            R2["Schema correction · Sub-agent delegation"]
+            R3["QA rules · Complexity-adaptive thresholds"]
+            R1 ~~~ R2
+            R2 ~~~ R3
+        end
+        subgraph Surface["Surface"]
+            direction TB
+            S1["50+ tool classes<br/>(all extend a single Tool base)"]
+            S2["30+ REST routes under /api/*"]
+            S1 ~~~ S2
+        end
+        Transport ~~~ AgentLoop
+        AgentLoop ~~~ Resilience
+        Resilience ~~~ Surface
+    end
+
+    Backend -- "Prisma 6 ORM" --> DB
+
+    DB[("🗄️ SQLite (default)<br/>or MySQL / Postgres<br/><br/>file:./prisma/dev.db<br/>(just change the provider)")]
+
+    classDef frontend fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#e2e8f0
+    classDef backend fill:#1e293b,stroke:#10b981,stroke-width:2px,color:#e2e8f0
+    classDef transport fill:#0f172a,stroke:#06b6d4,stroke-width:1px,color:#e2e8f0
+    classDef loop fill:#0f172a,stroke:#f59e0b,stroke-width:1px,color:#e2e8f0
+    classDef resilient fill:#0f172a,stroke:#a855f7,stroke-width:1px,color:#e2e8f0
+    classDef surface fill:#0f172a,stroke:#ec4899,stroke-width:1px,color:#e2e8f0
+    classDef data fill:#1e293b,stroke:#f59e0b,stroke-width:2px,color:#e2e8f0
+
+    class FE frontend
+    class Backend backend
+    class Transport transport
+    class AgentLoop loop
+    class Resilience resilient
+    class Surface surface
+    class DB data
 ```
 
 **Why SSE for chat/agent and WebSocket only for the terminal?**
