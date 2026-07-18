@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Eye, EyeOff, Save, Plus, Trash2, Edit2, X, Check, Loader2, Globe, KeyRound, RotateCcw } from "lucide-react";
+import { Eye, EyeOff, Save, Plus, Trash2, Edit2, X, Check, Loader2, Globe, KeyRound, RotateCcw, Copy } from "lucide-react";
 import { toast } from "sonner";
 import {
   getServiceKeys,
@@ -51,7 +51,6 @@ export const ServiceKeysSettings = ({ service = "serper" }: ServiceKeysSettingsP
   // View state
   const [viewingId, setViewingId] = useState<string | null>(null);
   const [viewingValue, setViewingValue] = useState("");
-  const [showViewingKey, setShowViewingKey] = useState(false);
   const [loadingKeyId, setLoadingKeyId] = useState<string | null>(null);
   const [deletingKeyId, setDeletingKeyId] = useState<string | null>(null);
 
@@ -139,7 +138,6 @@ export const ServiceKeysSettings = ({ service = "serper" }: ServiceKeysSettingsP
     if (viewingId === keyId) {
       setViewingId(null);
       setViewingValue("");
-      setShowViewingKey(false);
       return;
     }
     setLoadingKeyId(keyId);
@@ -147,7 +145,6 @@ export const ServiceKeysSettings = ({ service = "serper" }: ServiceKeysSettingsP
       const result = await decryptServiceKey(keyId);
       setViewingId(keyId);
       setViewingValue(result.apiKey);
-      setShowViewingKey(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to load key");
     } finally {
@@ -245,33 +242,26 @@ export const ServiceKeysSettings = ({ service = "serper" }: ServiceKeysSettingsP
     return (
       <div key={item.id} className="panel-card rounded px-3 py-2">
         <div className="flex items-center gap-3">
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-1 flex flex-col gap-1">
             <div className="font-mono-tech text-[10px] font-semibold text-foreground truncate">{item.name}</div>
             {isViewing ? (
-              <div className="relative mt-1">
+              <div className="relative">
                 <input
-                  type={showViewingKey ? "text" : "password"}
+                  type="text"
                   value={viewingValue}
                   readOnly
-                  className="w-full panel-card rounded border-border/60 py-1 px-2 font-mono-tech text-[10px] text-foreground pr-16"
+                  className="w-full panel-card rounded border-border/60 py-1 px-2 font-mono-tech text-[10px] text-foreground pr-9"
                 />
                 <div className="absolute right-1 top-1/2 -translate-y-1/2 flex gap-1">
-                  <button
-                    onClick={() => setShowViewingKey((prev) => !prev)}
-                    className="p-1 text-muted-foreground hover:text-foreground transition-colors"
-                    title={showViewingKey ? "Hide" : "Show"}
-                  >
-                    {showViewingKey ? <EyeOff size={11} /> : <Eye size={11} />}
-                  </button>
                   <button
                     onClick={() => {
                       void navigator.clipboard.writeText(viewingValue);
                       toast.success("API key copied to clipboard");
                     }}
-                  className="p-1 font-mono-tech text-[9px] text-muted-foreground hover:text-foreground transition-colors"
+                  className="p-1 text-muted-foreground hover:text-foreground transition-colors"
                     title="Copy"
                   >
-                    Copy
+                    <Copy size={11} />
                   </button>
                 </div>
               </div>

@@ -14,7 +14,8 @@ import {
   Layers,
   HelpCircle,
   Plug,
-  RefreshCw
+  RefreshCw,
+  Copy
 } from "lucide-react";
 import { Switch as ToggleSwitch } from "./ui/switch";
 import { toast } from "sonner";
@@ -95,7 +96,6 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
   const [editingKeyValue, setEditingKeyValue] = useState("");
   const [viewingKeyId, setViewingKeyId] = useState<string | null>(null);
   const [viewingKeyValue, setViewingKeyValue] = useState("");
-  const [showViewingKey, setShowViewingKey] = useState(false);
   const [loadingKeyId, setLoadingKeyId] = useState<string | null>(null);
   const [deletingKeyId, setDeletingKeyId] = useState<string | null>(null);
   const [deletingModel, setDeletingModel] = useState<string | null>(null);
@@ -320,7 +320,6 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
       // Close if already viewing
       setViewingKeyId(null);
       setViewingKeyValue("");
-      setShowViewingKey(false);
       return;
     }
 
@@ -329,7 +328,6 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
       const result = await getApiKey({ provider, apiKeyId: keyId });
       setViewingKeyId(keyId);
       setViewingKeyValue(result.apiKey);
-      setShowViewingKey(false);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to load API key");
     } finally {
@@ -566,33 +564,26 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
                   return (
                     <div key={item.id} className="panel-card rounded px-3 py-2">
                       <div className="flex items-center gap-3">
-                        <div className="min-w-0 flex-1">
+                        <div className="min-w-0 flex-1 flex flex-col gap-1">
                           <div className="font-mono-tech text-[10px] font-semibold text-foreground truncate">{item.name}</div>
                         {isViewing ? (
-                          <div className="relative mt-1">
+                          <div className="relative">
                             <input
-                              type={showViewingKey ? "text" : "password"}
+                              type="text"
                               value={viewingKeyValue}
                               readOnly
-                              className="w-full panel-card rounded border-border/60 py-1 px-2 font-mono-tech text-[10px] text-foreground pr-16"
+                              className="w-full panel-card rounded border-border/60 py-1 px-2 font-mono-tech text-[10px] text-foreground pr-9"
                             />
                             <div className="absolute right-1 top-1/2 -translate-y-1/2 flex gap-1">
-                              <button
-                                onClick={() => setShowViewingKey(prev => !prev)}
-                                className="p-1 text-muted-foreground hover:text-foreground transition-colors"
-                                title={showViewingKey ? "Hide" : "Show"}
-                              >
-                                {showViewingKey ? <EyeOff size={11} /> : <Eye size={11} />}
-                              </button>
                               <button
                                 onClick={() => {
                                   void navigator.clipboard.writeText(viewingKeyValue);
                                   toast.success("API key copied to clipboard");
                                 }}
-                                className="p-1 font-mono-tech text-[9px] text-muted-foreground hover:text-foreground transition-colors"
+                                className="p-1 text-muted-foreground hover:text-foreground transition-colors"
                                 title="Copy"
                               >
-                                Copy
+                                <Copy size={11} />
                               </button>
                             </div>
                           </div>
