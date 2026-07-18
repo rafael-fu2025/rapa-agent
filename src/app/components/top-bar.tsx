@@ -84,7 +84,7 @@ export const TopBar = ({ hideModelSelector = false, mode = "chat", onModeChange,
     <div className="relative flex h-[48px] items-center justify-between bg-app px-4">
       <div className="flex items-center gap-2">
         {hideModelSelector ? (
-          <span className="text-[13px] font-medium text-muted-foreground">Settings</span>
+          <span className="font-mono-tech text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Settings</span>
         ) : null}
         {!hideModelSelector && (conversationWorkspace ?? activeWorkspace) ? (
           <button

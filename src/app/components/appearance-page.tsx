@@ -101,8 +101,25 @@ function ThemePreview({ mode, active, onSelect }: { mode: ThemeMode; active: boo
   const Icon = isLight ? Sun : isDark ? Moon : Monitor;
 
   // Each preview is a tiny mock of the chat surface.
-  const previewBg = isLight ? "bg-white" : isDark ? "bg-[#0C0C0C]" : "bg-gradient-to-br from-white to-[#0C0C0C]";
-  const previewText = isLight ? "text-zinc-800" : isDark ? "text-zinc-100" : "text-zinc-800";
+  // `themeHeaderBg` shades the title-bar strip; the user bubble inside
+  // needs contrast against the panel background, which differs per theme.
+  const previewBg = isLight
+    ? "bg-white"
+    : isDark
+      ? "bg-[#0C0C0C]"
+      : "bg-gradient-to-br from-white via-zinc-400 to-[#0C0C0C]";
+  // User bubble — light surface on light, dark surface on dark, semi-transparent
+  // mid-tone on the gradient so the text reads on either half.
+  const userBubbleClass = isLight
+    ? "bg-zinc-100 text-zinc-800"
+    : isDark
+      ? "bg-zinc-800 text-zinc-100"
+      : "bg-white/40 text-zinc-900";
+  const assistantBubbleClass = isLight
+    ? "bg-indigo-100 text-indigo-900"
+    : isDark
+      ? "bg-indigo-500/20 text-indigo-200"
+      : "bg-indigo-500/30 text-white";
 
   const accentStyle = active
     ? { borderColor: "var(--accent-color, #6366F1)", boxShadow: "0 0 0 1px var(--accent-color, #6366F1)" }
@@ -114,16 +131,17 @@ function ThemePreview({ mode, active, onSelect }: { mode: ThemeMode; active: boo
       onClick={onSelect}
       style={accentStyle}
       className={
-        "group relative flex flex-col items-stretch gap-3 rounded border p-4 text-left transition-all " +
+        "sidebar-panel group relative flex flex-col items-stretch gap-0 overflow-hidden rounded text-left transition-all " +
         (active
-          ? "bg-accent/30"
-          : "border-border/60 bg-card-3/50 hover:border-muted-foreground/40 hover:bg-accent/20")
+          ? ""
+          : "hover:border-muted-foreground/40")
       }
     >
-      <div className="flex items-center justify-between">
+      {/* Header — matches chat-bubble header (icon + uppercase tracking-wider label + optional check) */}
+      <div className="flex items-center justify-between border-b border-border/30 px-3 py-1.5">
         <div className="flex items-center gap-2">
-          <Icon size={14} className={active ? "text-foreground" : "text-muted-foreground"} />
-          <span className={"font-mono-tech text-[10px] font-semibold " + (active ? "text-foreground" : "text-foreground/80")}>
+          <Icon size={12} className={active ? "text-foreground" : "text-muted-foreground"} />
+          <span className={"font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] " + (active ? "text-foreground" : "text-muted-foreground/60")}>
             {label}
           </span>
         </div>
@@ -137,24 +155,27 @@ function ThemePreview({ mode, active, onSelect }: { mode: ThemeMode; active: boo
         )}
       </div>
 
-      <div
-        className={"overflow-hidden rounded border " + (active ? "" : "border-border/60")}
-        style={active ? { borderColor: "var(--accent-color, #6366F1)" } : undefined}
-      >
-        <div className={"flex items-center gap-1.5 border-b border-border/60 px-2 py-1.5 " + (isLight ? "bg-zinc-50" : "bg-zinc-900")}>
-          <div className="h-1.5 w-1.5 rounded-full bg-rose-400/70" />
-          <div className="h-1.5 w-1.5 rounded-full bg-amber-400/70" />
-          <div className="h-1.5 w-1.5 rounded-full bg-emerald-400/70" />
-        </div>
-        <div className={"p-2.5 " + previewBg + " " + previewText}>
-          <div className="mb-1.5 flex justify-end">
-            <div className={"rounded px-2 py-1 text-[8px] " + (isLight ? "bg-zinc-100" : "bg-zinc-800")}>
-              Hello there
-            </div>
+      {/* Content — uses the same monospace tech font as chat bubbles */}
+      <div className="px-3 py-2.5">
+        <div
+          className={"overflow-hidden rounded border " + (active ? "" : "border-border/60")}
+          style={active ? { borderColor: "var(--accent-color, #6366F1)" } : undefined}
+        >
+          <div className={"flex items-center gap-1.5 border-b border-border/60 px-2 py-1.5 " + (isLight ? "bg-zinc-50" : "bg-zinc-900")}>
+            <div className="h-1.5 w-1.5 rounded-full bg-rose-400/70" />
+            <div className="h-1.5 w-1.5 rounded-full bg-amber-400/70" />
+            <div className="h-1.5 w-1.5 rounded-full bg-emerald-400/70" />
           </div>
-          <div className="flex">
-            <div className={"rounded px-2 py-1 text-[8px] " + (isLight ? "bg-indigo-100 text-indigo-900" : "bg-indigo-500/20 text-indigo-200")}>
-              Hi! How can I help?
+          <div className={"p-2.5 " + previewBg}>
+            <div className="mb-1.5 flex justify-end">
+              <div className={"rounded px-2 py-1 font-mono-tech text-[9px] leading-[1.6] " + userBubbleClass}>
+                Hello there
+              </div>
+            </div>
+            <div className="flex">
+              <div className={"rounded px-2 py-1 font-mono-tech text-[9px] leading-[1.6] " + assistantBubbleClass}>
+                Hi! How can I help?
+              </div>
             </div>
           </div>
         </div>
@@ -169,11 +190,12 @@ function AccentSwatch({ accent, active, onSelect }: { accent: AccentPreset; acti
       type="button"
       onClick={onSelect}
       className={
-        "group relative flex h-12 w-full items-center justify-center rounded border transition-all " +
-        (active ? "border-foreground/60 bg-card-3" : "border-border/40 bg-card-3/30 hover:border-muted-foreground/30")
+        "sidebar-panel group relative flex h-12 w-full items-center justify-center overflow-hidden rounded transition-all " +
+        (active ? "" : "hover:border-muted-foreground/30")
       }
       title={accent.label}
       aria-label={accent.label}
+      style={active ? { borderColor: "var(--accent-color, #6366F1)", boxShadow: "0 0 0 1px var(--accent-color, #6366F1)" } : undefined}
     >
       <span
         className="h-6 w-6 rounded-full shadow-sm transition-transform group-hover:scale-110"
@@ -193,15 +215,24 @@ function AccentSwatch({ accent, active, onSelect }: { accent: AccentPreset; acti
 
 function Toggle({ checked, onChange, label, description }: { checked: boolean; onChange: (next: boolean) => void; label: string; description: string }) {
   return (
-    <label className="flex cursor-pointer items-center justify-between gap-4 rounded panel-card px-4 py-3 transition-colors hover:bg-accent/30">
-      <div>
-        <div className="font-mono-tech text-[10px] font-semibold text-foreground">{label}</div>
-        <div className="font-mono-tech text-[9px] text-muted-foreground">{description}</div>
+    <label className="sidebar-panel flex cursor-pointer items-center justify-between gap-4 overflow-hidden rounded transition-colors hover:border-muted-foreground/40">
+      <div className="flex-1 min-w-0">
+        {/* Header — uppercase tracking-wider label, like a chat bubble header */}
+        <div className="border-b border-border/30 px-4 py-1.5 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/60">
+          Toggle
+        </div>
+        {/* Content — same monospace tech font + leading as chat bubbles */}
+        <div className="px-4 py-2.5">
+          <div className="font-mono-tech text-[10px] font-semibold leading-[1.6] text-foreground">{label}</div>
+          <div className="font-mono-tech text-[10px] leading-[1.6] text-muted-foreground">{description}</div>
+        </div>
       </div>
-      <Switch
-        checked={checked}
-        onCheckedChange={onChange}
-      />
+      <div className="px-4 py-2.5">
+        <Switch
+          checked={checked}
+          onCheckedChange={onChange}
+        />
+      </div>
     </label>
   );
 }
@@ -213,26 +244,30 @@ function FontSizeOption({ size, active, onSelect }: { size: FontSize; active: bo
     <button
       type="button"
       onClick={onSelect}
-      style={active ? { borderColor: "var(--accent-color, #6366F1)" } : undefined}
+      style={active ? { borderColor: "var(--accent-color, #6366F1)", boxShadow: "0 0 0 1px var(--accent-color, #6366F1)" } : undefined}
       className={
-        "flex flex-col items-start gap-1 rounded border px-4 py-3 text-left transition-colors " +
-        (active
-          ? "bg-accent/30"
-          : "border-border/60 bg-card-3/50 hover:bg-accent/20")
+        "sidebar-panel flex flex-col items-stretch gap-0 overflow-hidden rounded text-left transition-all " +
+        (active ? "" : "hover:border-muted-foreground/40")
       }
     >
-      <div className="flex w-full items-center justify-between">
-        <span className="font-mono-tech text-[10px] font-semibold text-foreground">{label}</span>
+      {/* Header — matches chat-bubble header (uppercase tracking-wider label + active check) */}
+      <div className="flex w-full items-center justify-between border-b border-border/30 px-3 py-1.5">
+        <span className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/60">
+          {label}
+        </span>
         {active && (
           <span
             className="flex h-4 w-4 items-center justify-center rounded-full text-white"
             style={{ backgroundColor: "var(--accent-color, #6366F1)" }}
           >
-            <Check size={10} strokeWidth={3} />
+            <Check size={9} strokeWidth={3} />
           </span>
         )}
       </div>
-      <span className={"text-foreground/70 " + sample}>The quick brown fox</span>
+      {/* Content — same monospace tech font + leading as chat bubbles */}
+      <div className="px-3 py-2.5">
+        <span className={"font-mono-tech leading-[1.6] text-foreground/80 " + sample}>The quick brown fox</span>
+      </div>
     </button>
   );
 }
