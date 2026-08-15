@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { estimateCallCost, RunLimitTracker } from "./run-limits.js";
+import { estimateCallCost, RunLimitTracker } from "../../run-limits.js";
 
 describe("estimateCallCost", () => {
   it("uses the model's exact table entry when available", () => {

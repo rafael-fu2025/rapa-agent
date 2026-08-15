@@ -65,6 +65,9 @@ import {
   type WorkingMemory
 } from "./agent/working-memory.js";
 import { getCompactionAction, compactHistory, type CompactionAction } from "./agent/context-compactor.js";
+import { AgentEventBus } from "./agent/event-bus.js";
+import { PlanModeState } from "./agent/plan-mode-state.js";
+import { LoopDetector } from "./agent/loop-detector.js";
 import { PROVIDER_HISTORY_CHAR_BUDGET, computeHistoryBudget } from "./agent/types.js";
 
 /**
@@ -205,7 +208,24 @@ export class Agent {
   private tools: ToolOrchestrator;
   private workingMemory: WorkingMemory | null = null;
   private compactionSummary: string | undefined = undefined;
+  private loopDetector = new LoopDetector();
   private runStartTime = 0;
+
+  /**
+   * In-process event bus. See
+   * `.agents/notes/implemented/architecture/2026-08-15-in-process-event-bus.md`.
+   * Listeners attach via `agent.events.on(kind, fn)` or
+   * `agent.events.intercept(kind, fn)` before (or during) `stream()`.
+   */
+  readonly events = new AgentEventBus();
+
+  /**
+   * Plan-mode state — first-class transitions (Phase 2.3). See
+   * `.agents/notes/implemented/architecture/2026-08-15-plan-mode-as-logged-state.md`.
+   * Reads `agent.plan.isActive()` to know whether the current turn
+   * is in plan mode.
+   */
+  readonly plan = new PlanModeState();
 
   constructor(context: ToolExecutionContext, config: AgentConfig, llmClient?: LLMClient) {
     this.context = context;
@@ -237,16 +257,33 @@ export class Agent {
     let finalSteps: AgentStep[] = [];
     let finalStatus: "completed" | "max_iterations" | "failed" | "interrupted" = "completed";
 
-    for await (const event of this.stream(userPrompt)) {
-      if (event.type === "step") {
-        finalSteps = [...this.steps];
+    // Phase 2.2: session/* bus events wrap the stream consumption.
+    await this.events.emit("session/session/start", { conversationId: this.context.conversationId });
+
+    try {
+      for await (const event of this.stream(userPrompt)) {
+        if (event.type === "step") {
+          finalSteps = [...this.steps];
+          // Phase 2.2: step/end bus emit.
+          await this.events.emit("agent/step/end", { iteration: event.step.iteration });
+        }
+        if (event.type === "done") {
+          finalResponse = event.response;
+          finalSteps = event.steps;
+          finalStatus = event.status;
+        }
+        if (event.type === "error") {
+          await this.events.emit("session/session/error", { message: event.message });
+        }
       }
-      if (event.type === "done") {
-        finalResponse = event.response;
-        finalSteps = event.steps;
-        finalStatus = event.status;
-      }
+    } catch (err) {
+      await this.events.emit("session/session/error", {
+        message: err instanceof Error ? err.message : String(err)
+      });
+      throw err;
     }
+
+    await this.events.emit("session/session/end", { status: finalStatus });
 
     return {
       response: finalResponse,
@@ -330,6 +367,33 @@ export class Agent {
       setSpanAttribute("stallThresholds.runaway", this.stallThresholds.runaway);
     }
 
+    // Lifecycle (Phase 1.4): turn boundary markers — see
+    // `.agents/notes/implemented/architecture/2026-08-15-turn-step-lifecycle.md`.
+    yield {
+      type: "turn/start",
+      conversationId: this.context.conversationId,
+      model: this.config.model,
+      mode,
+      iterationBudget: effectiveMaxIterations
+    };
+    // Phase 2.2: bus emit (waterfall + serial listeners).
+    await this.events.emit("agent/turn/start", {
+      conversationId: this.context.conversationId,
+      mode,
+      iterationBudget: effectiveMaxIterations
+    });
+
+    // Phase 2.3: enter plan mode if configured. State + bus emit
+    // happen before any iteration runs.
+    if (mode === "plan") {
+      this.plan.enter("explicit");
+      await this.events.emit("plan/enter", {
+        mode: "plan",
+        conversationId: this.context.conversationId,
+        reason: "explicit"
+      });
+    }
+
     yield {
       type: "start",
       conversationId: this.context.conversationId,
@@ -345,6 +409,16 @@ export class Agent {
     let commandCount = 0;
 
     for (let iteration = 1, correctionCount = 0; iteration <= this.config.maxIterations; iteration += 1) {
+      // Lifecycle (Phase 1.4): step boundary marker — pairs with the
+      // existing `step` event (which acts as the step's commit record).
+      yield { type: "step/start", iteration };
+      // Phase 2.2: bus emit.
+      await this.events.emit("agent/step/start", { iteration });
+      // Phase 2.3: activate plan mode on the first step.
+      if (this.plan.phase === "entering") {
+        this.plan.activate();
+      }
+
       // Graduated compaction: check BEFORE the LLM call so the model always
       // sees a clean context. Warn at 55%, compact at 65%, force-answer at 85%.
       // Working memory survives via .rapa/working-memory.md on disk.
@@ -1147,6 +1221,16 @@ export class Agent {
         yield { type: "thinking", iteration, reasoning: diversityNudge };
       }
 
+      // Loop detection: check for cyclic oscillation, stalled errors, or redundant reads
+      const loopCheck = this.loopDetector.recordAndAnalyze(step);
+      if (loopCheck.detected && loopCheck.message) {
+        this.history.push({
+          role: "system",
+          content: `[Loop Guard Alert] ${loopCheck.message}`
+        });
+        yield { type: "thinking", iteration, reasoning: `[Loop Guard Alert] ${loopCheck.message}` };
+      }
+
       // Checkpoint validation: run lint (always) and tests (when source files modified)
       const validationResults = await this.tools.runCheckpointValidation(dedupedToolCalls.calls, toolResults);
       for (const result of validationResults) {
@@ -1240,6 +1324,32 @@ export class Agent {
         passed: !hasFailedRule(qaIssues)
       }
     };
+    // Lifecycle (Phase 1.4): turn boundary marker — emitted before
+    // the enriched `done` event so consumers see `turn/end` first.
+    yield {
+      type: "turn/end",
+      status: enriched.status,
+      iterations: enriched.iterations,
+      elapsedMs: enriched.elapsedMs
+    };
+    // Phase 2.2: bus emit.
+    await this.events.emit("agent/turn/end", {
+      status: enriched.status,
+      iterations: enriched.iterations,
+      elapsedMs: enriched.elapsedMs
+    });
+
+    // Phase 2.3: exit plan mode (if active) before done.
+    if (this.plan.isActive() || this.plan.phase === "exiting") {
+      const finalCount = this.plan.steps.length;
+      this.plan.exit("completed");
+      this.plan.reset();
+      await this.events.emit("plan/exit", {
+        reason: "completed",
+        finalStepCount: finalCount
+      });
+    }
+
     yield enriched;
     flushTrace();
   }

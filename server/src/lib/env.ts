@@ -4,6 +4,36 @@
 // credentials must fail loudly rather than silently accept a known-bad config.
 
 import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+function loadEnvFiles(): void {
+  const possiblePaths = [
+    resolve(process.cwd(), ".env"),
+    resolve(process.cwd(), "server/.env"),
+    resolve(process.cwd(), "../.env")
+  ];
+  for (const envPath of possiblePaths) {
+    if (!existsSync(envPath)) continue;
+    try {
+      const raw = readFileSync(envPath, "utf-8");
+      for (const line of raw.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const eq = trimmed.indexOf("=");
+        if (eq <= 0) continue;
+        const key = trimmed.slice(0, eq).trim();
+        let value = trimmed.slice(eq + 1).trim();
+        if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
+          value = value.slice(1, -1);
+        }
+        if (process.env[key] === undefined) process.env[key] = value;
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
 
 const PLACEHOLDER_SECRETS = new Set<string>([
   "change-this-secret",
@@ -103,6 +133,9 @@ export function generateAppSecret(): string {
 }
 
 export function loadAndValidateEnv(): AppEnv {
+  if (!process.env.VITEST) {
+    loadEnvFiles();
+  }
   const issues: string[] = [];
 
   const databaseUrl = readString("DATABASE_URL");
@@ -134,7 +167,7 @@ export function loadAndValidateEnv(): AppEnv {
   for (const pattern of PLACEHOLDER_DATABASE_PATTERNS) {
     if (pattern.test(databaseUrl)) {
       issues.push(
-        `DATABASE_URL matches a known placeholder pattern (${pattern}). ` +
+        `DATABASE_URL contains placeholder credentials (matches ${pattern}). ` +
           "Replace it with a real connection string (or `file:./dev.db` " +
           "for the default SQLite setup) before booting."
       );

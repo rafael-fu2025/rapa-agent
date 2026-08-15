@@ -1,0 +1,81 @@
+{
+  "name": "chat-greeter",
+  "version": 1,
+  "recorded_at": "2026-08-15T14:13:58.512Z",
+  "recorded_with": {
+    "provider": "gemini",
+    "model": "gemini-2.5-pro"
+  },
+  "input": {
+    "mode": "chat",
+    "userPrompt": "Say hello in one sentence.",
+    "seedHistory": [],
+    "workspaceRoot": ""
+  },
+  "events": [
+    {
+      "type": "turn/start",
+      "conversationId": "snapshot-chat-greeter",
+      "model": "gemini-2.5-pro",
+      "mode": "chat",
+      "iterationBudget": 25
+    },
+    {
+      "type": "start",
+      "conversationId": "snapshot-chat-greeter",
+      "model": "gemini-2.5-pro"
+    },
+    {
+      "type": "step/start",
+      "iteration": 1
+    },
+    {
+      "type": "assistant",
+      "iteration": 1,
+      "content": "The agent completed but produced no visible response. Check the thinking panel for reasoning details.",
+      "final": true
+    },
+    {
+      "type": "step",
+      "step": {
+        "iteration": 1,
+        "toolCalls": [],
+        "toolResults": [],
+        "response": "The agent completed but produced no visible response. Check the thinking panel for reasoning details.",
+        "timestamp": "2026-08-15T14:13:58.342Z"
+      }
+    },
+    {
+      "type": "turn/end",
+      "status": "completed",
+      "iterations": 1,
+      "elapsedMs": 20
+    },
+    {
+      "type": "done",
+      "status": "completed",
+      "response": "The agent completed but produced no visible response. Check the thinking panel for reasoning details.",
+      "steps": [
+        {
+          "iteration": 1,
+          "toolCalls": [],
+          "toolResults": [],
+          "response": "The agent completed but produced no visible response. Check the thinking panel for reasoning details.",
+          "timestamp": "2026-08-15T14:13:58.342Z"
+        }
+      ],
+      "iterations": 1,
+      "elapsedMs": 20,
+      "qa": {
+        "issues": [],
+        "passed": true
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "iteration_count",
+      "max": 1
+    }
+  ]
+}

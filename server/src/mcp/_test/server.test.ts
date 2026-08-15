@@ -1,8 +1,8 @@
 // Unit tests for the MCP server wrapper.
 
 import { describe, it, expect, beforeAll } from "vitest";
-import { createMcpServer, MCP_PROTOCOL_VERSION } from "./server.js";
-import { toolRegistry } from "../tools/index.js";
+import { createMcpServer, MCP_PROTOCOL_VERSION } from "../server.js";
+import { toolRegistry } from "../../tools/index.js";
 
 describe("createMcpServer", () => {
   beforeAll(() => {

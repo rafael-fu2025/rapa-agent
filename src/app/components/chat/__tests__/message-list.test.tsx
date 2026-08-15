@@ -57,6 +57,7 @@ function Harness() {
   const onStartEdit = useCallback(() => {}, []);
   const onDraftChange = useCallback(() => {}, []);
   const onSaveEdit = useCallback(() => {}, []);
+  const onResendEdit = useCallback(() => {}, []);
   const onCancelEdit = useCallback(() => {}, []);
   const onDelete = useCallback(() => {}, []);
   const onFork = useCallback(() => {}, []);
@@ -79,6 +80,7 @@ function Harness() {
       <MessageList
         messages={messages}
         pending={false}
+        reconnecting={null}
         mode="chat"
         editingMessageId={null}
         editDraft=""
@@ -94,6 +96,7 @@ function Harness() {
         onStartEdit={onStartEdit}
         onDraftChange={onDraftChange}
         onSaveEdit={onSaveEdit}
+        onResendEdit={onResendEdit}
         onCancelEdit={onCancelEdit}
         onDelete={onDelete}
         onFork={onFork}
@@ -129,6 +132,7 @@ describe("MessageList", () => {
       <MessageList
         messages={MESSAGES}
         pending={false}
+        reconnecting={null}
         mode="chat"
         editingMessageId={null}
         editDraft=""
@@ -145,6 +149,7 @@ describe("MessageList", () => {
         onStartEdit={() => {}}
         onDraftChange={() => {}}
         onSaveEdit={() => {}}
+        onResendEdit={() => {}}
         onCancelEdit={() => {}}
         onDelete={() => {}}
         onFork={() => {}}

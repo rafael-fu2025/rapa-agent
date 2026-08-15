@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { detectPromptInjection, wrapUntrustedContent } from "./prompt-injection.js";
+import { detectPromptInjection, wrapUntrustedContent } from "../prompt-injection.js";
 
 describe("detectPromptInjection", () => {
   it("returns clean for normal user prompts", () => {

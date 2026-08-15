@@ -7,7 +7,7 @@ import {
   EnvValidationError,
   generateAppSecret,
   loadAndValidateEnv
-} from "./env.js";
+} from "../../env.js";
 
 const REQUIRED_BASE_ENV = {
   DATABASE_URL:

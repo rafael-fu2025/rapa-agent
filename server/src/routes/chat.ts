@@ -38,7 +38,7 @@ const chatSchema = z.object({
   conversationId: z.string().optional(),
   workspaceId: z.string().optional(),
   attachments: z.array(attachmentSchema).optional(),
-  mode: z.enum(["chat", "agent"]).default("chat"),
+  mode: z.enum(["chat", "agent", "plan"]).default("chat"),
   // Reasoning / thinking-mode depth. Translated to the right parameter
   // shape for the active provider (see server/src/lib/agent/reasoning-translator.ts).
   // "off" suppresses the setting entirely so the provider uses its own default.

@@ -628,15 +628,11 @@ export function useChatStream(params: UseChatStreamParams) {
 
   const handleModeSwitchApproval = useCallback(
     async (targetMode: "agent" | "plan", prompt: string, sourceConversationId?: string) => {
-      const originConversationId = sourceConversationId?.trim();
-      if (!originConversationId) {
-        setError("Could not continue in the same conversation. Please retry from the original thread.");
-        return;
-      }
+      const originConversationId = sourceConversationId?.trim() || conversationId || selectedConversationId;
 
       isStreamingRef.current = true;
 
-      if (selectedConversationId !== originConversationId) {
+      if (originConversationId && selectedConversationId !== originConversationId) {
         navigate(`/?c=${encodeURIComponent(originConversationId)}`, { replace: true });
       }
 
@@ -645,7 +641,7 @@ export function useChatStream(params: UseChatStreamParams) {
         conversationId: originConversationId,
       });
     },
-    [selectedConversationId, navigate, submitPrompt, setError]
+    [conversationId, selectedConversationId, navigate, submitPrompt]
   );
 
   const handleRegenerate = useCallback(
@@ -756,6 +752,96 @@ export function useChatStream(params: UseChatStreamParams) {
     [conversationId, navigate, setError]
   );
 
+  const handleResendEdit = useCallback(
+    async (userMessageId: string, editedContent: string) => {
+      if (pending) return;
+      const cleanPrompt = editedContent.trim();
+      if (!cleanPrompt) return;
+
+      const userIndex = messages.findIndex((m) => m.id === userMessageId);
+      if (userIndex === -1) return;
+
+      const targetUserMsg = messages[userIndex];
+      const runMode: ChatMode = targetUserMsg.mode ?? mode;
+      const runProvider = targetUserMsg.provider ?? selectedProvider;
+      const runModel = targetUserMsg.model ?? selectedModel;
+      const runReasoningEffort: ReasoningEffort =
+        (targetUserMsg.reasoningEffort as ReasoningEffort | undefined) ?? selectedReasoningEffort;
+      const runConversationId = targetUserMsg.conversationId ?? conversationId ?? selectedConversationId;
+
+      const startedAt = performance.now();
+      _submitLock = true;
+      isStreamingRef.current = true;
+      setPending(true);
+
+      const assistantId = `a-${Date.now()}`;
+      const updatedUserMsg: ChatMessage = {
+        ...targetUserMsg,
+        content: cleanPrompt,
+        model: runModel,
+        provider: runProvider,
+        mode: runMode,
+        reasoningEffort: runReasoningEffort,
+      };
+
+      const assistantMessage: ChatMessage = {
+        id: assistantId,
+        conversationId: runConversationId,
+        role: "assistant",
+        content: "",
+        model: runModel,
+        provider: runProvider,
+        mode: runMode,
+        reasoningEffort: runReasoningEffort,
+      };
+
+      // Truncate messages up to the edited user message and append the new assistant message
+      const prefix = messages.slice(0, userIndex);
+      setMessages([...prefix, updatedUserMsg, assistantMessage]);
+
+      if (runMode === "agent" || runMode === "plan") {
+        await executeAgentStream({
+          prompt: cleanPrompt,
+          assistantId,
+          conversationIdToUse: runConversationId,
+          providerToUse: runProvider,
+          modelToUse: runModel,
+          reasoningEffortToUse: runReasoningEffort,
+          startedAt,
+          runMode,
+          errorMessage: runMode === "plan" ? "Failed to run plan" : "Failed to run agent",
+        });
+        return;
+      }
+
+      await executeChatStream({
+        prompt: cleanPrompt,
+        attachments: [],
+        assistantId,
+        conversationIdToUse: runConversationId,
+        providerToUse: runProvider,
+        modelToUse: runModel,
+        reasoningEffortToUse: runReasoningEffort,
+        startedAt,
+        errorMessage: "Failed to send message",
+      });
+    },
+    [
+      pending,
+      messages,
+      mode,
+      selectedProvider,
+      selectedModel,
+      selectedReasoningEffort,
+      conversationId,
+      selectedConversationId,
+      executeAgentStream,
+      executeChatStream,
+      setMessages,
+      setPending,
+    ]
+  );
+
   const resetStreamState = useCallback(() => {
     if (streamAbortRef.current) {
       streamAbortRef.current.abort();
@@ -776,6 +862,7 @@ export function useChatStream(params: UseChatStreamParams) {
     handleAgentToolApproval,
     handleModeSwitchApproval,
     handleRegenerate,
+    handleResendEdit,
     handleResumeRun,
     handleFork,
     updateMessageById,

@@ -25,10 +25,10 @@ const SCREENSHOTS_DIR = ".browser-screenshots";
 
 // --- Playwright loader (lazy, optional) ------------------------------------
 
-type PlaywrightModule = typeof import("playwright");
-type Browser = import("playwright").Browser;
-type Page = import("playwright").Page;
-type BrowserContext = import("playwright").BrowserContext;
+type PlaywrightModule = any;
+type Browser = any;
+type Page = any;
+type BrowserContext = any;
 
 let cachedPlaywright: PlaywrightModule | null = null;
 let cachedBrowser: Browser | null = null;
@@ -37,7 +37,8 @@ let cachedContext: BrowserContext | null = null;
 async function loadPlaywright(): Promise<PlaywrightModule | null> {
   if (cachedPlaywright) return cachedPlaywright;
   try {
-    cachedPlaywright = (await import("playwright")) as PlaywrightModule;
+    const playwrightPkg = "playwright";
+    cachedPlaywright = await import(playwrightPkg);
     return cachedPlaywright;
   } catch (err) {
     throw new Error(

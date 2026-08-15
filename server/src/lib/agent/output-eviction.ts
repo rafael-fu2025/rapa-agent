@@ -95,11 +95,28 @@ export async function evictResult(
     return result;
   }
 
-  const preview = evictedContent.slice(0, EVICTION_PREVIEW_CHARS);
+  const HEAD_CHARS = 1_000;
+  const TAIL_CHARS = 1_500;
+
+  let preview = "";
+  if (charCount <= HEAD_CHARS + TAIL_CHARS) {
+    preview = evictedContent;
+  } else {
+    const head = evictedContent.slice(0, HEAD_CHARS);
+    const tail = evictedContent.slice(-TAIL_CHARS);
+    preview = `${head}\n\n... [${charCount - HEAD_CHARS - TAIL_CHARS} characters omitted] ...\n\n${tail}`;
+  }
+
+  // Extract quick diagnostic summary if available (test results, stack traces, errors)
+  const summaryMatches = evictedContent.match(/(?:Tests?:\s+.*|FAIL\s+.*|Error:.*|\d+\s+(?:failed|passed|errors))/gi);
+  const quickSummary = summaryMatches && summaryMatches.length > 0
+    ? `\nKey summary lines detected:\n` + Array.from(new Set(summaryMatches.slice(-4))).map(l => `  • ${l.trim()}`).join("\n") + "\n"
+    : "";
+
   const evictionNotice =
-    `[Content evicted to disk — ${charCount} chars saved to ${relativePath}. ` +
-    `Use read_file to access full content if needed.]\n\n` +
-    `Preview (first ${Math.min(EVICTION_PREVIEW_CHARS, charCount)} chars):\n${preview}`;
+    `[Large output (${charCount} chars) saved to ${relativePath}. ` +
+    `Use read_file to inspect entire content if needed.]${quickSummary}\n\n` +
+    `Output Preview:\n${preview}`;
 
   // Build the new result with the eviction notice replacing the large content
   const newResult: EvictableResult = { ...result };

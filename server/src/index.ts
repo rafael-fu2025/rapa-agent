@@ -23,6 +23,7 @@ import { registerAuthRoutes } from "./routes/auth.js";
 import { registerServiceKeyRoutes } from "./routes/service-keys.js";
 import { registerMcpRoutes } from "./routes/mcp.js";
 import { registerAllTools, toolRegistry } from "./tools/index.js";
+import { capabilityRegistry } from "./lib/agent/capability.js";
 import { configureTracing, consoleSpanExporter, type SpanExporter } from "./lib/agent/tracing.js";
 import { toolCircuitBreaker } from "./lib/agent/circuit-breaker.js";
 import { startScheduler, stopScheduler } from "./lib/scheduler-tick.js";
@@ -80,6 +81,11 @@ export async function createServer(options: { skipEnvValidation?: boolean } = {}
   if (toolRegistry.list().length === 0) {
     throw new Error("No agent tools were registered");
   }
+
+  // Phase 2.1: populate the capability registry (seam triple).
+  // Runs once after registerAllTools(); future orchestrator code
+  // reads policy + provider from `capabilityRegistry`.
+  capabilityRegistry.rebuildFromToolRegistry(toolRegistry);
 
   // Start the §2.4 background scheduler. Polls ScheduledTask every
   // minute and fires any task whose nextRunAt is in the past. The
@@ -259,8 +265,6 @@ export async function bootstrap(options?: { port?: number; host?: string; skipEn
   }
 }
 
-const isEntrypoint = process.argv[1] != null && pathToFileURL(process.argv[1]).href === import.meta.url;
-
-if (isEntrypoint) {
+if (!process.env.VITEST) {
   void bootstrap();
 }

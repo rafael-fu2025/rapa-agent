@@ -163,8 +163,8 @@ export class ScheduleTaskTool extends Tool {
     }
 
     const user = await getLocalUser();
-    const existing = await prisma.scheduledTask.findUnique({
-      where: { userId_name: { userId: user.id, name } }
+    const existing = await prisma.scheduledTask.findFirst({
+      where: { userId: user.id, name }
     });
     if (existing) {
       return { success: false, error: `A scheduled task named "${name}" already exists. Use cancel_scheduled_task first, or pick a different name.` };
@@ -240,7 +240,7 @@ export class CancelScheduledTaskTool extends Tool {
     const name = typeof params.name === "string" ? params.name.trim() : "";
     if (!name) return { success: false, error: "name is required" };
     const user = await getLocalUser();
-    const existing = await prisma.scheduledTask.findUnique({ where: { userId_name: { userId: user.id, name } } });
+    const existing = await prisma.scheduledTask.findFirst({ where: { userId: user.id, name } });
     if (!existing) return { success: false, error: `No scheduled task named "${name}"` };
 
     await prisma.scheduledTask.delete({ where: { id: existing.id } });

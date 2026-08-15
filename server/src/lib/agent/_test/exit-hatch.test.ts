@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { exitHatchRegistry, buildExitHatchEvent } from "./exit-hatch.js";
+import { exitHatchRegistry, buildExitHatchEvent } from "../../exit-hatch.js";
 
 describe("exitHatchRegistry", () => {
   beforeEach(() => {

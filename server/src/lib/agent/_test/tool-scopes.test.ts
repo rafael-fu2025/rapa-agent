@@ -5,7 +5,7 @@ import {
   hasToolScope,
   defaultScopesForRole,
   type CapabilityTokenPayload
-} from "./tool-scopes.js";
+} from "../../tool-scopes.js";
 
 const SECRET = "test-secret-with-enough-entropy-32chars";
 

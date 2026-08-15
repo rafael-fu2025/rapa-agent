@@ -1,5 +1,5 @@
 import { Suspense, lazy, memo, useEffect, useRef, useState } from "react";
-import { AlertCircle, Check, Clock, Copy, FolderOpen, Gauge, GitBranch, KeyRound, Pencil, RotateCcw, Trash2, X, FileEdit } from "lucide-react";
+import { AlertCircle, Check, Clock, Copy, FolderOpen, Gauge, GitBranch, KeyRound, Pencil, RotateCcw, Send, Trash2, X, FileEdit } from "lucide-react";
 import { AssistantMarkdown } from "../assistant-markdown";
 import { InteractiveOptions } from "../interactive-options";
 import { ModeSwitchPrompt } from "../mode-switch-prompt";
@@ -31,6 +31,7 @@ type MessageListProps = {
   onStartEdit: (messageId: string, content: string) => void;
   onDraftChange: (content: string) => void;
   onSaveEdit: () => void;
+  onResendEdit: () => void;
   onCancelEdit: () => void;
   onDelete: (messageId: string) => void;
   onFork: (messageId: string) => void;
@@ -63,6 +64,7 @@ function MessageListComponent({
   onStartEdit,
   onDraftChange,
   onSaveEdit,
+  onResendEdit,
   onCancelEdit,
   onDelete,
   onFork,
@@ -156,6 +158,7 @@ function MessageListComponent({
               isEditing={isEditing}
               editDraft={editDraft}
               onSaveEdit={onSaveEdit}
+              onResendEdit={onResendEdit}
               onCancelEdit={onCancelEdit}
               onStartEdit={onStartEdit}
               onDraftChange={onDraftChange}
@@ -225,6 +228,7 @@ type UserBubbleProps = {
   isEditing: boolean;
   editDraft: string;
   onSaveEdit: () => void;
+  onResendEdit: () => void;
   onCancelEdit: () => void;
   onStartEdit: (id: string, content: string) => void;
   onDraftChange: (content: string) => void;
@@ -238,6 +242,7 @@ function UserMessageBubble({
   isEditing,
   editDraft,
   onSaveEdit,
+  onResendEdit,
   onCancelEdit,
   onStartEdit,
   onDraftChange,
@@ -259,10 +264,18 @@ function UserMessageBubble({
                 <button
                   onClick={onSaveEdit}
                   className="rounded p-1 transition-colors hover:bg-card-hover/40 hover:text-accent-green"
-                  title="Save"
+                  title="Save edit (keep locally)"
                   type="button"
                 >
                   <Check size={12} />
+                </button>
+                <button
+                  onClick={onResendEdit}
+                  className="rounded p-1 transition-colors hover:bg-card-hover/40 hover:text-accent-blue"
+                  title="Send edited message"
+                  type="button"
+                >
+                  <Send size={12} />
                 </button>
                 <button
                   onClick={onCancelEdit}
@@ -389,7 +402,7 @@ function AssistantMessageBlock({
           />
         ) : (
           <>
-            {message.mode === "agent" && (
+            {(message.mode === "agent" || message.mode === "plan") && (
               <Suspense fallback={null}>
                 <AgentStepsViewer
                   steps={
@@ -413,7 +426,7 @@ function AssistantMessageBlock({
             )}
             <AssistantMarkdown
               content={message.content}
-              hideThoughtBlock={message.mode === "agent" || !showThinking}
+              hideThoughtBlock={message.mode === "agent" || message.mode === "plan" || !showThinking}
             />
             {message.interactive?.type === "ask_user" && message.interactive.questions.length > 0 && (
               <InteractiveOptions

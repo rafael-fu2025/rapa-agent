@@ -6,8 +6,7 @@
 //
 // We deliberately use cheap, language-specific checks:
 // - TypeScript / JavaScript: `tsc --noEmit` if tsc is on PATH, otherwise
-//   fall back to a basic Node syntax check via Function constructor
-//   (parse-only, no execution).
+//   fall back to a basic Node syntax check via Node --check.
 // - Python: `python -m py_compile` if Python is on PATH.
 // - JSON: `JSON.parse`.
 // - Other: no-op (return success).
@@ -22,6 +21,7 @@ import { existsSync } from "node:fs";
 
 const execFileAsync = promisify(execFile);
 const VALIDATE_TIMEOUT_MS = 5_000;
+const isWindows = process.platform === "win32";
 
 export type CodeValidationResult = {
   ok: boolean;
@@ -61,15 +61,16 @@ export async function validateWrittenFile(
 }
 
 async function runTscCheck(absolutePath: string): Promise<CodeValidationResult> {
+  const npxBin = isWindows ? "npx.cmd" : "npx";
   try {
-    await execFileAsync("npx", [
+    await execFileAsync(npxBin, [
       "--no-install",
       "tsc",
       "--noEmit",
       "--pretty",
       "false",
       absolutePath
-    ], { timeout: VALIDATE_TIMEOUT_MS, maxBuffer: 1024 * 256 });
+    ], { timeout: VALIDATE_TIMEOUT_MS, maxBuffer: 1024 * 256, shell: isWindows });
     return { ok: true, validator: "tsc" };
   } catch (error) {
     const stdout = (error as { stdout?: string }).stdout ?? "";
@@ -90,7 +91,8 @@ async function runNodeSyntaxCheck(absolutePath: string): Promise<CodeValidationR
   try {
     await execFileAsync("node", ["--check", absolutePath], {
       timeout: VALIDATE_TIMEOUT_MS,
-      maxBuffer: 1024 * 64
+      maxBuffer: 1024 * 64,
+      shell: isWindows
     });
     return { ok: true, validator: "node-check" };
   } catch (error) {
@@ -105,13 +107,33 @@ async function runNodeSyntaxCheck(absolutePath: string): Promise<CodeValidationR
 }
 
 async function runPyCompileCheck(absolutePath: string): Promise<CodeValidationResult> {
+  const pythonBin = isWindows ? "py" : "python";
   try {
-    await execFileAsync("python", ["-m", "py_compile", absolutePath], {
+    await execFileAsync(pythonBin, ["-m", "py_compile", absolutePath], {
       timeout: VALIDATE_TIMEOUT_MS,
-      maxBuffer: 1024 * 64
+      maxBuffer: 1024 * 64,
+      shell: isWindows
     });
     return { ok: true, validator: "py_compile" };
   } catch (error) {
+    if (isWindows) {
+      try {
+        await execFileAsync("python", ["-m", "py_compile", absolutePath], {
+          timeout: VALIDATE_TIMEOUT_MS,
+          maxBuffer: 1024 * 64,
+          shell: true
+        });
+        return { ok: true, validator: "py_compile" };
+      } catch (err2) {
+        const message = (err2 as { stderr?: string }).stderr
+          ?? (err2 instanceof Error ? err2.message : String(err2));
+        return {
+          ok: false,
+          validator: "py_compile",
+          message: `Python syntax check failed:\n${message.split("\n").slice(0, 4).join("\n")}`
+        };
+      }
+    }
     const message = (error as { stderr?: string }).stderr
       ?? (error instanceof Error ? error.message : String(error));
     return {

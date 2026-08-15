@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 // regexes on the source instead of importing the constants directly
 // (they're not exported) because the tests double as documentation
 // of the chosen values and pin them so an accidental change fails loudly.
-const agentSource = readFileSync(resolve(__dirname, "agent.ts"), "utf8");
+const agentSource = readFileSync(resolve(__dirname, "../../agent.ts"), "utf8");
 function getConst(name: string): number {
   const match = agentSource.match(new RegExp(`const\\s+${name}\\s*=\\s*(\\d+)`));
   if (!match) throw new Error(`Constant ${name} not found in agent.ts`);
@@ -28,14 +28,14 @@ const TOTAL_TOOL_CALL_CAP = getConst("TOTAL_TOOL_CALL_CAP");
 describe("attempt_completion tool removal", () => {
   it("is no longer registered in the tool registry", async () => {
     // Dynamic import to avoid the agent.ts module's heavy dependency graph.
-    const { toolRegistry } = await import("../tools/index.js");
+    const { toolRegistry } = await import("../../../tools/index.js");
     const all = toolRegistry.list();
-    const names = all.map((t) => t.name);
+    const names = all.map((t: any) => t.name);
     expect(names).not.toContain("attempt_completion");
   });
 
   it("has no doc entry in tool-docs.ts", () => {
-    const toolDocsPath = resolve(__dirname, "agent", "tool-docs.ts");
+    const toolDocsPath = resolve(__dirname, "..", "tool-docs.ts");
     const source = readFileSync(toolDocsPath, "utf8");
     // The map key + the entry in the JSDoc comment should both be gone.
     expect(source).not.toMatch(/^\s*attempt_completion:\s*\{/m);
@@ -43,21 +43,21 @@ describe("attempt_completion tool removal", () => {
   });
 
   it("is no longer referenced in agent.ts", () => {
-    const agentPath = resolve(__dirname, "agent.ts");
+    const agentPath = resolve(__dirname, "../../agent.ts");
     const source = readFileSync(agentPath, "utf8");
     expect(source).not.toMatch(/\battempt_completion\b/);
     expect(source).not.toMatch(/\bAttemptCompletionTool\b/);
   });
 
   it("is no longer referenced in agent-tools.ts", () => {
-    const agentToolsPath = resolve(__dirname, "..", "tools", "agent-tools.ts");
+    const agentToolsPath = resolve(__dirname, "../../../tools", "agent-tools.ts");
     const source = readFileSync(agentToolsPath, "utf8");
     expect(source).not.toMatch(/\bAttemptCompletionTool\b/);
     expect(source).not.toMatch(/name:\s*"attempt_completion"/);
   });
 
   it("is no longer referenced in tools/index.ts", () => {
-    const indexPath = resolve(__dirname, "..", "tools", "index.ts");
+    const indexPath = resolve(__dirname, "../../../tools", "index.ts");
     const source = readFileSync(indexPath, "utf8");
     expect(source).not.toMatch(/\bAttemptCompletionTool\b/);
   });
@@ -65,7 +65,7 @@ describe("attempt_completion tool removal", () => {
 
 describe("Odysseus supervisor constants", () => {
   it("are defined at the expected values in agent.ts", () => {
-    const agentPath = resolve(__dirname, "agent.ts");
+    const agentPath = resolve(__dirname, "../../agent.ts");
     const source = readFileSync(agentPath, "utf8");
     // Tolerate whitespace/formatting differences but pin the actual values
     // so a future "let's just lower the threshold" change is caught.
@@ -79,7 +79,7 @@ describe("Odysseus supervisor constants", () => {
   });
 
   it("include the read-only and progress tool sets", () => {
-    const agentPath = resolve(__dirname, "agent.ts");
+    const agentPath = resolve(__dirname, "../../agent.ts");
     const source = readFileSync(agentPath, "utf8");
     // Read-only set catches the alternating list_directory+read_file pattern
     expect(source).toMatch(/READ_ONLY_TOOLS[\s\S]*?read_file[\s\S]*?list_directory[\s\S]*?search_files[\s\S]*?search_content/);

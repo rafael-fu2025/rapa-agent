@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { decryptText, encryptText, redact } from "./crypto.js";
+import { decryptText, encryptText, redact } from "../../crypto.js";
 
 const VALID_SECRET = "this-is-a-32+-character-long-test-secret-for-aes-256-gcm";
 

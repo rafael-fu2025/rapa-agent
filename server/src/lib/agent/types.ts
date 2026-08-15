@@ -303,6 +303,40 @@ export type AgentExecutionEvent =
       model: string;
     }
   | {
+      /**
+       * Lifecycle marker: a turn has just opened. Emitted exactly
+       * once per `Agent.stream()` invocation, immediately before the
+       * existing `start` event. See
+       * `.agents/notes/implemented/architecture/2026-08-15-turn-step-lifecycle.md`.
+       */
+      type: "turn/start";
+      conversationId: string;
+      model: string;
+      mode: string;
+      iterationBudget: number;
+    }
+  | {
+      /**
+       * Lifecycle marker: a step is about to begin. Emitted at the
+       * top of each iteration in the agent loop, before compaction
+       * logic runs. Pairs with the existing `step` event (which is
+       * effectively `step/end` — the step's commit record).
+       */
+      type: "step/start";
+      iteration: number;
+    }
+  | {
+      /**
+       * Lifecycle marker: the turn has just closed. Emitted exactly
+       * once per `Agent.stream()` invocation, immediately before the
+       * existing `done` event.
+       */
+      type: "turn/end";
+      status: "completed" | "max_iterations" | "failed" | "interrupted";
+      iterations: number;
+      elapsedMs?: number;
+    }
+  | {
       type: "thinking";
       iteration: number;
       reasoning?: string;

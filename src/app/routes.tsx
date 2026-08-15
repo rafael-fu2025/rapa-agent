@@ -246,6 +246,7 @@ const Home = () => {
     handleAgentToolApproval,
     handleModeSwitchApproval,
     handleRegenerate,
+    handleResendEdit,
     handleResumeRun,
     handleFork,
     resetStreamState,
@@ -404,6 +405,10 @@ const Home = () => {
         const latestPersistedMessage = [...data.messages].reverse().find((row) => row.role === "user" || row.role === "assistant");
         if (latestPersistedMessage?.model) setSelectedModel(latestPersistedMessage.model);
         if (latestPersistedMessage?.provider) setSelectedProvider(latestPersistedMessage.provider);
+        if (latestPersistedMessage?.mode) {
+          const normalized = normalizeChatMode(latestPersistedMessage.mode);
+          if (normalized) setMode(normalized);
+        }
         // Restore the reasoning effort the user had on the most recent
         // turn. Older messages (before this column existed) have null
         // — fall back to "off" (provider default) so the user's last
@@ -500,6 +505,15 @@ const Home = () => {
     setEditingMessageId(null);
     setEditDraft("");
   }, [editDraft, editingMessageId]);
+
+  const handleResendEditCallback = useCallback(() => {
+    if (!editingMessageId) return;
+    const draft = editDraft;
+    const msgId = editingMessageId;
+    setEditingMessageId(null);
+    setEditDraft("");
+    void handleResendEdit(msgId, draft);
+  }, [editingMessageId, editDraft, handleResendEdit]);
 
   const handleCancelEdit = useCallback(() => {
     setEditingMessageId(null);
@@ -759,6 +773,7 @@ const Home = () => {
                 onStartEdit={handleEdit}
                 onDraftChange={handleDraftChange}
                 onSaveEdit={handleSaveEdit}
+                onResendEdit={handleResendEditCallback}
                 onCancelEdit={handleCancelEdit}
                 onDelete={handleDelete}
                 onFork={handleFork}

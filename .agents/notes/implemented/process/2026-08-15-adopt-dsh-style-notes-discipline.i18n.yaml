@@ -1,0 +1,23 @@
+# Translation metadata for 2026-08-15-adopt-dsh-style-notes-discipline
+source_locale: en
+target_locale: zh-Hans
+status: synced
+translator: manual
+reviewer: pending
+notes:
+  - section: "Bilingual discipline" linkage
+    en_ref: ".agents/notes/README.md#bilingual-discipline"
+    zh_ref: ".agents/notes/README.md#bilingual-discipline"
+  - section: terminology parity
+    pairs:
+      - en: "ADR"
+        zh: "ADR"
+      - en: "non-trivial"
+        zh: "非平凡"
+      - en: "scope"
+        zh: "范围"
+      - en: "implemented / proposed / rejected"
+        zh: "已实施 / 提议中 / 已否决"
+      - en: "agentic harness"
+        zh: "agentic harness"
+last_synced: 2026-08-15

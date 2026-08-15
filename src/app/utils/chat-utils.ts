@@ -241,8 +241,8 @@ export function mapConversationToMessages(rows: ConversationMessage[]): ChatMess
       model: row.model,
       provider: row.provider,
       mode: normalizeChatMode(row.mode),
-      agentRunId: row.role === "assistant" && row.mode === "agent" ? extractAgentRunId(row.metadata) : undefined,
-      agentSteps: row.role === "assistant" && row.mode === "agent" ? extractAgentSteps(row.metadata) : undefined,
+      agentRunId: row.role === "assistant" && (row.mode === "agent" || row.mode === "plan") ? extractAgentRunId(row.metadata) : undefined,
+      agentSteps: row.role === "assistant" && (row.mode === "agent" || row.mode === "plan") ? extractAgentSteps(row.metadata) : undefined,
 
       stats: row.role === "assistant"
         ? {
