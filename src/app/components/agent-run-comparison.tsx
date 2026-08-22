@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { X, ArrowLeftRight, CheckCircle, XCircle, Clock, Loader2, Zap, MessageSquare, Wrench } from "lucide-react";
+import { X, ArrowLeftRight, CheckCircle, XCircle, Loader2, Zap, MessageSquare } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { getAgentRun, type AgentRunDetail } from "../../lib/agent-api";
 

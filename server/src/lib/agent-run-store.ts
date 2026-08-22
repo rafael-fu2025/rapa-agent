@@ -19,7 +19,7 @@ const JSON_DEPTH_LIMIT = 5;
 const JSON_ARRAY_LIMIT = 50;
 const JSON_OBJECT_KEY_LIMIT = 60;
 
-export type PersistAgentRunStatus = "completed" | "max_iterations" | "failed" | "interrupted";
+export type PersistAgentRunStatus = "completed" | "max_iterations" | "failed" | "interrupted" | "aborted";
 
 export type PersistAgentRunParams = {
   conversationId: string;
@@ -37,6 +37,13 @@ export type PersistAgentRunParams = {
   status?: PersistAgentRunStatus;
   errorMessage?: string;
   createAssistantMessage?: boolean;
+  /**
+   * When the run row was already created at run START (see startAgentRun),
+   * persistAgentRun updates that row instead of creating a second one. This
+   * keeps the id stable so pause/abort/redirect controls can address the run
+   * while it is live.
+   */
+  existingRunId?: string;
   /// Per-run reasoning / thinking-mode depth. Persisted on the run
   /// record so the agent history view can show what effort was used
   /// and resume replays the same setting.
@@ -209,7 +216,9 @@ function buildRunSummary(params: {
         ? "Run failed before completion"
         : status === "interrupted"
           ? "Run was interrupted before completion"
-          : "Run completed",
+          : status === "aborted"
+            ? "Run aborted by user"
+            : "Run completed",
     `${steps.length} iteration${steps.length === 1 ? "" : "s"}`,
     `${toolCount} tool call${toolCount === 1 ? "" : "s"}`,
     failedToolCount > 0 ? `${failedToolCount} failed tool result${failedToolCount === 1 ? "" : "s"}` : undefined,
@@ -226,6 +235,47 @@ function buildCapabilitySnapshot() {
       requiresApproval: tool.requiresApproval ?? false
     }))
   });
+}
+
+/**
+ * Create the AgentRun row at run START with status "running". The row id is
+ * passed to Agent.stream() so the exit-hatch controls (pause/abort/redirect)
+ * can address a LIVE run, and persistAgentRun later UPDATES this row (via
+ * existingRunId) instead of creating a second one. Also marks any stale
+ * "running" rows for the same conversation as failed — those can only exist
+ * after a server restart mid-run.
+ */
+export async function startAgentRun(params: {
+  conversationId: string;
+  workspaceId?: string;
+  triggerMessageId?: string;
+  provider: string;
+  model: string;
+  mode?: "agent" | "plan";
+  prompt: string;
+  reasoningEffort?: "off" | "low" | "medium" | "high" | "max";
+}): Promise<string> {
+  await prisma.agentRun.updateMany({
+    where: { conversationId: params.conversationId, status: "running" },
+    data: { status: "failed", errorMessage: "Run interrupted (server restart or superseded run)" }
+  });
+
+  const run = await prisma.agentRun.create({
+    data: {
+      conversationId: params.conversationId,
+      workspaceId: params.workspaceId,
+      triggerMessageId: params.triggerMessageId,
+      mode: params.mode ?? "agent",
+      status: "running",
+      provider: params.provider,
+      model: params.model,
+      reasoningEffort: params.reasoningEffort ?? null,
+      promptPreview: truncateText(params.prompt),
+      capabilitySnapshot: buildCapabilitySnapshot(),
+      startedAt: new Date()
+    }
+  });
+  return run.id;
 }
 
 export async function persistAgentRun(params: PersistAgentRunParams) {
@@ -335,7 +385,12 @@ export async function persistAgentRun(params: PersistAgentRunParams) {
     ...(createAssistantMessage && interactivePayload ? { interactive: interactivePayload } : {})
   };
 
-  return prisma.$transaction(async (tx) => {
+  // Chunked persistence: the header transaction writes the assistant message
+  // and the run row atomically, then each step (plus its tool calls,
+  // checkpoints, and process sessions) lands in its OWN transaction. A
+  // 100-tool-call run previously did hundreds of sequential inserts inside
+  // ONE transaction — any late failure rolled back the entire run record.
+  const { assistantMessage, run } = await prisma.$transaction(async (tx) => {
     const assistantMessage = createAssistantMessage && params.content
       ? await tx.message.create({
           data: {
@@ -352,33 +407,52 @@ export async function persistAgentRun(params: PersistAgentRunParams) {
         })
       : null;
 
-    const run = await tx.agentRun.create({
-      data: {
-        conversationId: params.conversationId,
-        workspaceId: params.workspaceId,
-        triggerMessageId: params.triggerMessageId,
-        assistantMessageId: assistantMessage?.id,
-        mode: params.mode ?? "agent",
-        status,
-        provider: params.provider,
-        model: params.model,
-        reasoningEffort: params.reasoningEffort ?? null,
-        promptPreview: truncateText(params.prompt),
-        responsePreview: params.content ? truncateText(params.content) : undefined,
-        runSummary: buildRunSummary({
-          steps: params.steps,
-          content: params.content,
-          status,
-          errorMessage: params.errorMessage
-        }),
-        errorMessage: params.errorMessage ? truncateText(params.errorMessage) : undefined,
-        capabilitySnapshot: buildCapabilitySnapshot(),
-        tokenUsage: toInputJson(params.tokenUsage),
-        iterationCount: params.steps.length,
-        startedAt: params.steps[0]?.timestamp ?? new Date(),
-        completedAt: new Date()
-      }
-    });
+    const run = params.existingRunId
+      ? await tx.agentRun.update({
+          where: { id: params.existingRunId },
+          data: {
+            assistantMessageId: assistantMessage?.id,
+            status,
+            responsePreview: params.content ? truncateText(params.content) : undefined,
+            runSummary: buildRunSummary({
+              steps: params.steps,
+              content: params.content,
+              status,
+              errorMessage: params.errorMessage
+            }),
+            errorMessage: params.errorMessage ? truncateText(params.errorMessage) : undefined,
+            tokenUsage: toInputJson(params.tokenUsage),
+            iterationCount: params.steps.length,
+            completedAt: new Date()
+          }
+        })
+      : await tx.agentRun.create({
+          data: {
+            conversationId: params.conversationId,
+            workspaceId: params.workspaceId,
+            triggerMessageId: params.triggerMessageId,
+            assistantMessageId: assistantMessage?.id,
+            mode: params.mode ?? "agent",
+            status,
+            provider: params.provider,
+            model: params.model,
+            reasoningEffort: params.reasoningEffort ?? null,
+            promptPreview: truncateText(params.prompt),
+            responsePreview: params.content ? truncateText(params.content) : undefined,
+            runSummary: buildRunSummary({
+              steps: params.steps,
+              content: params.content,
+              status,
+              errorMessage: params.errorMessage
+            }),
+            errorMessage: params.errorMessage ? truncateText(params.errorMessage) : undefined,
+            capabilitySnapshot: buildCapabilitySnapshot(),
+            tokenUsage: toInputJson(params.tokenUsage),
+            iterationCount: params.steps.length,
+            startedAt: params.steps[0]?.timestamp ?? new Date(),
+            completedAt: new Date()
+          }
+        });
 
     if (assistantMessage) {
       const metadataWithRun = {
@@ -395,8 +469,13 @@ export async function persistAgentRun(params: PersistAgentRunParams) {
       });
     }
 
-    for (const step of params.steps) {
-      const stepRecord = await tx.agentRunStep.create({
+    return { assistantMessage, run };
+  });
+
+  for (const step of params.steps) {
+    try {
+      await prisma.$transaction(async (tx) => {
+        const stepRecord = await tx.agentRunStep.create({
         data: {
           runId: run.id,
           iteration: step.iteration,
@@ -476,8 +555,15 @@ export async function persistAgentRun(params: PersistAgentRunParams) {
           });
         }
       }
+      });
+    } catch (chunkError) {
+      // One bad step must not lose the rest of the run's history — earlier
+      // chunks are already committed and the run row is complete.
+      console.warn(
+        `[agent-run-store] Failed to persist step ${step.iteration} for run ${run.id}: ${chunkError instanceof Error ? chunkError.message : String(chunkError)}`
+      );
     }
+  }
 
-    return { assistantMessage, run };
-  });
+  return { assistantMessage, run };
 }

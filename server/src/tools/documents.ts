@@ -161,7 +161,7 @@ function markdownToText(md: string): string {
  */
 function buildDocx(html: string, title: string): Buffer {
   // Strip <html>/<head>/<body> wrappers — document.xml has its own.
-  let body = html
+  const body = html
     .replace(/<!doctype[^>]*>/i, "")
     .replace(/<\/?html[^>]*>/gi, "")
     .replace(/<head>[\s\S]*?<\/head>/i, "")

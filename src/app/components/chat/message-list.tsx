@@ -9,7 +9,6 @@ import { looksLikeChatModeRestriction, looksLikeWorkspaceRequest } from "../../u
 import { cn } from "../../../lib/utils";
 
 const AgentStepsViewer = lazy(() => import("../agent-steps-viewer").then(m => ({ default: m.AgentStepsViewer })));
-const AgentRunPanel = lazy(() => import("../agent-run-panel").then(m => ({ default: m.AgentRunPanel })));
 
 type MessageListProps = {
   messages: ChatMessage[];
@@ -417,11 +416,6 @@ function AssistantMessageBlock({
                   isAgentActive={isAgentActive}
                   agentRunId={message.agentRunId}
                 />
-              </Suspense>
-            )}
-            {message.mode === "agent" && false && (
-              <Suspense fallback={null}>
-                <AgentRunPanel agentRunId={message.agentRunId} onError={(msg: string) => console.error(msg)} />
               </Suspense>
             )}
             <AssistantMarkdown

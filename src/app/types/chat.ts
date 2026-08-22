@@ -54,4 +54,4 @@ export type ApiKeySwitchNotice = {
   toKeyName: string;
 };
 
-export const RESUMABLE_RUN_STATUSES = new Set(["max_iterations", "failed", "interrupted"]);
+export const RESUMABLE_RUN_STATUSES = new Set(["max_iterations", "failed", "interrupted", "aborted"]);

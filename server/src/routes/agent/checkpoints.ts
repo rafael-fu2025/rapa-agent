@@ -3,7 +3,7 @@
 // When the user clicks "Restore" on a checkpoint, these functions reverse
 // the file changes recorded by the agent (write, edit, rename, mkdir).
 
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isWithinWorkspace, resolveWorkspacePath } from "../../tools/filesystem.js";
 

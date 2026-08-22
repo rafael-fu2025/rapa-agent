@@ -12,8 +12,10 @@
 // "invalid params, tool cal..." 400 on MiniMax deployments that reject
 // those fields.
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildProviderRequestExtras } from "../llm-client.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { LLMClient, buildProviderRequestExtras } from "../llm-client.js";
+import { encryptText } from "../../crypto.js";
+import type { AgentConfig } from "../types.js";
 
 describe("buildProviderRequestExtras — default (extras disabled)", () => {
   it("returns an empty object for non-MiniMax providers", () => {
@@ -129,5 +131,55 @@ describe("buildProviderRequestExtras — opt-in env var values", () => {
     originalEnv = process.env.MINIMAX_ENABLE_EXTRAS;
     process.env.MINIMAX_ENABLE_EXTRAS = "yes";
     expect(buildProviderRequestExtras("minimax", "MiniMax-M3")).toEqual({});
+  });
+});
+
+describe("streamChat — timeout advances to the next API key", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("tries every key once on timeout instead of retrying the same key forever", async () => {
+    // Regression: the timeout path used `continue`, which re-entered the
+    // rate-limit while-loop with the SAME key and never advanced the outer
+    // for-loop — an infinitely timing-out provider retried one key forever.
+    const secret = "test-secret-test-secret-test-32ch";
+    const config: AgentConfig = {
+      maxIterations: 2,
+      autoApproveTools: [],
+      provider: "openai",
+      model: "test-model",
+      baseUrl: "http://localhost:1",
+      apiKey: "key-primary",
+      primaryApiKeyId: "k1",
+      fallbackApiKeys: [
+        { id: "k2", name: "Fallback", apiKeyEncrypted: encryptText("key-fallback", secret) }
+      ],
+      encryptionSecret: secret
+    };
+
+    const seenAuthHeaders: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init: RequestInit) => {
+        const headers = init.headers as Record<string, string> | undefined;
+        seenAuthHeaders.push(String(headers?.Authorization ?? ""));
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => {
+            const err = new Error("The operation was aborted");
+            err.name = "AbortError";
+            reject(err);
+          });
+        });
+      })
+    );
+
+    const client = new LLMClient({ config });
+    const generator = client.streamChat([{ role: "user", content: "hi" }], 20, []);
+
+    await expect(generator.next()).rejects.toThrow(/timed out/i);
+
+    // Both keys attempted exactly once — no same-key retry spiral.
+    expect(seenAuthHeaders).toEqual(["Bearer key-primary", "Bearer key-fallback"]);
   });
 });

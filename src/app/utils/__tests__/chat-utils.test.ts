@@ -256,6 +256,7 @@ describe("mapConversationToMessages", () => {
         provider: "gemini",
         mode: "chat" as const,
         metadata: {},
+        createdAt: new Date().toISOString(),
       },
     ];
     const result = mapConversationToMessages(rows);
@@ -276,6 +277,7 @@ describe("mapConversationToMessages", () => {
         provider: "gemini",
         mode: "chat" as const,
         metadata: { tokenUsage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } },
+        createdAt: new Date().toISOString(),
       },
     ];
     const result = mapConversationToMessages(rows);

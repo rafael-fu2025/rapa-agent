@@ -1,12 +1,12 @@
 // Tests for the P2-D tool result truncation logic in ToolOrchestrator.
 
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Tool, type ToolDefinition, type ToolExecutionContext, type ToolResult } from "../../tools.js";
 import { ToolOrchestrator } from "../tool-orchestrator.js";
-import { registerAllTools, toolRegistry } from "../../../tools/index.js";
+import { toolRegistry } from "../../../tools/index.js";
 
 let workspaceRoot = "";
 
@@ -19,7 +19,7 @@ class NoopTool extends Tool {
     requiresApproval: false,
     parameters: {}
   };
-  async execute(params: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  async execute(params: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
     return { success: true, output: (params.text as string) ?? "ok" };
   }
 }
@@ -35,7 +35,7 @@ class LongOutputTool extends Tool {
       length: { type: "number", description: "size", required: true }
     }
   };
-  async execute(params: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  async execute(params: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
     const length = (params.length as number) ?? 0;
     return { success: true, output: "x".repeat(length) };
   }

@@ -58,7 +58,6 @@ export function RightSidebar({
       onTabChange("todos");
     }
   // Only react to agent becoming active with tasks, not tab changes
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasTasks, isAgentActive]);
 
   const sectionTitle = activeTab === "tools" ? "Tool History" : activeTab === "files" ? "Workspace Files" : "Agent Plan";

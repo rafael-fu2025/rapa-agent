@@ -9,16 +9,19 @@ export async function registerHealthRoutes(app: FastifyInstance) {
     try {
       await prisma.$queryRaw`SELECT 1`;
       return { ok: true, ts: new Date().toISOString(), db: "connected", uptime: process.uptime() };
-    } catch (err) {
+    } catch {
       reply.status(503).send({ ok: false, ts: new Date().toISOString(), db: "disconnected", uptime: process.uptime() });
     }
   });
+}
 
-  /**
-   * Circuit-breaker dashboard endpoint. Returns the current state of every
-   * tool's circuit breaker. Useful for ops dashboards and the production
-   * readiness rollout (research Phase 5).
-   */
+/**
+ * Circuit-breaker dashboard endpoint. Returns the current state of every
+ * tool's circuit breaker. Useful for ops dashboards and the production
+ * readiness rollout (research Phase 5). Registered in the PROTECTED scope —
+ * it used to be public and leaked internal tool health state.
+ */
+export async function registerCircuitHealthRoutes(app: FastifyInstance) {
   app.get("/health/circuits", async () => {
     const snapshot: Record<string, ReturnType<typeof toolCircuitBreaker.snapshot>> = {};
     for (const def of toolRegistry.list()) {

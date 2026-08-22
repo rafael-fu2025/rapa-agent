@@ -76,7 +76,7 @@ export class SendNotificationTool extends Tool {
     }
   };
 
-  async execute(params: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  async execute(params: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
     const message = typeof params.message === "string" ? params.message.trim() : "";
     if (!message) {
       return {
@@ -103,7 +103,7 @@ export class SendNotificationTool extends Tool {
     }
 
     let webhookUrl = inlineUrl ?? "";
-    let channelKind: ChannelKind = "generic";
+    let channelKind: ChannelKind;
 
     if (channelName && !inlineUrl) {
       const user = await getLocalUser();

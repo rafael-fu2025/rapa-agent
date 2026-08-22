@@ -15,14 +15,11 @@ import {
   PROVIDER_HISTORY_CHAR_BUDGET,
   PROVIDER_MESSAGE_CHAR_LIMIT,
   TOOL_RESULT_STRING_CHAR_LIMIT,
-  truncateText
+  truncateText,
+  type AgentMessage,
+  type ProviderChatMessage,
+  type ToolCall
 } from "./types.js";
-import type {
-  AgentMessage,
-  ProviderChatMessage,
-  ToolCall
-} from "./types.js";
-
 export function buildSystemPrompt(
   tools: ToolDefinition[],
   maxIterations: number,

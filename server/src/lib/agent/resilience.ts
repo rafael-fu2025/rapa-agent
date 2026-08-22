@@ -14,8 +14,7 @@ import {
 } from "./retry.js";
 import {
   getToolTimeoutMs,
-  withTimeout,
-  ToolTimeoutError
+  withTimeout
 } from "./timeout.js";
 import type { ToolErrorCategory, ToolExecutionContext, ToolResult } from "../tools.js";
 
@@ -77,7 +76,7 @@ export type ExecuteWithResilienceOptions = {
 export async function executeWithResilience(
   options: ExecuteWithResilienceOptions
 ): Promise<ToolResult> {
-  const { toolName, execute, context } = options;
+  const { toolName, execute } = options;
   const timeoutMs = options.timeoutMs ?? getToolTimeoutMs(toolName);
   const start = Date.now();
 
@@ -100,9 +99,13 @@ export async function executeWithResilience(
 
   let lastResult: ToolResult | null = null;
   let lastCategory: ToolErrorCategory = "fatal";
-  const config = options.retryConfig ?? selectConfigForCategory("transient");
+  // The attempt budget starts from the transient policy but is RE-CAPTURED
+  // per error class below — the original code bounded the loop with the
+  // transient policy chosen before the error was classified, so a wider
+  // policy (e.g. rate_limit's 5 attempts) could never actually be reached.
+  let attemptBudget = (options.retryConfig ?? selectConfigForCategory("transient")).maxAttempts;
 
-  for (let attempt = 0; attempt < config.maxAttempts; attempt += 1) {
+  for (let attempt = 0; attempt < attemptBudget; attempt += 1) {
     try {
       const result = await withTimeout(toolName, execute(), timeoutMs);
       const finalResult: ToolResult = {
@@ -117,6 +120,7 @@ export async function executeWithResilience(
       const category = classifyError(message, name);
       lastCategory = category;
       const retryConfig = options.retryConfig ?? selectConfigForCategory(category);
+      attemptBudget = retryConfig.maxAttempts;
 
       lastResult = {
         success: false,

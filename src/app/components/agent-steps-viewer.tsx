@@ -1,6 +1,5 @@
 import { useEffect, useState, useRef, lazy, Suspense } from "react";
-import { ChevronRight, FileEdit, FileText, Folder, Globe, Search, ShieldAlert, Terminal, Image, Bot, Activity, ArrowUp, ArrowDown } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import { ChevronRight, FileEdit, FileText, Folder, Globe, Search, ShieldAlert, Terminal, Image, Bot, Activity, ArrowUp, ArrowDown, type LucideIcon } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -55,14 +54,6 @@ type TraceItem =
       status: AgentLiveToolCall["status"] | "pending";
     };
 
-function getLiveStatusLabel(status: AgentLiveToolCall["status"]) {
-  if (status === "running") return "Running";
-  if (status === "completed") return "Completed";
-  if (status === "failed") return "Failed";
-  if (status === "requires_approval") return "Needs approval";
-  return "Queued";
-}
-
 function getPersistedToolStatus(result?: AgentToolResult | null): AgentLiveToolCall["status"] | "pending" {
   if (!result) return "pending";
   if (result.success === true) return "completed";
@@ -70,13 +61,6 @@ function getPersistedToolStatus(result?: AgentToolResult | null): AgentLiveToolC
   if (typeof result.error === "string" && result.error.trim()) return "failed";
   if ((typeof result.output === "string" && result.output.trim()) || result.data !== undefined) return "completed";
   return "pending";
-}
-
-function getResultLabel(result?: AgentToolResult) {
-  const status = getPersistedToolStatus(result);
-  if (status === "completed") return "Completed";
-  if (status === "failed") return "Failed";
-  return "Pending";
 }
 
 const EDIT_TOOL_NAMES = new Set(["edit_file", "replace_in_file", "append_file", "write_file", "delete_file"]);
@@ -649,7 +633,7 @@ function ToolTraceCard({
       {canExpand && isOpen && (
         <div className="border-t border-border/50">
           {/* Specialized: read_image preview */}
-          {result?.data && typeof result.data === "object" && !Array.isArray(result.data) &&
+          {result?.data != null && typeof result.data === "object" && !Array.isArray(result.data) &&
             typeof (result.data as Record<string, unknown>).mediaType === "string" &&
             typeof (result.data as Record<string, unknown>).base64Data === "string" && (
             <div className="border-b border-border/30 px-3 py-2.5 last:border-b-0">
@@ -670,12 +654,12 @@ function ToolTraceCard({
           )}
 
           {/* Specialized: fetch_url processedContent */}
-          {result?.data && typeof result.data === "object" && !Array.isArray(result.data) &&
+          {result?.data != null && typeof result.data === "object" && !Array.isArray(result.data) &&
             typeof (result.data as Record<string, unknown>).processedContent === "string" && (
             <div className="border-b border-border/30 px-3 py-2.5 last:border-b-0">
               <div className="mb-1.5 flex items-center gap-2 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/50">
                 AI Processed
-                {(result.data as Record<string, unknown>).converted && (
+                {Boolean((result.data as Record<string, unknown>).converted) && (
                   <span className="rounded border border-accent-blue/30 bg-accent-blue/[0.06] px-1 py-px text-[8px] text-accent-blue">
                     html→text
                   </span>
@@ -690,7 +674,7 @@ function ToolTraceCard({
           )}
 
           {/* Specialized: search_content matches with context lines */}
-          {result?.data && typeof result.data === "object" && !Array.isArray(result.data) &&
+          {result?.data != null && typeof result.data === "object" && !Array.isArray(result.data) &&
             Array.isArray((result.data as Record<string, unknown>).matches) &&
             typeof (result.data as Record<string, unknown>).contextLines === "number" &&
             ((result.data as Record<string, unknown>).contextLines as number) > 0 && (
@@ -891,7 +875,7 @@ function buildTraceItems(
   const items: TraceItem[] = [];
   let flatCallIndex = 0;
 
-  steps.forEach((step, stepIndex) => {
+  steps.forEach((step) => {
     if (step.reasoning?.trim()) {
       items.push({
         type: "reasoning",

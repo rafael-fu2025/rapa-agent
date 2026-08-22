@@ -125,7 +125,7 @@ export function createToolExecution(
   previousContent?: string
 ): ToolExecution {
   const resolvedCategory = (
-    category in ["filesystem", "shell", "web", "system", "code", "agent"]
+    ["filesystem", "shell", "web", "system", "code", "agent"].includes(category)
       ? category
       : getToolCategory(toolName)
   ) as ToolCategory;

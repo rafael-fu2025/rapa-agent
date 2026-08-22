@@ -19,10 +19,9 @@ import { useChatStream } from "./hooks/use-chat-stream";
 import { getActiveWorkspace, type Workspace } from "../lib/workspace-api";
 import { AuthProvider, useAuth } from "./hooks/use-auth";
 
-import type { ChatMode, ChatMessage, ApiKeySwitchNotice } from "./types/chat";
-import { RESUMABLE_RUN_STATUSES, } from "./types/chat";
+import { RESUMABLE_RUN_STATUSES, type ChatMode, type ChatMessage, type ApiKeySwitchNotice } from "./types/chat";
 import { getInputDockShellClass } from "./utils/layout";
-import { formatErrorState, mapConversationToMessages, estimateTokens } from "./utils/chat-utils";
+import { formatErrorState, mapConversationToMessages, estimateTokens, normalizeChatMode } from "./utils/chat-utils";
 
 /* ---- Lazy-loaded pages ---- */
 
@@ -323,8 +322,14 @@ const Home = () => {
     if (!shouldAutoScrollRef.current || isSwitchScrollingRef.current) return;
     const behavior: ScrollBehavior = pending ? "smooth" : "auto";
     scrollToContainerEnd(behavior);
-    requestAnimationFrame(() => scrollToContainerEnd("auto"));
-    window.setTimeout(() => scrollToContainerEnd("auto"), 120);
+    // This effect runs on every stream chunk — clean up the scheduled
+    // callbacks so they can't pile up or fire after unmount.
+    const rafId = requestAnimationFrame(() => scrollToContainerEnd("auto"));
+    const timerId = window.setTimeout(() => scrollToContainerEnd("auto"), 120);
+    return () => {
+      cancelAnimationFrame(rafId);
+      window.clearTimeout(timerId);
+    };
   }, [messages, pending, inputDockHeight]);
 
   useEffect(() => {
@@ -347,11 +352,21 @@ const Home = () => {
 
   /* --- Load conversation on URL change --- */
 
+  // When the user switches conversations while a stream is running, the load
+  // below deliberately skips (it must not tear down the in-flight run).
+  // Remember the pending selection and load it when the stream finishes.
+  const pendingLoadRef = useRef<string | null>(null);
+  const [loadNonce, setLoadNonce] = useState(0);
+
   useEffect(() => {
     let mounted = true;
 
     const loadConversation = async () => {
-      if (isStreamingRef.current) return;
+      if (isStreamingRef.current) {
+        pendingLoadRef.current = selectedConversationId ?? null;
+        return;
+      }
+      pendingLoadRef.current = null;
 
       setError(null);
       setApiKeySwitchNotice(null);
@@ -424,7 +439,22 @@ const Home = () => {
 
     void loadConversation();
     return () => { mounted = false; };
-  }, [selectedConversationId]);
+  }, [selectedConversationId, loadNonce]);
+
+  // Flush a conversation load that was deferred because a stream was running
+  // when the user switched. Re-navigate if the URL moved on, otherwise just
+  // re-run the load effect via the nonce.
+  useEffect(() => {
+    if (pending || pendingLoadRef.current === null) return;
+    const target = pendingLoadRef.current;
+    pendingLoadRef.current = null;
+    const current = selectedConversationId ?? null;
+    if (target !== current) {
+      navigate(target ? `/?c=${encodeURIComponent(target)}` : "/", { replace: true });
+    } else {
+      setLoadNonce((n) => n + 1);
+    }
+  }, [pending, selectedConversationId, navigate]);
 
   /* --- Resumable run detection --- */
 
@@ -665,10 +695,6 @@ const Home = () => {
 
   const handleOpenTerminal = useCallback(() => {
     setTerminalOpen(true);
-    setTerminalMinimized(false);
-  }, []);
-  const handleCloseTerminal = useCallback(() => {
-    setTerminalOpen(false);
     setTerminalMinimized(false);
   }, []);
 

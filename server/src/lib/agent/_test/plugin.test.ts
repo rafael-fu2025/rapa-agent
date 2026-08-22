@@ -9,8 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   definePlugin,
   PluginLoader,
-  serviceKey,
-  type PluginContext
+  serviceKey
 } from "../plugin.js";
 
 const Logger = serviceKey<{ log: (msg: string) => void }>("logger");

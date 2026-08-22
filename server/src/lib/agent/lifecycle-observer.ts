@@ -19,7 +19,7 @@ export interface TurnRecord {
   iterationBudget: number;
   startedAt: number;
   endedAt?: number;
-  status?: "completed" | "max_iterations" | "failed" | "interrupted";
+  status?: "completed" | "max_iterations" | "failed" | "interrupted" | "aborted";
   iterations?: number;
   elapsedMs?: number;
 }

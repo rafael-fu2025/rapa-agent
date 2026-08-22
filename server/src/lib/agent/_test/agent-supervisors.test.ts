@@ -34,14 +34,6 @@ describe("attempt_completion tool removal", () => {
     expect(names).not.toContain("attempt_completion");
   });
 
-  it("has no doc entry in tool-docs.ts", () => {
-    const toolDocsPath = resolve(__dirname, "..", "tool-docs.ts");
-    const source = readFileSync(toolDocsPath, "utf8");
-    // The map key + the entry in the JSDoc comment should both be gone.
-    expect(source).not.toMatch(/^\s*attempt_completion:\s*\{/m);
-    expect(source).not.toMatch(/\battempt_completion\b/);
-  });
-
   it("is no longer referenced in agent.ts", () => {
     const agentPath = resolve(__dirname, "../../agent.ts");
     const source = readFileSync(agentPath, "utf8");

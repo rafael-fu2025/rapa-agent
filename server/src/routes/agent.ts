@@ -1,11 +1,9 @@
 // Agent execution routes
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { resolve } from "node:path";
 import { z } from "zod";
 
 
-import { suggestPatternName, suggestMatchType } from "../lib/auto-approve.js";
 import { Agent, type AgentExecutionEvent, type AgentMessage, type AgentStep, type AgentTokenUsage, type ToolApprovalDecision, type ToolApprovalRequest } from "../lib/agent.js";
 
 import {
@@ -28,9 +26,10 @@ import { getDefaultBaseUrl, getDefaultModels } from "../lib/constants.js";
 
 import { decryptText } from "../lib/crypto.js";
 import { prisma, getLocalUser } from "../lib/db.js";
-import { persistAgentRun } from "../lib/agent-run-store.js";
+import { persistAgentRun, startAgentRun } from "../lib/agent-run-store.js";
+import { resolveSseAllowOrigin } from "../lib/cors-origins.js";
+import { providerAllowsKeylessAccess } from "../lib/providers.js";
 import { recordUsage } from "../lib/usage.js";
-import { isWithinWorkspace, resolveWorkspacePath } from "../tools/filesystem.js";
 import { analyseCommandRisk, getDangerousPatternIds, getDangerousPatterns } from "../lib/safety/dangerous-patterns.js";
 import { detectPromptInjection, wrapUntrustedContent } from "../lib/safety/prompt-injection.js";
 
@@ -38,9 +37,7 @@ import { toolRegistry } from "../tools/index.js";
 
 // Sub-module imports (extracted to keep this file focused on route handlers)
 import {
-  attachmentSchema,
   agentRequestSchema,
-  executeCommandSchema,
   validateToolSchema,
   diagnosticsSchema,
   upsertAgentRuleSchema,
@@ -53,21 +50,18 @@ import {
   checkpointParamsSchema,
   checkpointListSchema,
   ACTIVE_RUN_STATUSES,
-  RESUMABLE_RUN_STATUSES,
-  APPROVAL_TIMEOUT_MS,
   type AgentRequestPayload,
   type ChatCompletionResponse
 } from "./agent/schemas.js";
 
 import {
-  type ResumableRunContext,
   shouldAutoResumePrompt,
   buildResumeContextMessage,
   loadLatestResumableRun
 } from "./agent/resume.js";
 
-import { handleToolApproval, waitForToolApproval, resolvePendingApproval, pendingToolApprovals } from "./agent/approval.js";
-import { resolveAgentWorkspace, getOrCreateAgentWorkspace, resolveWorkspaceForUser } from "./agent/workspace.js";
+import { handleToolApproval, pendingToolApprovals } from "./agent/approval.js";
+import { resolveAgentWorkspace, resolveWorkspaceForUser } from "./agent/workspace.js";
 import {
   resolveCheckpointRestorePath,
   restoreTextCheckpoint,
@@ -77,10 +71,6 @@ import {
 
 
 
-
-function providerAllowsKeylessAccess(provider: string) {
-  return provider === "ollama";
-}
 
 type PreparedAgentRequest = {
   payload: AgentRequestPayload;
@@ -520,8 +510,9 @@ async function storeAssistantResponse(
   content: string,
   steps: AgentStep[] = [],
   tokenUsage?: AgentTokenUsage,
-  status: "completed" | "max_iterations" | "failed" | "interrupted" = "completed",
-  elapsedMs?: number
+  status: "completed" | "max_iterations" | "failed" | "interrupted" | "aborted" = "completed",
+  elapsedMs?: number,
+  existingRunId?: string
 ) {
   const persisted = await persistAgentRun({
     conversationId: requestInfo.conversationId,
@@ -537,7 +528,8 @@ async function storeAssistantResponse(
     tokenUsage,
     elapsedMs,
     status,
-    reasoningEffort: requestInfo.reasoningEffort
+    reasoningEffort: requestInfo.reasoningEffort,
+    existingRunId
   });
 
   await prisma.conversation.update({
@@ -552,7 +544,8 @@ async function storeInterruptedRun(
   requestInfo: PreparedAgentRequest,
   triggerMessageId: string,
   steps: AgentStep[] = [],
-  errorMessage?: string
+  errorMessage?: string,
+  existingRunId?: string
 ) {
   const persisted = await persistAgentRun({
     conversationId: requestInfo.conversationId,
@@ -567,7 +560,8 @@ async function storeInterruptedRun(
     status: "failed",
     errorMessage,
     createAssistantMessage: false,
-    reasoningEffort: requestInfo.reasoningEffort
+    reasoningEffort: requestInfo.reasoningEffort,
+    existingRunId
   });
 
   await prisma.conversation.update({
@@ -642,11 +636,16 @@ function createAgent(
 
 
 function sendSseEvent(reply: FastifyReply, request: FastifyRequest, event: AgentExecutionEvent) {
+  // Echo the request origin ONLY when it is on the configured CORS allowlist —
+  // reflecting arbitrary origins would defeat the allowlist for streaming.
+  const allowOrigin = resolveSseAllowOrigin(request.headers.origin);
   reply.raw.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
-    "Access-Control-Allow-Origin": request.headers.origin ?? "*",
+    // Disable proxy buffering (nginx etc.) so events flush immediately.
+    "X-Accel-Buffering": "no",
+    ...(allowOrigin ? { "Access-Control-Allow-Origin": allowOrigin } : {}),
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Access-Control-Allow-Methods": "POST, OPTIONS"
   });
@@ -677,6 +676,23 @@ function toHttpError(error: unknown) {
   }
 
   return { statusCode: 500, message };
+}
+
+/**
+ * UPDATE-by-id endpoints must not touch another user's row. The DELETE
+ * endpoints already enforce ownership; this keeps UPDATE consistent
+ * (previously `update({ where: { id } })` with no userId check).
+ */
+async function isOwnedByUser(
+  table: "agentRule" | "agentSkill" | "agentMcpServer" | "agentIntegration" | "autoApprovePattern",
+  id: string,
+  userId: string
+): Promise<boolean> {
+  const delegate = prisma[table] as unknown as {
+    findUnique: (args: { where: { id: string } }) => Promise<{ userId: string } | null>;
+  };
+  const row = await delegate.findUnique({ where: { id } });
+  return row !== null && row.userId === userId;
 }
 
 function queueConversationSummaryRefresh(app: FastifyInstance, requestInfo: PreparedAgentRequest) {
@@ -897,6 +913,10 @@ export async function registerAgentRoutes(app: FastifyInstance) {
     const user = await getLocalUser();
     const data = parsed.data;
 
+    if (data.id && !(await isOwnedByUser("agentRule", data.id, user.id))) {
+      return reply.code(404).send({ message: "Rule not found" });
+    }
+
     const rule = data.id
       ? await prisma.agentRule.update({
           where: { id: data.id },
@@ -974,6 +994,10 @@ export async function registerAgentRoutes(app: FastifyInstance) {
     const user = await getLocalUser();
     const data = parsed.data;
 
+    if (data.id && !(await isOwnedByUser("agentSkill", data.id, user.id))) {
+      return reply.code(404).send({ message: "Skill not found" });
+    }
+
     const skill = data.id
       ? await prisma.agentSkill.update({
           where: { id: data.id },
@@ -1019,6 +1043,10 @@ export async function registerAgentRoutes(app: FastifyInstance) {
     const user = await getLocalUser();
     const data = parsed.data;
 
+    if (data.id && !(await isOwnedByUser("agentMcpServer", data.id, user.id))) {
+      return reply.code(404).send({ message: "MCP server not found" });
+    }
+
     const server = data.id
       ? await prisma.agentMcpServer.update({
           where: { id: data.id },
@@ -1063,6 +1091,10 @@ export async function registerAgentRoutes(app: FastifyInstance) {
 
     const user = await getLocalUser();
     const data = parsed.data;
+
+    if (data.id && !(await isOwnedByUser("agentIntegration", data.id, user.id))) {
+      return reply.code(404).send({ message: "Integration not found" });
+    }
 
     const integration = data.id
       ? await prisma.agentIntegration.update({
@@ -1161,7 +1193,7 @@ export async function registerAgentRoutes(app: FastifyInstance) {
   // We treat very old runs with no completion as completed (stale recovery)
   // so the badge never reports agents that are no longer really running.
   // ------------------------------------------------------------------------
-  app.get("/agent/runs/registry", async (_request, reply) => {
+  app.get("/agent/runs/registry", async (_request, _reply) => {
     const user = await getLocalUser();
     const STALE_RUN_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -1295,15 +1327,18 @@ export async function registerAgentRoutes(app: FastifyInstance) {
         workspace: { select: { id: true, name: true, path: true } },
         triggerMessage: { select: { id: true, role: true, content: true, createdAt: true } },
         assistantMessage: { select: { id: true, role: true, content: true, createdAt: true } },
-        steps: { orderBy: { iteration: "asc" } },
-        toolCalls: { orderBy: { createdAt: "asc" } },
+        // take bounds: a runaway run can have hundreds of rows per relation —
+        // the detail view only renders the recent tail.
+        steps: { orderBy: { iteration: "desc" }, take: 100 },
+        toolCalls: { orderBy: { createdAt: "desc" }, take: 400 },
         checkpoints: {
-          orderBy: { createdAt: "asc" },
+          orderBy: { createdAt: "desc" },
+          take: 200,
           include: {
             toolCall: { select: { id: true, name: true, status: true } }
           }
         },
-        processSessions: { orderBy: { createdAt: "asc" } }
+        processSessions: { orderBy: { createdAt: "desc" }, take: 50 }
       }
     });
 
@@ -1314,7 +1349,11 @@ export async function registerAgentRoutes(app: FastifyInstance) {
     return {
       run: {
         ...detail,
-        checkpoints: detail.checkpoints.map((checkpoint) => ({
+        // Relations were fetched newest-first with a take cap; restore the
+        // chronological (ascending) order the UI renders.
+        steps: [...detail.steps].reverse(),
+        toolCalls: [...detail.toolCalls].reverse(),
+        checkpoints: [...detail.checkpoints].reverse().map((checkpoint) => ({
           id: checkpoint.id,
           runId: checkpoint.runId,
           stepId: checkpoint.stepId,
@@ -1643,6 +1682,10 @@ export async function registerAgentRoutes(app: FastifyInstance) {
     const user = await getLocalUser();
     const data = parsed.data;
 
+    if (data.id && !(await isOwnedByUser("autoApprovePattern", data.id, user.id))) {
+      return reply.code(404).send({ message: "Pattern not found" });
+    }
+
     const pattern = data.id
       ? await prisma.autoApprovePattern.update({
           where: { id: data.id },
@@ -1698,63 +1741,6 @@ export async function registerAgentRoutes(app: FastifyInstance) {
     });
 
     return { ok: true };
-  });
-
-  app.post("/agent/tools/execute-command", async (request, reply) => {
-
-    const parsed = executeCommandSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      return reply.code(400).send({ message: "Invalid payload", issues: parsed.error.issues });
-    }
-
-    const user = await getLocalUser();
-    const payload = parsed.data;
-    const workspace = payload.workspaceId
-      ? await prisma.workspace.findFirst({
-          where: {
-            id: payload.workspaceId,
-            userId: user.id
-          }
-        })
-      : await prisma.workspace.findFirst({
-          where: {
-            userId: user.id,
-            isActive: true
-          }
-        });
-
-    if (!workspace) {
-      return reply.code(400).send({ message: "No workspace selected. Please open a workspace first." });
-    }
-
-    const tool = toolRegistry.get("execute_command");
-    if (!tool) {
-      return reply.code(500).send({ message: "execute_command tool is not registered" });
-    }
-
-    const params: Record<string, unknown> = {
-      command: payload.command
-    };
-
-    if (payload.timeout !== undefined) params.timeout = payload.timeout;
-    if (payload.sessionId !== undefined) params.sessionId = payload.sessionId;
-    if (payload.closeSession !== undefined) params.closeSession = payload.closeSession;
-
-    const validation = tool.validate(params);
-    if (!validation.valid) {
-      return reply.code(400).send({ message: `Invalid parameters: ${validation.errors?.join(", ")}` });
-    }
-
-    const result = await tool.execute(params, {
-      workspaceRoot: workspace.path,
-      userId: user.id,
-      conversationId: payload.conversationId ?? `direct-${Date.now()}`
-    });
-
-    return {
-      ok: result.success,
-      ...result
-    };
   });
 
   app.post("/agent/execute", async (request, reply) => {
@@ -1843,12 +1829,34 @@ export async function registerAgentRoutes(app: FastifyInstance) {
     let userPromptMessage: Awaited<ReturnType<typeof storeUserPrompt>> | undefined;
     let agent: Agent | undefined;
     let finalResultPersisted = false;
+    let agentRunId: string | undefined;
+    // Client-disconnect abort: cancels in-flight LLM fetches so a dead client
+    // can't leave the run burning tokens to a closed socket.
+    const clientAbort = new AbortController();
+    const onClientDisconnect = () => clientAbort.abort();
+    request.raw.once("close", onClientDisconnect);
+    // SSE keepalive: agent runs can be silent for minutes during tool
+    // execution; without pings, proxies and browsers kill the connection.
+    let keepalive: NodeJS.Timeout | undefined;
 
     try {
       requestInfo = await prepareAgentRequest(parsed.data);
       userPromptMessage = await storeUserPrompt(requestInfo);
       const currentRequestInfo = requestInfo;
-      agent = createAgent(currentRequestInfo, (approvalRequest) => 
+      agentRunId = await startAgentRun({
+        conversationId: currentRequestInfo.conversationId,
+        workspaceId: currentRequestInfo.workspaceId ?? undefined,
+        triggerMessageId: userPromptMessage.id,
+        provider: currentRequestInfo.provider,
+        model: currentRequestInfo.model,
+        mode: currentRequestInfo.payload.mode,
+        prompt: currentRequestInfo.payload.prompt,
+        reasoningEffort: currentRequestInfo.reasoningEffort
+      }).catch((error) => {
+        app.log.warn({ err: error }, "Failed to create run row at start; controls will 409 for this run");
+        return undefined;
+      });
+      agent = createAgent(currentRequestInfo, (approvalRequest) =>
         handleToolApproval(currentRequestInfo.userId, currentRequestInfo.workspaceId, currentRequestInfo.conversationId, approvalRequest)
       );
 
@@ -1859,7 +1867,7 @@ export async function registerAgentRoutes(app: FastifyInstance) {
       const promptContent = (() => {
         const { prompt, attachments } = requestInfo.payload;
         if (!attachments || attachments.length === 0) return prompt;
-        
+
         const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt }];
         for (const attachment of attachments) {
           if (attachment.kind === "image" && attachment.dataUrl) {
@@ -1871,10 +1879,16 @@ export async function registerAgentRoutes(app: FastifyInstance) {
         return content;
       })();
 
-      for await (const event of agent.stream(promptContent)) {
+      for await (const event of agent.stream(promptContent, {
+        runId: agentRunId,
+        signal: clientAbort.signal
+      })) {
         if (!started) {
           sendSseEvent(reply, request, event);
           started = true;
+          keepalive = setInterval(() => {
+            reply.raw.write(": ping\n\n");
+          }, 25_000);
           continue;
         }
 
@@ -1905,7 +1919,8 @@ export async function registerAgentRoutes(app: FastifyInstance) {
         finalEvent.steps,
         agent.getTokenUsage(),
         finalEvent.status,
-        finalEvent.elapsedMs
+        finalEvent.elapsedMs,
+        agentRunId
       );
       finalResultPersisted = true;
       if (!persisted.assistantMessage) {
@@ -1939,7 +1954,8 @@ export async function registerAgentRoutes(app: FastifyInstance) {
           requestInfo,
           userPromptMessage.id,
           agent?.getSteps() ?? [],
-          error instanceof Error ? error.message : "Stream failed"
+          error instanceof Error ? error.message : "Stream failed",
+          agentRunId
         ).catch((persistError) => {
           app.log.warn({ err: persistError, conversationId: requestInfo?.conversationId }, "Failed to persist interrupted streamed agent run");
         });
@@ -1957,6 +1973,9 @@ export async function registerAgentRoutes(app: FastifyInstance) {
         message: error instanceof Error ? error.message : "Stream failed"
       };
       writeSseEvent(reply, event);
+    } finally {
+      if (keepalive) clearInterval(keepalive);
+      request.raw.removeListener("close", onClientDisconnect);
     }
 
     reply.raw.end();

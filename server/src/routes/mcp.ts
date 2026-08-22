@@ -16,7 +16,6 @@ import { getLocalUser, prisma } from "../lib/db.js";
 import { createMcpServer, MCP_PROTOCOL_VERSION } from "../mcp/server.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
-  createMcpClientConnection,
   getOrCreateMcpConnection,
   loadMcpToolsForUser,
   type McpServerConfig
@@ -42,8 +41,9 @@ const remoteConfigSchema = z.object({
 });
 
 /**
- * Compute the active workspace root for a user (or fall back to cwd).
- * Used to scope the MCP server's filesystem tools.
+ * Compute the active workspace root for a user. The server's OWN source
+ * directory (process.cwd()) is never a valid fallback — it would hand the
+ * MCP client filesystem access to the server's code and database.
  */
 async function resolveWorkspaceRoot(userId: string, workspaceId: string | undefined): Promise<string> {
   if (workspaceId) {
@@ -52,7 +52,13 @@ async function resolveWorkspaceRoot(userId: string, workspaceId: string | undefi
     });
     if (ws) return ws.path;
   }
-  return process.env.DEFAULT_WORKSPACE_ROOT ?? process.cwd();
+  const active = await prisma.workspace.findFirst({
+    where: { userId, isActive: true }
+  });
+  if (active) return active.path;
+  const fallback = process.env.DEFAULT_WORKSPACE_ROOT;
+  if (fallback) return fallback;
+  throw new Error("No workspace available. Select a workspace before using MCP endpoints.");
 }
 
 export async function registerMcpRoutes(app: FastifyInstance): Promise<void> {

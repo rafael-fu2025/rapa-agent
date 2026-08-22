@@ -234,7 +234,10 @@ export const AgentSpecialistsPage = () => {
         suggestedToolsText: "",
         enabled: true,
         source: "database",
-        isBuiltin: false
+        isBuiltin: false,
+        hasStaleOverride: false,
+        builtinInstructions: "",
+        builtinDescription: ""
       }
     ]);
     // Default the new draft to preview mode to match the rest of the page.

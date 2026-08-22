@@ -1,7 +1,6 @@
 // File system tools
 
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { realpath } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { execFile } from "node:child_process";
 import { Tool, type ToolDefinition, type ToolExecutionContext, type ToolResult } from "../lib/tools.js";
@@ -375,7 +374,6 @@ async function scanFileContent(
       if (options.multiline) {
         // For multiline regex, match against the full content
         let match: RegExpExecArray | null;
-        let lineOffset = 0;
         while ((match = pattern.exec(content)) !== null && matches.length < options.maxResults + options.offset) {
           const lineNum = content.slice(0, match.index).split(/\r?\n/).length;
           const matchLine = lines[lineNum - 1] ?? "";
@@ -599,6 +597,21 @@ export class ReadFileTool extends Tool {
     }
 
     try {
+      // Size guard BEFORE reading: eviction/truncation protects the LLM
+      // context, not server memory — a multi-GB file was previously slurped
+      // into a JS string first. Read in slices instead.
+      const statInfo = await stat(fullPath);
+      const READ_FILE_MAX_BYTES = 10 * 1024 * 1024;
+      if (statInfo.size > READ_FILE_MAX_BYTES) {
+        return {
+          success: false,
+          error: `File is too large to read in one call (${(statInfo.size / 1024 / 1024).toFixed(1)} MB > ${READ_FILE_MAX_BYTES / 1024 / 1024} MB). Use read_file with offset/limit to read it in slices, or search_files/search_content to locate the relevant section first.`,
+          data: {
+            path: toWorkspaceRelativePath(fullPath, context.workspaceRoot),
+            fileSize: statInfo.size
+          }
+        };
+      }
       const content = await readFile(fullPath, "utf-8");
       const lines = content.split(/\r?\n/);
       const totalLines = lines.length;

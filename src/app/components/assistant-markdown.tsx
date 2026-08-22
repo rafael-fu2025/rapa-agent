@@ -149,7 +149,6 @@ function parseThoughtContent(content: string): ParsedThoughtContent {
 
     if (closeIndex === -1) {
       thoughtParts.push(content.slice(thoughtStart));
-      cursor = content.length;
       break;
     }
 
@@ -301,16 +300,18 @@ export const AssistantMarkdown = ({ content, hideThoughtBlock }: AssistantMarkdo
                 {children}
               </td>
             ),
-            code: ({ inline, className, children, ...props }: any) => {
-              if (inline) {
-                return (
-                  <code className="rounded border border-border/40 bg-card-3/50 px-1.5 py-0.5 font-mono-tech text-[10px] text-foreground" {...props}>
-                    {children}
-                  </code>
-                );
+            // react-markdown v9 removed the `inline` prop. Discriminator:
+            // fenced code blocks arrive with a `language-*` className, inline
+            // backtick code arrives with none.
+            code: ({ className, children, ...props }) => {
+              if (className) {
+                return <CodeBlock className={className}>{children}</CodeBlock>;
               }
-
-              return <CodeBlock className={className}>{children}</CodeBlock>;
+              return (
+                <code className="rounded border border-border/40 bg-card-3/50 px-1.5 py-0.5 font-mono-tech text-[10px] text-foreground" {...props}>
+                  {children}
+                </code>
+              );
             }
           }}
         >

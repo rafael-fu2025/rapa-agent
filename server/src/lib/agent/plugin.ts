@@ -108,12 +108,12 @@ class ContextImpl implements PluginContext {
   child(): PluginContext {
     const child = new ContextImpl();
     // Forward parent lookups: if the child lacks a service, defer
-    // to the parent. Disposers stay separate.
-    const parent = this;
+    // to the parent. Disposers stay separate. (Arrow functions capture
+    // `this` lexically, so the parent context is reachable directly.)
     const childCtx: PluginContext = {
       provide: child.provide.bind(child),
-      inject: <T>(key: ServiceKey<T>): T => child.tryInject(key) ?? parent.inject(key),
-      tryInject: <T>(key: ServiceKey<T>): T | undefined => child.tryInject(key) ?? parent.tryInject(key),
+      inject: <T>(key: ServiceKey<T>): T => child.tryInject(key) ?? this.inject(key),
+      tryInject: <T>(key: ServiceKey<T>): T | undefined => child.tryInject(key) ?? this.tryInject(key),
       effect: child.effect.bind(child),
       child: child.child.bind(child),
       keys: child.keys.bind(child)
@@ -167,6 +167,7 @@ export function definePlugin<TOptions = void>(
  * `PluginLoader` — mounts plugins in registration order; the
  * returned context unmounts them in reverse.
  */
+/* eslint-disable @typescript-eslint/no-explicit-any -- heterogeneous plugin registry; options types are erased at mount. */
 export class PluginLoader {
   private registrations: Array<{ plugin: Plugin<any>; options?: unknown }> = [];
 

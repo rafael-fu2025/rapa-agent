@@ -15,7 +15,7 @@ export type AgentEventMap = {
     iterationBudget: number;
   };
   "agent/turn/end": {
-    status: "completed" | "max_iterations" | "failed" | "interrupted";
+    status: "completed" | "max_iterations" | "failed" | "interrupted" | "aborted";
     iterations: number;
     elapsedMs?: number;
   };
@@ -28,7 +28,7 @@ export type AgentEventMap = {
   };
   "session/session/start": { conversationId: string };
   "session/session/end": {
-    status: "completed" | "max_iterations" | "failed" | "interrupted";
+    status: "completed" | "max_iterations" | "failed" | "interrupted" | "aborted";
   };
   "session/session/error": { message: string };
   // Phase 2.3 — plan-mode transitions ride the same bus.
@@ -135,7 +135,7 @@ export class AgentEventBus {
         // Log via console.error — the bus is silent by design,
         // but a misbehaving listener should not silently vanish.
         // Phase 3 may route this through tracing.ts.
-        // eslint-disable-next-line no-console
+         
         console.error(`[AgentEventBus] serial listener for "${kind}" threw:`, err);
       }
     }

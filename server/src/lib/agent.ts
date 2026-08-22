@@ -9,14 +9,12 @@
 //
 // The Agent class composes these modules to drive the iterative tool-use loop.
 
-import type { ToolExecutionContext } from "./tools.js";
-import { toolRegistry } from "./tools.js";
+import { toolRegistry, type ToolExecutionContext } from "./tools.js";
 import { buildTaskSummary } from "../tools/task-store.js";
 import { LLMClient, buildOpenAITools, getAvailableTools } from "./agent/llm-client.js";
 import { ToolOrchestrator } from "./agent/tool-orchestrator.js";
 import {
   buildProviderMessages,
-  buildSystemPrompt,
   createBroadAnalysisFallbackAskUser,
   getAskUserPayload,
   getInjectedSystemMessages,
@@ -33,6 +31,7 @@ import {
 import {
   getConfiguredLlmTimeoutMs,
   mergeTokenUsage,
+  computeHistoryBudget,
   type AgentConfig,
   type AgentExecutionEvent,
   type AgentMessage,
@@ -51,7 +50,7 @@ import {
   REASONING_BUDGET_TOKENS_PLAN,
   type ReasoningBudgetState
 } from "./agent/reasoning-budget.js";
-import { startTrace, withSpan, recordEvent, setSpanAttribute, flushTrace } from "./agent/tracing.js";
+import { startTrace, recordEvent, setSpanAttribute, flushTrace } from "./agent/tracing.js";
 import { estimateComplexity, scaleThreshold, type ComplexityAssessment } from "./agent/complexity.js";
 import {
   runRuleLayerQA,
@@ -64,11 +63,12 @@ import {
   persistWorkingMemory,
   type WorkingMemory
 } from "./agent/working-memory.js";
-import { getCompactionAction, compactHistory, type CompactionAction } from "./agent/context-compactor.js";
+import { getCompactionAction, compactHistory } from "./agent/context-compactor.js";
 import { AgentEventBus } from "./agent/event-bus.js";
 import { PlanModeState } from "./agent/plan-mode-state.js";
 import { LoopDetector } from "./agent/loop-detector.js";
-import { PROVIDER_HISTORY_CHAR_BUDGET, computeHistoryBudget } from "./agent/types.js";
+import { exitHatchRegistry } from "./exit-hatch.js";
+import { RunLimitTracker, loadDefaultRunLimits } from "./run-limits.js";
 
 /**
  * Per-mode defaults for `maxIterations` (research L3). Callers can still
@@ -143,6 +143,14 @@ export class Agent {
    */
   private recentToolSignatures: string[] = [];
   /**
+   * Set by `checkRetryDiversity` each iteration: true when the current turn's
+   * signature was recorded for the first time (not seen in any prior turn).
+   * The stall detector reads this so "isRepeat" means "same signature in a
+   * PREVIOUS turn" — without it, the just-recorded entry would make every
+   * check trivially true.
+   */
+  private lastTurnSignatureWasNew = false;
+  /**
    * Odysseus-style stall detector. Increments when the model emits a round
    * with the same tool-call signature as a recent round AND no real text;
    * resets to 0 on any progress. When it crosses the threshold, the next
@@ -210,6 +218,23 @@ export class Agent {
   private compactionSummary: string | undefined = undefined;
   private loopDetector = new LoopDetector();
   private runStartTime = 0;
+  /**
+   * Combined abort controller: client disconnect (request close) and user
+   * abort (exit hatch) both funnel into it so in-flight LLM fetches are
+   * cancelled immediately instead of running to completion.
+   */
+  private runAbortController: AbortController | undefined;
+  /** AgentRun row id — used to observe pause/abort/redirect via the exit hatch. */
+  private hatchRunId: string | undefined;
+  private detachHatchListener: (() => void) | undefined;
+  /** Root trace span for the current run — flushed (only this one) in emitDone. */
+  private traceRootSpan: ReturnType<typeof startTrace> | undefined;
+  /** Latch: the reasoning marker-loop correction fires at most once per LLM call. */
+  private markerLoopCorrectionSent = false;
+  /** Last compaction band seen — band-crossing messages fire once per crossing. */
+  private lastCompactionBand: "none" | "warn" | "compact" | "force_answer" = "none";
+  /** Rogue-agent caps (tokens / cost / wall-clock). Iterations are capped by the loop itself. */
+  private runLimits: RunLimitTracker | undefined;
 
   /**
    * In-process event bus. See
@@ -237,6 +262,11 @@ export class Agent {
       config,
       onTokenUsage: (usage) => {
         this.tokenUsage = mergeTokenUsage(this.tokenUsage, usage);
+        this.runLimits?.recordTokens(
+          this.config.model,
+          usage.promptTokens ?? 0,
+          usage.completionTokens ?? 0
+        );
       },
       onApiKeySwitch: async (info) => {
         this.config.apiKey = info.newApiKey;
@@ -252,10 +282,10 @@ export class Agent {
     this.tools = new ToolOrchestrator({ context, config });
   }
 
-  async run(userPrompt: string): Promise<{ response: string; steps: AgentStep[]; status: "completed" | "max_iterations" | "failed" | "interrupted" }> {
+  async run(userPrompt: string): Promise<{ response: string; steps: AgentStep[]; status: "completed" | "max_iterations" | "failed" | "interrupted" | "aborted" }> {
     let finalResponse = "";
     let finalSteps: AgentStep[] = [];
-    let finalStatus: "completed" | "max_iterations" | "failed" | "interrupted" = "completed";
+    let finalStatus: "completed" | "max_iterations" | "failed" | "interrupted" | "aborted" = "completed";
 
     // Phase 2.2: session/* bus events wrap the stream consumption.
     await this.events.emit("session/session/start", { conversationId: this.context.conversationId });
@@ -292,7 +322,10 @@ export class Agent {
     };
   }
 
-  async *stream(userPrompt: string | Array<Record<string, unknown>>): AsyncGenerator<AgentExecutionEvent> {
+  async *stream(
+    userPrompt: string | Array<Record<string, unknown>>,
+    options: { signal?: AbortSignal; runId?: string } = {}
+  ): AsyncGenerator<AgentExecutionEvent> {
     this.runStartTime = Date.now();
     this.apiKeySwitch = undefined;
     this.history = [...(this.config.seedHistory ?? [])];
@@ -300,6 +333,33 @@ export class Agent {
       role: "user",
       content: userPrompt
     });
+
+    // Lifecycle wiring: external abort (client disconnect) and exit-hatch
+    // abort both cancel in-flight work through one controller.
+    this.runAbortController = new AbortController();
+    if (options.signal) {
+      if (options.signal.aborted) this.runAbortController.abort();
+      else options.signal.addEventListener("abort", () => this.runAbortController?.abort(), { once: true });
+    }
+    this.hatchRunId = options.runId;
+    this.teardownHatch();
+    // Rogue-agent caps from env (AGENT_RUN_MAX_TOKENS / _COST_USD /
+    // _DURATION_MS). Checked at the top of every iteration; token usage is
+    // recorded from the LLM client's usage callbacks. Iteration capping stays
+    // with the loop's own maxIterations config.
+    const limits = loadDefaultRunLimits();
+    this.runLimits = new RunLimitTracker(options.runId ?? this.context.conversationId, {
+      ...limits,
+      maxIterations: undefined
+    });
+    if (options.runId) {
+      exitHatchRegistry().register(options.runId);
+      this.detachHatchListener = exitHatchRegistry().onSignal((runId, sig) => {
+        if (runId === this.hatchRunId && sig === "abort") {
+          this.runAbortController?.abort();
+        }
+      });
+    }
 
     // Reset per-run supervisor state.
     this.stuckRounds = 0;
@@ -310,6 +370,7 @@ export class Agent {
     this.noProgressRounds = 0;
     this.fileEditCounts = new Map();
     this.compactionSummary = undefined;
+    this.lastCompactionBand = "none";
 
     // Initialize working memory and persist to disk as .rapa/working-memory.md.
     // The model can read/update this file with read_file/edit_file.
@@ -358,6 +419,7 @@ export class Agent {
       model: this.config.model,
       mode
     });
+    this.traceRootSpan = traceRoot;
     setSpanAttribute("maxIterations", effectiveMaxIterations);
     if (this.complexity) {
       setSpanAttribute("complexity.label", this.complexity.label);
@@ -419,6 +481,91 @@ export class Agent {
         this.plan.activate();
       }
 
+      // Cooperative exit hatch + external abort. Checked at the top of every
+      // iteration: a user abort/pause/redirect (or a client disconnect) takes
+      // effect at the next safe point without burning further LLM calls.
+      const hatchVerdict = this.hatchRunId ? exitHatchRegistry().check(this.hatchRunId) : "continue";
+      if (hatchVerdict === "abort" || this.runAbortController?.signal.aborted) {
+        yield {
+          type: "thinking",
+          iteration,
+          reasoning: this.runAbortController?.signal.aborted
+            ? "Client disconnected or run aborted — stopping."
+            : "Run aborted by user — stopping."
+        };
+        yield* this.emitDone({
+          type: "done",
+          status: "aborted",
+          response: "",
+          steps: [...this.steps],
+          iterations: this.steps.length,
+          tokenUsage: this.getTokenUsage(),
+          apiKeySwitch: this.apiKeySwitch
+        });
+        return;
+      }
+      if (hatchVerdict === "pause" || hatchVerdict === "redirect") {
+        let redirectPrompt =
+          hatchVerdict === "redirect" && this.hatchRunId
+            ? exitHatchRegistry().consumeRedirect(this.hatchRunId)
+            : undefined;
+        if (hatchVerdict === "pause") {
+          yield {
+            type: "thinking",
+            iteration,
+            reasoning: "Run paused by user — waiting for resume, redirect, or abort."
+          };
+          const outcome = await this.waitForHatchResolution();
+          if (outcome === "abort" || this.runAbortController?.signal.aborted) {
+            yield* this.emitDone({
+              type: "done",
+              status: "aborted",
+              response: "",
+              steps: [...this.steps],
+              iterations: this.steps.length,
+              tokenUsage: this.getTokenUsage(),
+              apiKeySwitch: this.apiKeySwitch
+            });
+            return;
+          }
+          redirectPrompt =
+            outcome === "redirect" && this.hatchRunId
+              ? exitHatchRegistry().consumeRedirect(this.hatchRunId)
+              : undefined;
+        }
+        if (redirectPrompt) {
+          this.history.push({ role: "user", content: `[user-redirect] ${redirectPrompt}` });
+          yield {
+            type: "thinking",
+            iteration,
+            reasoning: `Redirected by user: ${redirectPrompt.slice(0, 120)}`
+          };
+        }
+      }
+
+      // Rogue-agent caps (ASI10): token / cost / duration limits checked at
+      // every iteration boundary. On breach the run ends as `interrupted`
+      // (resumable) with the breach message as the final response.
+      this.runLimits?.recordIteration();
+      const limitBreach = this.runLimits?.checkLimits() ?? null;
+      if (limitBreach) {
+        yield {
+          type: "thinking",
+          iteration,
+          reasoning: `Run limit reached — stopping. ${limitBreach.message}`
+        };
+        yield* this.emitDone({
+          type: "done",
+          status: "interrupted",
+          response: `Run stopped by a resource limit: ${limitBreach.message}. Everything done so far is preserved — start a new message to continue.`,
+          steps: [...this.steps],
+          iterations: this.steps.length,
+          tokenUsage: this.getTokenUsage(),
+          apiKeySwitch: this.apiKeySwitch
+        });
+        return;
+      }
+
       // Graduated compaction: check BEFORE the LLM call so the model always
       // sees a clean context. Warn at 55%, compact at 65%, force-answer at 85%.
       // Working memory survives via .rapa/working-memory.md on disk.
@@ -428,7 +575,7 @@ export class Agent {
         ?? computeHistoryBudget(this.config.model);
       const compactionAction = getCompactionAction(this.history, budget);
 
-      if (compactionAction === "warn") {
+      if (compactionAction === "warn" && this.lastCompactionBand !== "warn") {
         this.history.push({
           role: "user",
           content: "Context window is at 55% capacity. Start wrapping up your current task — finish the most critical remaining work (especially verification: run tests, check builds) and prepare your final answer soon."
@@ -475,7 +622,7 @@ export class Agent {
         }
       }
 
-      if (compactionAction === "force_answer") {
+      if (compactionAction === "force_answer" && this.lastCompactionBand !== "force_answer") {
         this.forceAnswerNext = true;
         this.history.push({
           role: "user",
@@ -487,8 +634,10 @@ export class Agent {
           reasoning: "[Context at 85% — forcing final answer]"
         };
       }
+      this.lastCompactionBand = compactionAction;
 
       let llmResponse: AgentMessage | undefined;
+      this.markerLoopCorrectionSent = false;
       // Per-iteration reasoning budget (L1, L2).
       const reasoningState: ReasoningBudgetState = createReasoningBudgetState(
         resolveReasoningBudgetTokens(mode)
@@ -498,7 +647,6 @@ export class Agent {
         let currentReasoning = "";
         let currentContent = "";
         const thinkStripper = createStreamThinkStripper();
-        let embeddedThinking = "";
         while (true) {
           const { value, done } = await generator.next();
           if (done) {
@@ -519,13 +667,19 @@ export class Agent {
                 reasoning: `${currentReasoning}\n\n[Reasoning budget exhausted — proceeding to tool call]`
               };
             }
-            // Detect marker loops mid-stream.
-            const loopCorrection = maybeMarkerLoopCorrection(reasoningState);
-            if (loopCorrection) {
-              this.history.push({
-                role: "user",
-                content: `[System] ${loopCorrection}`
-              });
+            // Detect marker loops mid-stream. Latched: the detector keeps
+            // returning the same correction for EVERY delta past the
+            // threshold — without the latch a token-level reasoning stream
+            // floods history with dozens of identical system notes.
+            if (!this.markerLoopCorrectionSent) {
+              const loopCorrection = maybeMarkerLoopCorrection(reasoningState);
+              if (loopCorrection) {
+                this.history.push({
+                  role: "user",
+                  content: `[System] ${loopCorrection}`
+                });
+                this.markerLoopCorrectionSent = true;
+              }
             }
           }
           if (value.contentDelta) {
@@ -542,7 +696,6 @@ export class Agent {
             // surfaced to the user as part of the assistant's prose.
             const stripped = pushStreamThinkDelta(thinkStripper, value.contentDelta);
             if (stripped.thinkingDelta) {
-              embeddedThinking += stripped.thinkingDelta;
               currentReasoning += stripped.thinkingDelta;
               yield { type: "thinking", iteration, reasoning: currentReasoning };
             }
@@ -553,6 +706,23 @@ export class Agent {
           }
         }
       } catch (error) {
+        // An abort mid-LLM-call (client disconnect or user abort) surfaces as
+        // an "aborted" error from streamChat — terminate gracefully instead of
+        // propagating a run-killing exception.
+        const messageText = error instanceof Error ? error.message : String(error);
+        if (this.runAbortController?.signal.aborted || /aborted \(client disconnected|run aborted/i.test(messageText)) {
+          yield { type: "thinking", iteration, reasoning: "Run aborted mid-LLM-call — stopping." };
+          yield* this.emitDone({
+            type: "done",
+            status: "aborted",
+            response: "",
+            steps: [...this.steps],
+            iterations: this.steps.length,
+            tokenUsage: this.getTokenUsage(),
+            apiKeySwitch: this.apiKeySwitch
+          });
+          return;
+        }
         throw error;
       }
       if (!llmResponse) throw new Error("Generator completed without returning AgentMessage");
@@ -934,11 +1104,18 @@ export class Agent {
 
       yield { type: "thinking", iteration, reasoning: parsedResponse.reasoning };
 
+      // Deduplicate identical tool calls within this response. Models occasionally
+      // emit the same call twice in one turn (often accidentally). Repeating it gives
+      // the model no new information, so reject as a no-op and let it move on.
+      // Computed BEFORE the assistant history push so the recorded toolCalls match
+      // the tool-result blob that follows (results are only produced for deduped calls).
+      const dedupedToolCalls = deduplicateToolCalls(parsedResponse.toolCalls);
+
       this.history.push({
         role: "assistant",
         content: llmResponse.content,
         reasoning: llmResponse.reasoning,
-        toolCalls: parsedResponse.toolCalls
+        toolCalls: dedupedToolCalls.calls
       });
 
       for (const call of parsedResponse.toolCalls) {
@@ -960,7 +1137,6 @@ export class Agent {
       // Deduplicate identical tool calls within this response. Models occasionally
       // emit the same call twice in one turn (often accidentally). Repeating it gives
       // the model no new information, so reject as a no-op and let it move on.
-      const dedupedToolCalls = deduplicateToolCalls(parsedResponse.toolCalls);
       if (dedupedToolCalls.rejected.length > 0) {
         for (const dup of dedupedToolCalls.rejected) {
           yield {
@@ -992,6 +1168,21 @@ export class Agent {
       // the tool execution becomes unreachable — the run just burns all iterations.
       if (this.forceAnswerNext) {
         this.forceAnswerNext = false;
+        // Resolve every pending tool_call event emitted earlier this round —
+        // the calls are discarded, so without terminal events the frontend
+        // would show them as pending forever.
+        for (const call of parsedResponse.toolCalls) {
+          yield {
+            type: "tool_call",
+            iteration,
+            status: "completed",
+            call,
+            result: {
+              success: false,
+              error: `Skipped: a stall detector forced a tool-free final answer round (tool: ${call.name}).`
+            }
+          };
+        }
         const proseOnly = (llmResponse.content ?? "").toString().trim();
         if (proseOnly) {
           // Model complied: take the prose as the final answer.
@@ -1058,7 +1249,10 @@ export class Agent {
       // one tool-free round so the model declares done or declares blocked,
       // mirroring Terminus's explicit-completion handshake.
       const thisSignature = computeTurnSignature(dedupedToolCalls.calls);
-      const isRepeat = this.recentToolSignatures.includes(thisSignature);
+      // checkRetryDiversity() ran earlier this iteration and recorded the
+      // signature on its first occurrence — require a PRIOR occurrence, not
+      // the entry we just wrote.
+      const isRepeat = !this.lastTurnSignatureWasNew && this.recentToolSignatures.includes(thisSignature);
       const realText = (llmResponse.content ?? "").toString().trim();
       if (isRepeat && !realText) {
         this.stuckRounds += 1;
@@ -1148,8 +1342,12 @@ export class Agent {
       const toolResults = await this.tools.executeToolCallsInBatches(dedupedToolCalls.calls);
       correctionCount = 0;
 
-      for (const call of dedupedToolCalls.calls) {
-        const result = toolResults[parsedResponse.toolCalls.indexOf(call)];
+      // toolResults are positionally aligned with dedupedToolCalls.calls — never
+      // index them through parsedResponse.toolCalls (dedup may have removed
+      // earlier calls, shifting every index).
+      for (let callIndex = 0; callIndex < dedupedToolCalls.calls.length; callIndex += 1) {
+        const call = dedupedToolCalls.calls[callIndex];
+        const result = toolResults[callIndex];
         const status = this.getToolCallStatus(result);
         yield { type: "tool_call", iteration, status, call, result: result! };
 
@@ -1166,7 +1364,7 @@ export class Agent {
         const finalizedTurn = this.finalizeAskUserTurn(
           iteration,
           parsedResponse.reasoning,
-          parsedResponse.toolCalls,
+          dedupedToolCalls.calls,
           toolResults
         );
         if (finalizedTurn) {
@@ -1193,7 +1391,7 @@ export class Agent {
         toolResults,
         timestamp: new Date()
       };
-      const injectedSystemMessages = getInjectedSystemMessages(parsedResponse.toolCalls, toolResults);
+      const injectedSystemMessages = getInjectedSystemMessages(dedupedToolCalls.calls, toolResults);
 
       this.steps.push(step);
       this.history.push({
@@ -1311,6 +1509,45 @@ export class Agent {
    * annotate the done event with `qa` field. This is the single chokepoint
    * for terminal event emission so we don't have to touch every yield site.
    */
+  /**
+   * Wait while the run is paused via the exit hatch. Resolves when the user
+   * resumes, redirects, or aborts. Polling is deliberate: pause windows are
+   * user-scale (seconds to minutes), and a 400ms poll is far simpler and
+   * more robust than event plumbing across registry instances.
+   */
+  private waitForHatchResolution(): Promise<"resume" | "redirect" | "abort"> {
+    return new Promise((resolve) => {
+      const poll = setInterval(() => {
+        if (this.runAbortController?.signal.aborted) {
+          clearInterval(poll);
+          resolve("abort");
+          return;
+        }
+        const verdict = this.hatchRunId ? exitHatchRegistry().check(this.hatchRunId) : "continue";
+        if (verdict === "abort") {
+          clearInterval(poll);
+          resolve("abort");
+        } else if (verdict === "redirect") {
+          clearInterval(poll);
+          resolve("redirect");
+        } else if (verdict === "continue") {
+          clearInterval(poll);
+          resolve("resume");
+        }
+        // verdict === "pause" → keep waiting
+      }, 400);
+    });
+  }
+
+  /** Detach the hatch listener and drop registry state (no per-run leak). */
+  private teardownHatch(): void {
+    this.detachHatchListener?.();
+    this.detachHatchListener = undefined;
+    if (this.hatchRunId) {
+      exitHatchRegistry().unregister(this.hatchRunId);
+    }
+  }
+
   private async* emitDone(
     event: AgentExecutionEvent & { type: "done" }
   ): AsyncGenerator<AgentExecutionEvent> {
@@ -1351,7 +1588,8 @@ export class Agent {
     }
 
     yield enriched;
-    flushTrace();
+    if (this.traceRootSpan) flushTrace(this.traceRootSpan);
+    this.teardownHatch();
   }
 
   private finalizeAskUserTurn(
@@ -1413,7 +1651,8 @@ export class Agent {
     const generator = this.llm.streamChat(
       buildProviderMessages(this.history, undefined, false, budget),
       timeoutMs,
-      openAITools
+      openAITools,
+      this.runAbortController?.signal
     );
 
     let result = await generator.next();
@@ -1461,8 +1700,10 @@ export class Agent {
       if (this.recentToolSignatures.length > RECENT_TURNS_TO_TRACK) {
         this.recentToolSignatures.pop();
       }
+      this.lastTurnSignatureWasNew = true;
       return "";
     }
+    this.lastTurnSignatureWasNew = false;
 
     // Same turn signature appeared before — count consecutive repeats.
     const repeatCount = recent.filter((s) => s === signature).length;

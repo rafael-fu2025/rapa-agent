@@ -7,47 +7,7 @@ import {
   type AskUserInteractive,
   type TokenUsage
 } from "./api";
-
-function authHeaders(): Record<string, string> {
-  const token = localStorage.getItem("auth_token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-/**
- * Thin wrapper around fetch that retries on 429 (rate limit) with
- * exponential backoff.  Used by the polling endpoints (agent run status,
- * registry, conversations list) so the UI degrades gracefully when the
- * server rate limiter kicks in instead of silently failing.
- */
-async function fetchWithRateLimitRetry(
-  url: string,
-  init?: RequestInit,
-  maxRetries = 3
-): Promise<Response> {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    let response: Response;
-    try {
-      response = await fetch(url, init);
-    } catch (err) {
-      // Network-level failure (DNS, connection refused, etc.). Surface
-      // a clear message so the UI can show a useful error instead of
-      // the raw "Failed to fetch" TypeError.
-      const message = err instanceof Error ? err.message : "Unknown network error";
-      throw new Error(
-        `Couldn't reach ${url}: ${message}. ` +
-          "Is the backend running? Try `cd server && npm run dev` in a terminal."
-      );
-    }
-    if (response.status !== 429 || attempt === maxRetries) return response;
-    const retryAfter = response.headers.get("retry-after");
-    const delayMs = retryAfter
-      ? Math.min(parseInt(retryAfter, 10) * 1000, 30_000)
-      : Math.min(1000 * Math.pow(2, attempt), 10_000);
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
-  }
-  // Unreachable, but TS needs it
-  return fetch(url, init);
-}
+import { authHeaders, fetchWithRateLimitRetry } from "./http";
 
 
 export type ToolDefinition = {
@@ -156,7 +116,7 @@ export type AgentRunDetail = {
   checkpoints: AgentCheckpoint[];
   processSessions: AgentRunProcessSession[];
   steps?: unknown[];
-  toolCalls?: unknown[];
+  toolCalls?: Array<{ id: string; name: string | null; createdAt: string; [key: string]: unknown }>;
 };
 
 export type AgentRunSummary = {
@@ -675,13 +635,21 @@ export async function streamAgent(
   }
 ) {
   let attempt = 0;
-  const maxAttempts = 30;
+  // Capped at 3 (was 30): each retry re-POSTs the full prompt, and the agent
+  // may re-execute side-effectful tools on every attempt. A few quick retries
+  // cover transient drops; anything longer needs the user to decide.
+  const maxAttempts = 3;
   const baseDelay = 1000;
   const maxDelay = 5000;
 
   // Mutable params copy — updated with conversationId from start events
   // so that retries don't create duplicate conversations.
   const liveParams = { ...params };
+  // Set the moment the run performs anything side-effectful (a tool call or
+  // a committed step). Once set, auto-reconnect is disabled — re-running
+  // could duplicate file writes and shell commands. The user sees the error
+  // and decides whether to resend.
+  let sideEffectsOccurred = false;
 
   while (attempt < maxAttempts) {
     try {
@@ -719,10 +687,12 @@ export async function streamAgent(
           } else if (event.type === "thinking") {
             handlers.onThinking?.(event);
           } else if (event.type === "tool_call") {
+            sideEffectsOccurred = true;
             handlers.onToolCall?.(event);
           } else if (event.type === "assistant") {
             handlers.onAssistant?.(event);
           } else if (event.type === "step") {
+            sideEffectsOccurred = true;
             handlers.onStep?.(event);
           } else if (event.type === "done") {
             receivedDone = true;
@@ -745,6 +715,17 @@ export async function streamAgent(
     } catch (err) {
       if (options?.signal?.aborted || err instanceof DOMException && err.name === "AbortError") {
         return; // User aborted, don't retry
+      }
+
+      if (sideEffectsOccurred) {
+        // Never auto-resend a run that already executed tools — the retry
+        // would re-run them from scratch.
+        handlers.onError?.(
+          err instanceof Error
+            ? `Connection lost after the agent had already executed tools: ${err.message}. The run's results so far are saved — resend the message manually if you want to continue.`
+            : "Connection lost after the agent had already executed tools. The run's results so far are saved — resend the message manually if you want to continue."
+        );
+        return;
       }
 
       attempt++;

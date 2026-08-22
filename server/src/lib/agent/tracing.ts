@@ -49,6 +49,8 @@ const noopExporter: SpanExporter = {
 
 class TracerState {
   traceId: string;
+  /** Root span of the trace — used to locate the state in flushTrace(span). */
+  rootSpan?: Span;
   currentSpan?: Span;
   completedSpans: Span[] = [];
   exporter: SpanExporter = noopExporter;
@@ -107,6 +109,7 @@ export function startTrace(name: string, attributes: Record<string, string | num
   const state = new TracerState(traceId, globalEnabled);
   state.exporter = globalExporter;
   state.currentSpan = rootSpan;
+  state.rootSpan = rootSpan;
   if (state.enabled) {
     activeTraces.push(state);
     // Also enter the ALS context synchronously so spans survive `await`
@@ -234,8 +237,19 @@ function flushState(state: TracerState): Span[] {
   return remaining;
 }
 
-export function flushTrace(): Span[] {
-  // Flush all active traces — used by the Fastify onClose hook.
+export function flushTrace(rootSpan?: Span): Span[] {
+  // With a root span: flush ONLY that trace. Concurrent runs each own a trace,
+  // and one run finishing must not flush (and deregister) the others'.
+  if (rootSpan) {
+    const index = activeTraces.findIndex((state) => state.rootSpan === rootSpan);
+    if (index === -1) return [];
+    const [state] = activeTraces.splice(index, 1);
+    if (state.currentSpan && state.currentSpan.endTime === undefined) {
+      endSpan(state, state.currentSpan);
+    }
+    return flushState(state);
+  }
+  // No span: flush all active traces — used by the Fastify onClose hook.
   const out: Span[] = [];
   for (const state of activeTraces.splice(0)) {
     // If the root span is still "open" (currentSpan never advanced), close
@@ -256,7 +270,7 @@ export const consoleSpanExporter: SpanExporter = {
   export(spans) {
     for (const span of spans) {
       const parent = span.parentSpanId ? ` parent=${span.parentSpanId.slice(0, 8)}` : "";
-      // eslint-disable-next-line no-console
+       
       console.log(
         `[trace ${span.traceId.slice(0, 8)}] ${span.name}${parent} ${span.durationMs ?? 0}ms status=${span.status}`
       );

@@ -90,27 +90,29 @@ describe("crypto.redact", () => {
 // produce the original plaintext. This guards against the test setup
 // accidentally testing the wrong key shape.
 describe("crypto regression", () => {
-  it("encryptText output is decryptable with an equivalent Node cipher using the same SHA-256 derived key", () => {
+  it("encryptText output is decryptable with an equivalent Node cipher using the same HMAC-derived key", () => {
     const plaintext = "regression test";
     const ciphertext = encryptText(plaintext, VALID_SECRET);
     const [ivB64, tagB64, ctB64] = ciphertext.split(".");
     const iv = Buffer.from(ivB64, "base64");
     const ct = Buffer.from(ctB64, "base64");
     const tag = Buffer.from(tagB64, "base64");
-    const { createHash } = require("node:crypto") as typeof import("node:crypto");
-    const key = createHash("sha256").update(VALID_SECRET).digest().subarray(0, 32);
+    const { createHmac } = require("node:crypto") as typeof import("node:crypto");
+    const key = createHmac("sha256", VALID_SECRET).update("rapa:aes:v1").digest().subarray(0, 32);
     const decipher = createDecipheriv("aes-256-gcm", key, iv);
     decipher.setAuthTag(tag);
     const out = Buffer.concat([decipher.update(ct), decipher.final()]).toString("utf8");
     expect(out).toBe(plaintext);
   });
 
-  it("encrypts a value pre-encrypted with Node's aes-256-gcm using the same key derivation", () => {
+  it("still decrypts payloads encrypted with the LEGACY SHA-256 derivation (pre-split keys)", () => {
+    // Keys encrypted before the purpose-separation split used
+    // sha256(secret).subarray(0,32). decryptText must keep reading them.
     const iv = randomBytes(12);
     const { createHash } = require("node:crypto") as typeof import("node:crypto");
     const key = createHash("sha256").update(VALID_SECRET).digest().subarray(0, 32);
     const cipher = createCipheriv("aes-256-gcm", key, iv);
-    const plaintext = "cross-check plaintext";
+    const plaintext = "legacy plaintext";
     const ct = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
     const tag = cipher.getAuthTag();
     const envelope = `${iv.toString("base64")}.${tag.toString("base64")}.${ct.toString("base64")}`;

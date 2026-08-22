@@ -4,16 +4,16 @@ import websocket from "@fastify/websocket";
 import compress from "@fastify/compress";
 import jwt from "@fastify/jwt";
 import fastifyStatic from "@fastify/static";
-import Fastify from "fastify";
-import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
 import { existsSync } from "node:fs";
+import { createHmac } from "node:crypto";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { prisma } from "./lib/db.js";
 import { loadAndValidateEnv, EnvValidationError } from "./lib/env.js";
 import { registerChatRoutes } from "./routes/chat.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
-import { registerHealthRoutes } from "./routes/health.js";
+import { registerHealthRoutes, registerCircuitHealthRoutes } from "./routes/health.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerWorkspaceRoutes } from "./routes/workspaces.js";
 import { registerAgentRoutes } from "./routes/agent.js";
@@ -25,7 +25,6 @@ import { registerMcpRoutes } from "./routes/mcp.js";
 import { registerAllTools, toolRegistry } from "./tools/index.js";
 import { capabilityRegistry } from "./lib/agent/capability.js";
 import { configureTracing, consoleSpanExporter, type SpanExporter } from "./lib/agent/tracing.js";
-import { toolCircuitBreaker } from "./lib/agent/circuit-breaker.js";
 import { startScheduler, stopScheduler } from "./lib/scheduler-tick.js";
 
 const serverDir = dirname(fileURLToPath(import.meta.url));
@@ -50,7 +49,9 @@ export async function createServer(options: { skipEnvValidation?: boolean } = {}
     process.env.MEMORY_COMPACTION_THRESHOLD = String(env.memoryCompactionThreshold);
   }
 
-  const app = Fastify({ logger: true });
+  // Explicit body limit: chat/agent payloads carry base64 `dataUrl`
+  // attachments that exceed Fastify's 1 MB default.
+  const app = Fastify({ logger: true, bodyLimit: 25 * 1024 * 1024 });
 
   // Tracing init (research O1): enable the lightweight span recorder. By
   // default we ship spans to the console exporter so operators can see them
@@ -98,8 +99,19 @@ export async function createServer(options: { skipEnvValidation?: boolean } = {}
   await app.register(websocket);
   await app.register(compress, { global: true, encodings: ["gzip", "br"] });
 
+  // No hardcoded fallback secret: env validation requires APP_SECRET before
+  // this point. The JWT signing key is purpose-separated (HMAC label) from
+  // the AES key used for stored API keys, so one leaked derived key can't
+  // both forge tokens and decrypt secrets. Existing tokens are invalidated —
+  // users log in again once.
+  const appSecret = process.env.APP_SECRET;
+  if (!appSecret) {
+    throw new Error("APP_SECRET is not configured");
+  }
+  const jwtSecret = createHmac("sha256", appSecret).update("rapa:jwt:v1").digest("hex");
+
   await app.register(jwt, {
-    secret: process.env.APP_SECRET ?? "super-secret-default-key-change-me"
+    secret: jwtSecret
   });
 
   app.decorate("authenticate", async function (request: FastifyRequest, reply: FastifyReply) {
@@ -188,6 +200,7 @@ export async function createServer(options: { skipEnvValidation?: boolean } = {}
       await registerServiceKeyRoutes(protectedApi);
       await registerMcpRoutes(protectedApi);
       await registerAgentControlRoutes(protectedApi);
+      await registerCircuitHealthRoutes(protectedApi);
     });
   }, { prefix: "/api" });
 
@@ -241,7 +254,7 @@ export async function bootstrap(options?: { port?: number; host?: string; skipEn
   } catch (err) {
     if (err instanceof EnvValidationError) {
       // Print the human-readable error and exit non-zero.
-      // eslint-disable-next-line no-console
+       
       console.error("\n" + err.message + "\n");
       process.exit(2);
     }

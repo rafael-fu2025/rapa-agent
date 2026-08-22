@@ -284,7 +284,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
     try {
       const result = await pickWorkspaceFolder();
       if (result.path && result.name) {
-        setNewWorkspace((prev) => ({ ...prev, path: result.path ?? "", name: prev.name || result.name }));
+        setNewWorkspace((prev) => ({ ...prev, path: result.path ?? "", name: prev.name || result.name || "" }));
       } else if (result.path) {
         setNewWorkspace((prev) => ({ ...prev, path: result.path ?? "" }));
       }
@@ -406,8 +406,11 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
 
     void loadInitial();
 
+    // Polling is gated on tab visibility — a backgrounded tab shouldn't burn
+    // two requests every 5 seconds. Fresh data loads on focus via the
+    // visibilitychange handler below.
     const conversationsInterval = window.setInterval(() => {
-      if (!nextCursor) { // only auto-refresh if we're on the first page
+      if (!nextCursor && document.visibilityState === "visible") { // only auto-refresh if we're on the first page
         void loadConversations();
       }
     }, 5000);
@@ -418,10 +421,20 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
     // an SSE channel. Skipped on /settings because the workspace UI is
     // hidden there and the workspaces modal isn't open.
     const registryInterval = window.setInterval(() => {
-      if (location.pathname !== "/settings") {
+      if (location.pathname !== "/settings" && document.visibilityState === "visible") {
         void loadRegistry();
       }
     }, 5000);
+
+    // Refresh immediately when the tab becomes visible again, so the list
+    // isn't stale for the remaining interval after backgrounding.
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && location.pathname !== "/settings") {
+        void loadConversations();
+        void loadRegistry();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     const handleWorkspaceChanged = () => {
       void loadWorkspaces();
@@ -439,6 +452,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
       mounted = false;
       window.clearInterval(conversationsInterval);
       window.clearInterval(registryInterval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("workspace:changed", handleWorkspaceChanged);
       window.removeEventListener("registry:refresh", handleRegistryRefresh);
     };
@@ -666,9 +680,9 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                   </div>
                   <Link
                     to="/"
-                    onClick={(event) => {
+                    onClick={() => {
                       handleSelectHistory();
-                      onNewChat?.(event);
+                      onNewChat?.();
                     }}
                     className="rounded-xl p-2.5 text-muted-foreground transition-colors hover:bg-card-2 hover:text-foreground"
                     title="New chat"

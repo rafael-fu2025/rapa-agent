@@ -58,7 +58,7 @@ export class PlanTasksTool extends Tool {
     if (!Array.isArray(tasksInput) || tasksInput.length === 0) {
       // Check if tasks was sent as a single string with newlines
       if (typeof params.tasks === "string") {
-        const lines = (params.tasks as string).split(/\n/).map((l: string) => l.replace(/^\d+[\.\)]\s*/, "").trim()).filter(Boolean);
+        const lines = (params.tasks as string).split(/\n/).map((l: string) => l.replace(/^\d+[.)]\s*/, "").trim()).filter(Boolean);
         if (lines.length > 0) {
           clearTaskStore(context.conversationId);
           const store = getTaskStore(context.conversationId);

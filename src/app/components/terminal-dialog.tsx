@@ -197,7 +197,11 @@ export function TerminalDialog({ open, minimized, onMinimize, onRestore, convers
     if (e.key === "`" && e.ctrlKey) {
       e.preventDefault();
       if (open) {
-        minimized ? onRestore() : onMinimize();
+        if (minimized) {
+          onRestore();
+        } else {
+          onMinimize();
+        }
       }
     }
   }, [open, minimized, onMinimize, onRestore]);

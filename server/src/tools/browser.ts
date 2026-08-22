@@ -11,7 +11,7 @@
 // package isn't installed. If the import fails, every tool returns a
 // clear "install playwright" error so the user knows what to do.
 
-import { writeFile, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -25,9 +25,13 @@ const SCREENSHOTS_DIR = ".browser-screenshots";
 
 // --- Playwright loader (lazy, optional) ------------------------------------
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Playwright is a lazy optional dependency; these aliases are the documented FFI boundary.
 type PlaywrightModule = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see PlaywrightModule above.
 type Browser = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see PlaywrightModule above.
 type Page = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see PlaywrightModule above.
 type BrowserContext = any;
 
 let cachedPlaywright: PlaywrightModule | null = null;
@@ -42,7 +46,8 @@ async function loadPlaywright(): Promise<PlaywrightModule | null> {
     return cachedPlaywright;
   } catch (err) {
     throw new Error(
-      "Playwright is not installed. Run `npm install playwright && npx playwright install chromium` to enable the browser_* tools."
+      "Playwright is not installed. Run `npm install playwright && npx playwright install chromium` to enable the browser_* tools.",
+      { cause: err }
     );
   }
 }
@@ -143,7 +148,7 @@ export class BrowserNavigateTool extends Tool {
 
     try {
       const page = await getOrCreatePage(context);
-      const response = await withTimeout(
+      const response = await withTimeout<{ status?: () => number } | null>(
         page.goto(url, { waitUntil, timeout: DEFAULT_NAV_TIMEOUT_MS }),
         DEFAULT_NAV_TIMEOUT_MS,
         "navigation"
@@ -153,7 +158,7 @@ export class BrowserNavigateTool extends Tool {
         data: {
           url: page.url(),
           finalUrl: page.url(),
-          status: response?.status() ?? null,
+          status: response?.status?.() ?? null,
           title: await page.title()
         }
       };

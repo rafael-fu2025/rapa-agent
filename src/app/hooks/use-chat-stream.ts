@@ -1,10 +1,10 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { streamChat, forkConversation, type ChatAttachment, type ReasoningEffort, type TokenUsage } from "../../lib/api";
 import { streamAgent, submitAgentToolApproval, type AgentRunSummary } from "../../lib/agent-api";
 import { DEFAULT_AUTO_APPROVE_TOOLS, useAgentSettings } from "../../lib/agent-settings";
 import type { ChatMessage, ChatMode, ApiKeySwitchNotice } from "../types/chat";
-import { estimateTokens, getRealOrEstimatedTokenCount } from "../utils/chat-utils";
+import { getRealOrEstimatedTokenCount } from "../utils/chat-utils";
 
 /**
  * Module-level submit lock. Prevents double-submit at the JavaScript execution
@@ -170,6 +170,11 @@ export function useChatStream(params: UseChatStreamParams) {
     }) => {
       startRun();
       let streamedText = "";
+      // Reconnect boundary: when the transport re-POSTs the prompt, the
+      // server regenerates the response from scratch — the first chunk of a
+      // new attempt REPLACES the partial text instead of appending to it
+      // (otherwise a reconnect duplicates the streamed prefix in the UI).
+      let awaitingNewAttempt = false;
       const controller = new AbortController();
       streamAbortRef.current = controller;
 
@@ -196,6 +201,10 @@ export function useChatStream(params: UseChatStreamParams) {
               }
             },
             onChunk: (chunk) => {
+              if (awaitingNewAttempt) {
+                streamedText = "";
+                awaitingNewAttempt = false;
+              }
               streamedText += chunk;
               updateMessageById(assistantId, (message) => ({
                 ...message,
@@ -248,13 +257,13 @@ export function useChatStream(params: UseChatStreamParams) {
               setError(message);
             },
             onReconnect: () => {
+              awaitingNewAttempt = true;
               setReconnecting("Reconnecting...");
             },
           },
           { signal: controller.signal }
         );
       } catch (err) {
-        setReconnecting(null);
         if (!(err instanceof DOMException && err.name === "AbortError")) {
           setError(err instanceof Error ? err.message : errorMessage);
         }
@@ -262,6 +271,9 @@ export function useChatStream(params: UseChatStreamParams) {
         if (streamAbortRef.current === controller) {
           streamAbortRef.current = null;
         }
+        // Clear the reconnect banner on every exit path — the agent stream
+        // did this, the chat stream didn't, leaving a stale "Reconnecting...".
+        setReconnecting(null);
         setPending(false);
         isStreamingRef.current = false;
         _submitLock = false;
@@ -630,8 +642,11 @@ export function useChatStream(params: UseChatStreamParams) {
     async (targetMode: "agent" | "plan", prompt: string, sourceConversationId?: string) => {
       const originConversationId = sourceConversationId?.trim() || conversationId || selectedConversationId;
 
-      isStreamingRef.current = true;
-
+      // Do NOT set isStreamingRef here: submitPrompt's first guard is
+      // `if (isStreamingRef.current) return;`, so pre-setting it made the
+      // submit silently no-op AND blocked every later submit/load until
+      // "New Chat" — the mode-switch deadlock. submitPrompt sets the flag
+      // itself once its guards pass.
       if (originConversationId && selectedConversationId !== originConversationId) {
         navigate(`/?c=${encodeURIComponent(originConversationId)}`, { replace: true });
       }
@@ -850,6 +865,15 @@ export function useChatStream(params: UseChatStreamParams) {
     isStreamingRef.current = false;
     setPending(false);
     setReconnecting(null);
+  }, []);
+
+  // Abort any in-flight stream when the owning component unmounts (e.g.
+  // navigating to Settings mid-stream). Without this, the fetch/SSE loop
+  // runs to completion and keeps calling the unmounted component's setters.
+  useEffect(() => {
+    return () => {
+      streamAbortRef.current?.abort();
+    };
   }, []);
 
   return {

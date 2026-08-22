@@ -929,17 +929,8 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
       const data = await getWorkspaceTree(workspaceId);
       setTree(data);
       if (opts?.preserveExpanded) {
-        // Keep user's current expand state; just add any new root dirs
-        setExpandedPaths((prev) => {
-          const next = new Set(prev);
-          for (const n of data.tree) {
-            if (n.type === "directory" && !next.has(n.path)) {
-              // Only auto-expand root dirs that weren't previously in the set
-              // (preserves collapsed state for dirs the user deliberately closed)
-            }
-          }
-          return prev;
-        });
+        // Keep the user's current expand state exactly as-is (the previous
+        // block built a `next` set, never used it, and returned `prev`).
       } else {
         // Initial load / manual refresh — auto-expand root-level directories
         const rootDirs = data.tree

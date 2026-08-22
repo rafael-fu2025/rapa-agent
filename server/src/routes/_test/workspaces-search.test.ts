@@ -11,9 +11,9 @@
 // can use real fs primitives. No need to spin up Fastify.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, rm, writeFile, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, dirname, sep } from "node:path";
+import { join } from "node:path";
 
 let workspaceRoot = "";
 
@@ -93,8 +93,8 @@ function scoreMatches(entries: FlatEntry[], q: string): Scored[] {
     if (entry.isDir) continue;
     const lowerName = entry.name.toLowerCase();
     const lowerPath = entry.relativePath.toLowerCase();
-    let score = 0;
-    let matchedField: Scored["matchedField"] = "fuzzy";
+    let score: number;
+    let matchedField: Scored["matchedField"];
     if (lowerName === qLower) {
       score = 200;
       matchedField = "basename";

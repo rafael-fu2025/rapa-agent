@@ -1,8 +1,7 @@
 // Pure response-parsing helpers used by the agent loop.
 // These functions have no side effects and read no agent state.
 
-import { safeParseToolCallEnvelope } from "./types.js";
-import type { ParsedAssistantResponse, ToolCall } from "./types.js";
+import { safeParseToolCallEnvelope, type ParsedAssistantResponse, type ToolCall } from "./types.js";
 
 /**
  * Attempt to repair common JSON malformations produced by LLMs.
@@ -128,7 +127,6 @@ export function pushStreamThinkDelta(
       } else {
         displayDelta += delta.slice(cursor);
       }
-      cursor = delta.length;
       break;
     }
 
@@ -423,7 +421,7 @@ export function looksLikeContinuationResponse(content: string, reasoning?: strin
   // because a model saying "Let me read X." is just as unfinished as one ending
   // in `:` — the period is just the model's default sentence terminator, not
   // evidence of a complete thought.
-  const trailingContinuation = /(?:[:;,\.]\s*$|\.{3}$)/.test(normalized);
+  const trailingContinuation = /(?:[.:;,]\s*$|\.{3}$)/.test(normalized);
 
   // Short responses that are pure promise + action (no summary) are always
   // treated as continuations, regardless of trailing punctuation. We also
@@ -450,7 +448,7 @@ export function extractXmlToolCalls(content: string): { calls: ToolCall[]; rawMa
   const inlineXmlTagPatterns = [
     /<tool_call>([\s\S]*?)<\/tool_call>/gi,
     /<longcat_tool_call>([\s\S]*?)<\/longcat_tool_call>/gi,
-    /<\/function_call>([\s\S]*?)<\/function_call>/gi
+    /<function_call>([\s\S]*?)<\/function_call>/gi
   ];
 
   for (const pattern of inlineXmlTagPatterns) {
@@ -492,7 +490,7 @@ export function extractXmlToolCalls(content: string): { calls: ToolCall[]; rawMa
   const nestedXmlTagPatterns = [
     /<toolCall>([\s\S]*?)<\/toolCall>/gi,
     /<tool_call>([\s\S]*?)<\/tool_call>/gi,
-    /<\/function_call>([\s\S]*?)<\/function_call>/gi,
+    /<function_call>([\s\S]*?)<\/function_call>/gi,
     /<invoke>([\s\S]*?)<\/invoke>/gi
   ];
 

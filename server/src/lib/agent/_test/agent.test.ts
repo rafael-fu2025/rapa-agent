@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Agent } from "../../agent.js";
 import { LLMClient } from "../llm-client.js";
-import { registerAllTools, toolRegistry } from "../../../tools/index.js";
+import { registerAllTools } from "../../../tools/index.js";
 import type { AgentConfig, AgentExecutionEvent, AgentMessage, ProviderChatMessage } from "../types.js";
 
 let workspaceRoot = "";
@@ -283,5 +283,86 @@ describe("Agent loop — iteration cap", () => {
     const { done } = await runAgent(llm, "Keep going", { maxIterations: 3 });
     expect(done?.status).toBe("max_iterations");
     expect(done?.iterations).toBe(3);
+  });
+});
+
+describe("Agent loop — duplicate tool call dedup", () => {
+  it("survives duplicate tool calls without index misalignment and resolves every call", async () => {
+    // Regression: results are produced for DEDUPED calls, but the loop used to
+    // look them up via parsedResponse.toolCalls.indexOf(call). With [A, A, B],
+    // B's lookup returned an out-of-range index → undefined → TypeError crashed
+    // the whole run. The run must complete and every emitted call must resolve.
+    await writeFile(join(workspaceRoot, "hello.txt"), "hi", "utf-8");
+    const llm = makeFakeLlm([
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "a-1", name: "list_directory", parameters: { path: "." } },
+          { id: "a-2", name: "list_directory", parameters: { path: "." } },
+          { id: "b-1", name: "read_file", parameters: { path: "hello.txt" } }
+        ]
+      },
+      { role: "assistant", content: "Listed and read." }
+    ]);
+
+    const { events, done } = await runAgent(llm, "List and read");
+
+    expect(done?.status).toBe("completed");
+    expect(done?.response).toBe("Listed and read.");
+
+    // The duplicate (a-2) must be reported as a skipped duplicate — not crash.
+    // Take the LAST matching event: the first is the "pending" emission for
+    // the original call list; the terminal one carries the rejection result.
+    const dupEvent = events
+      .filter(
+        (e): e is Extract<AgentExecutionEvent, { type: "tool_call" }> =>
+          e.type === "tool_call" && e.call.id === "a-2"
+      )
+      .pop();
+    expect(dupEvent).toBeDefined();
+    expect(dupEvent?.result?.success).toBe(false);
+    expect(String(dupEvent?.result?.error ?? "")).toContain("Duplicate");
+
+    // The survivors must each get a terminal event with a real result —
+    // the misalignment previously left result undefined for b-1.
+    for (const callId of ["a-1", "b-1"]) {
+      const terminal = events
+        .filter(
+          (e): e is Extract<AgentExecutionEvent, { type: "tool_call" }> =>
+            e.type === "tool_call" && e.call.id === callId && e.status !== "pending"
+        )
+        .pop();
+      expect(terminal).toBeDefined();
+      expect(terminal?.result).toBeDefined();
+      expect(terminal?.result?.success).toBe(true);
+    }
+  });
+
+  it("records only deduped calls in the assistant history turn", async () => {
+    // M-11: the assistant message pushed to history must carry the deduped
+    // calls so it matches the tool-result blob replayed to the provider.
+    const llm = makeFakeLlm([
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "x-1", name: "list_directory", parameters: { path: "." } },
+          { id: "x-2", name: "list_directory", parameters: { path: "." } }
+        ]
+      },
+      { role: "assistant", content: "Done." }
+    ]);
+
+    const { calls } = await runAgent(llm, "List twice");
+
+    const secondCallMessages = calls[1].messages;
+    const assistantToolTurn = secondCallMessages.find(
+      (m) => m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0
+    );
+    expect(assistantToolTurn?.tool_calls).toHaveLength(1);
+    expect(assistantToolTurn?.tool_calls?.[0].id).toBe("x-1");
+    const toolReplies = secondCallMessages.filter((m) => m.role === "tool");
+    expect(toolReplies).toHaveLength(1);
   });
 });

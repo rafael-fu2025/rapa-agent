@@ -6,7 +6,7 @@
 // auto-activate workspaces here.
 
 import { basename, resolve } from "node:path";
-import { prisma, getLocalUser } from "../../lib/db.js";
+import { prisma } from "../../lib/db.js";
 
 export function getDefaultWorkspaceRoot() {
   const configuredRoot = process.env.DEFAULT_WORKSPACE_ROOT ?? process.env.WORKSPACE_ROOT ?? process.env.INIT_CWD;

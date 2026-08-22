@@ -2,6 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 
 export const DEFAULT_MAX_AGENT_ITERATIONS = 60;
 export const MAX_AGENT_ITERATIONS = 80;
+// First-run defaults: read-only + planning tools only. File-mutating tools
+// (write_file/edit_file/replace_in_file/append_file) are deliberately NOT
+// auto-approved by default — the UI's approval copy promises a human review,
+// and users can opt in per tool in Agent Settings. Existing users with a
+// stored setting are unaffected.
 export const DEFAULT_AUTO_APPROVE_TOOLS = [
   "read_file",
   "list_directory",
@@ -11,10 +16,6 @@ export const DEFAULT_AUTO_APPROVE_TOOLS = [
   "add_task",
   "update_task",
   "summarize_progress",
-  "edit_file",
-  "replace_in_file",
-  "append_file",
-  "write_file",
   "mkdir",
   "git_status",
   "git_diff",

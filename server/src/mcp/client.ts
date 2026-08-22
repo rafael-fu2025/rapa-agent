@@ -23,8 +23,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { Implementation } from "@modelcontextprotocol/sdk/types.js";
-import { prisma } from "../lib/db.js";
-import { getLocalUser } from "../lib/db.js";
+import { prisma, getLocalUser } from "../lib/db.js";
+import { getSanitizedEnv } from "../tools/shell.js";
 import { z } from "zod";
 
 const CLIENT_INFO: Implementation = {
@@ -153,7 +153,11 @@ function buildTransport(config: McpServerConfig): Transport {
     return new StdioClientTransport({
       command: config.command,
       args: config.args ?? [],
-      env: { ...process.env, ...(config.env ?? {}) } as Record<string, string>
+      // Spawned MCP servers are arbitrary user-configured commands — they get
+      // the same sanitized environment the shell tools use (APP_SECRET,
+      // DATABASE_URL, *_API_KEY, … stripped). Passing `...process.env` here
+      // used to hand every configured server the full secret set.
+      env: { ...getSanitizedEnv(), ...(config.env ?? {}) } as Record<string, string>
     });
   }
   if (config.transport === "sse") {

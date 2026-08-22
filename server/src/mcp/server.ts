@@ -115,6 +115,14 @@ export async function createMcpServer(options: {
     const tool = toolRegistry.get(toolDef.name);
     if (!tool) continue;
 
+    // Approval-gated tools are NOT exposed over MCP. This endpoint executes
+    // tools directly with no orchestrator, so there is no human in the loop —
+    // exposing write/shell tools here would bypass the entire approval system
+    // (the instructions string above has always promised they "fail loudly").
+    if (toolDef.requiresApproval) {
+      continue;
+    }
+
     const shape: Record<string, z.ZodTypeAny> = {};
     for (const [name, param] of Object.entries(toolDef.parameters ?? {})) {
       shape[name] = parameterToZod(param);
@@ -164,7 +172,12 @@ export async function createMcpServer(options: {
         };
       }
       const absolute = resolve(options.workspaceRoot, pathParam);
-      if (!absolute.startsWith(resolve(options.workspaceRoot))) {
+      // Containment check via relative() — `startsWith` accepted sibling
+      // directories sharing a prefix (workspace "C:\proj" let "C:\project-evil"
+      // through).
+      const relFromRoot = relative(resolve(options.workspaceRoot), absolute);
+      const relPosix = relFromRoot.split("\\").join("/");
+      if (relPosix === ".." || relPosix.startsWith("../") || pathParam.includes("\0")) {
         return {
           contents: [{
             uri: uri.toString(),

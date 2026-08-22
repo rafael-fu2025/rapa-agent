@@ -108,7 +108,6 @@ describe("Tier 2 — file / folder operations (real fs, in temp dir)", () => {
   });
 
   it("rename: the endpoint's pre-check catches existing destinations (the raw fs primitive would silently overwrite on POSIX, so we rely on stat() pre-check)", async () => {
-    const from = join(workspaceRoot, "foo.txt");
     const to = join(workspaceRoot, "sub", "bar.txt"); // already exists
     // On Windows, fs.rename refuses to overwrite. On POSIX, it does
     // overwrite silently. The endpoint pre-checks with stat() so it
@@ -119,7 +118,7 @@ describe("Tier 2 — file / folder operations (real fs, in temp dir)", () => {
       await stat(to);
       destExists = true;
     } catch {
-      destExists = false;
+      // destination does not exist
     }
     expect(destExists).toBe(true);
     // The endpoint would now return 409 with "Destination already exists".

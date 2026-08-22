@@ -12,7 +12,7 @@ function pickTokenNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-export function extractTokenUsage(metadata: ConversationMessage["metadata"]): TokenUsage | undefined {
+export function extractTokenUsage(metadata: unknown): TokenUsage | undefined {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
   const tokenUsage = (metadata as { tokenUsage?: unknown }).tokenUsage;
   if (!tokenUsage || typeof tokenUsage !== "object" || Array.isArray(tokenUsage)) return undefined;
@@ -31,7 +31,7 @@ export function getRealOrEstimatedTokenCount(content: string, tokenUsage?: Token
   return tokenUsage?.totalTokens ?? tokenUsage?.completionTokens ?? estimateTokens(content);
 }
 
-export function normalizeChatMode(mode: ConversationMessage["mode"]): ChatMode | undefined {
+export function normalizeChatMode(mode: unknown): ChatMode | undefined {
   return mode === "chat" || mode === "agent" || mode === "plan" ? mode : undefined;
 }
 

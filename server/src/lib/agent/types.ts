@@ -332,7 +332,7 @@ export type AgentExecutionEvent =
        * existing `done` event.
        */
       type: "turn/end";
-      status: "completed" | "max_iterations" | "failed" | "interrupted";
+      status: "completed" | "max_iterations" | "failed" | "interrupted" | "aborted";
       iterations: number;
       elapsedMs?: number;
     }
@@ -362,7 +362,7 @@ export type AgentExecutionEvent =
     }
   | {
       type: "done";
-      status: "completed" | "max_iterations" | "failed" | "interrupted";
+      status: "completed" | "max_iterations" | "failed" | "interrupted" | "aborted";
       response: string;
       steps: AgentStep[];
       iterations: number;

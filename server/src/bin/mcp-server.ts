@@ -23,13 +23,13 @@ async function main() {
   const workspaceRoot = process.env.RAPA_WORKSPACE_ROOT ?? process.cwd();
   const mcp = await createMcpServer({ workspaceRoot });
   const transport = new StdioServerTransport();
-  // eslint-disable-next-line no-console
+   
   console.error(`[rapa-mcp] starting stdio transport, workspace=${workspaceRoot}, protocol=${MCP_PROTOCOL_VERSION}`);
   await mcp.connect(transport);
 }
 
 main().catch((err) => {
-  // eslint-disable-next-line no-console
+   
   console.error("[rapa-mcp] fatal:", err);
   process.exit(1);
 });

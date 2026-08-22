@@ -3,7 +3,7 @@
 
 import { isWithinWorkspaceSymlinkSafe, resolveWorkspacePath } from "../../tools/filesystem.js";
 import { toolRegistry } from "../../tools/index.js";
-import { isDangerousCommand } from "../../tools/shell.js";
+import { isDangerousCommand, diagnoseAndFixCommand } from "../../tools/shell.js";
 import { analyseCommandRisk, type CommandRiskAssessment } from "../safety/dangerous-patterns.js";
 import { detectPromptInjection, wrapUntrustedContent } from "../safety/prompt-injection.js";
 import type {
@@ -16,10 +16,10 @@ import { getAvailableTools } from "./llm-client.js";
 import type {
   AgentConfig,
   ToolApprovalDecision,
-  ToolCall,
-  ToolCallStatus
+  ToolCall
 } from "./types.js";
 import { executeWithResilience } from "./resilience.js";
+import { PLAN_MODE_ALLOWED_TOOLS } from "../tool-scopes.js";
 import { shouldEvictResult, evictResult, type EvictableResult } from "./output-eviction.js";
 import { validateWrittenFile } from "./code-validators.js";
 import { buildSchemaCorrection, renderSchemaCorrection } from "./schema-correction.js";
@@ -70,20 +70,6 @@ const REJECTION_PHRASES = [
   "blocked in plan mode"
 ];
 
-// Legacy fallback patterns; the typed resilience layer supersedes these but
-// they are kept for direct callers of retryToolCall().
-const RETRYABLE_PATTERNS: Array<{ pattern: RegExp; fix: string }> = [
-  { pattern: /timed out/i, fix: "reducing scope" },
-  { pattern: /ENOENT|no such file/i, fix: "checking path" },
-  { pattern: /EACCES|permission denied/i, fix: "adjusting permissions" },
-  { pattern: /command not found/i, fix: "checking tool availability" },
-  { pattern: /ECONNREFUSED|fetch failed/i, fix: "checking connectivity" },
-  { pattern: /EEXIST|already exists/i, fix: "checking if resource already exists" },
-  { pattern: /EISDIR|is a directory/i, fix: "checking if path is a file" },
-  { pattern: /ENOTDIR|not a directory/i, fix: "checking if path is a directory" },
-  { pattern: /EBUSY|resource busy/i, fix: "waiting for resource" }
-];
-
 const WRITE_TOOLS = new Set([
   "write_file",
   "edit_file",
@@ -105,25 +91,6 @@ const UNTRUSTED_INPUT_TOOLS = new Set([
   "search_files"
 ]);
 
-const PLAN_MODE_ALLOWED_TOOLS = new Set([
-  "read_file",
-  "list_directory",
-  "search_files",
-  "search_content",
-  "fetch_url",
-  "web_search",
-  "think",
-  "ask_user",
-  "add_task",
-  "update_task",
-  "summarize_progress",
-  "delegate_task",
-  "git_status",
-  "git_diff",
-  "git_log",
-  "git_branch"
-]);
-
 const CHAT_MODE_RESTRICTED_CATEGORIES: ToolDefinition["category"][] = [
   "filesystem",
   "code",
@@ -135,13 +102,6 @@ function isRejectionError(result: ToolResult): boolean {
     return true;
   }
   return REJECTION_PHRASES.some((phrase) => result.error?.includes(phrase));
-}
-
-function getToolCallStatus(result: ToolResult): ToolCallStatus {
-  if (!result.success && typeof result.data === "object" && result.data !== null && "requiresApproval" in result.data) {
-    return "requires_approval";
-  }
-  return result.success ? "completed" : "failed";
 }
 
 function extractWriteTargetPath(call: ToolCall, workspaceRoot: string): string | null {
@@ -243,17 +203,25 @@ export class ToolOrchestrator {
    * `rm -rf` a system directory without a human in the loop.
    */
   private getCommandRiskForCall(call: ToolCall): CommandRiskAssessment | undefined {
-    if (call.name !== "execute_command") return undefined;
+    // start_process is a shell tool too — exempting it would let an
+    // auto-approved `shell` category run `rm -rf` via start_process while
+    // execute_command forces approval for the same string.
+    if (call.name !== "execute_command" && call.name !== "start_process") return undefined;
     const cmd = typeof call.parameters.command === "string" ? call.parameters.command : undefined;
     if (!cmd) return undefined;
 
-    const risk = analyseCommandRisk(cmd);
+    // Analyze the EFFECTIVE command. shell.ts applies Windows rewrites
+    // (rm -rf → rmdir /s /q, grep → findstr, …) before execution, so risk
+    // analysis on the raw string would approve one command and execute
+    // another.
+    const effectiveCmd = diagnoseAndFixCommand(cmd).command;
+    const risk = analyseCommandRisk(effectiveCmd);
 
     // Layer the allowlist check (VULN-15): if the command is not on the
     // known-safe allowlist, force user approval even when no dangerous
     // pattern matched. This catches unusual commands that slip past the
     // regex-based pattern detector.
-    if (!risk.requiresConfirmation && isDangerousCommand(cmd)) {
+    if (!risk.requiresConfirmation && isDangerousCommand(effectiveCmd)) {
       risk.requiresConfirmation = true;
       risk.severity = "high";
       risk.summary.push(
@@ -385,11 +353,15 @@ export class ToolOrchestrator {
       return this.buildApprovalRequiredResult(call, { riskAssessment });
     }
 
+    let executionContext: ToolExecutionContext | undefined;
     if (tool.definition.riskLevel === "read" && (await this.isPathOutsideWorkspace(call))) {
       if (!options.approved) {
         return this.buildApprovalRequiredResult(call);
       }
-      this.updateContext({ allowOutsideWorkspace: true });
+      // Scoped grant: ONLY this approved call may read outside the workspace.
+      // The shared context is deliberately not mutated — one approval must
+      // not unlock every later tool in the run.
+      executionContext = { ...this.context, allowOutsideWorkspace: true };
     }
 
     const validation = tool.validate(call.parameters);
@@ -421,7 +393,7 @@ export class ToolOrchestrator {
 
     const result = await executeWithResilience({
       toolName: call.name,
-      execute: () => tool.execute(call.parameters, this.context),
+      execute: () => tool.execute(call.parameters, executionContext ?? this.context),
       context: this.context
     });
 
@@ -430,11 +402,41 @@ export class ToolOrchestrator {
     // instructions. Scan successful results and wrap suspicious output so the
     // LLM treats it as untrusted data.
     if (result.success && UNTRUSTED_INPUT_TOOLS.has(call.name)) {
-      const outputText = typeof result.output === "string"
-        ? result.output
-        : typeof result.data === "object" && result.data !== null && "content" in result.data
-          ? String((result.data as Record<string, unknown>).content)
-          : null;
+      // Field extraction by tool payload shape: read_file returns data.content,
+      // fetch_url returns data.body, web_search returns data.results, and
+      // read_image returns data.textContent. The old code only read
+      // output/data.content, so the two tools ingesting the MOST hostile
+      // content (web pages, search snippets) were never scanned.
+      const dataRecord = typeof result.data === "object" && result.data !== null
+        ? (result.data as Record<string, unknown>)
+        : undefined;
+      const candidateTexts: string[] = [];
+      if (typeof result.output === "string" && result.output.length > 0) {
+        candidateTexts.push(result.output);
+      }
+      if (dataRecord) {
+        for (const key of ["content", "body", "textContent"]) {
+          const value = dataRecord[key];
+          if (typeof value === "string" && value.length > 0) candidateTexts.push(value);
+        }
+        if (Array.isArray(dataRecord.results)) {
+          const resultsText = dataRecord.results
+            .map((entry) => {
+              if (typeof entry === "string") return entry;
+              if (entry && typeof entry === "object") {
+                const record = entry as Record<string, unknown>;
+                return [record.title, record.snippet, record.content]
+                  .filter((part): part is string => typeof part === "string")
+                  .join("\n");
+              }
+              return "";
+            })
+            .filter(Boolean)
+            .join("\n\n");
+          if (resultsText.length > 0) candidateTexts.push(resultsText);
+        }
+      }
+      const outputText = candidateTexts.join("\n\n");
 
       if (outputText && outputText.length > 0) {
         const verdict = detectPromptInjection(outputText);
@@ -520,7 +522,7 @@ export class ToolOrchestrator {
    * Truncation is non-destructive: we keep the original result intact and
    * surface a `truncated: true` flag plus a preview on `data`.
    */
-  private truncateToolResult(result: ToolResult, call: ToolCall): ToolResult {
+  private truncateToolResult(result: ToolResult, _call: ToolCall): ToolResult {
     const cap = this.config.memoryBudget?.toolResultCharLimit
       ?? Number(process.env.TOOL_OUTPUT_MAX_CHARS ?? 50_000);
     if (!Number.isFinite(cap) || cap <= 0) return result;
@@ -623,22 +625,32 @@ export class ToolOrchestrator {
 
     if (readOnlyIndices.length > 0) {
       const readOnlyTasks = readOnlyIndices.map(async (i) => {
-        const approval = await this.resolveToolApproval(calls[i]);
-        if (!approval.approved) {
+        try {
+          const approval = await this.resolveToolApproval(calls[i]);
+          if (!approval.approved) {
+            results[i] = {
+              success: false,
+              error: approval.message || `Tool ${calls[i].name} was rejected by the user.`,
+              data: { rejected: true, tool: calls[i].name, callId: calls[i].id }
+            };
+            return;
+          }
+          results[i] = await this.executeToolCall(calls[i], { approved: approval.approved });
+          // P2-D: bound the size of every tool result before it lands in the
+          // history. Truncation is non-destructive — the full result stays in
+          // the `AgentToolCall` row in the database.
+          results[i] = this.truncateToolResult(results[i]!, calls[i]);
+          // Evict oversized results to disk (preview + file path in history)
+          results[i] = await this.evictIfNeeded(results[i]!, calls[i]);
+        } catch (error) {
+          // One tool's unexpected failure (approval plumbing, eviction disk
+          // error, …) must not reject the Promise.all batch and kill the run —
+          // report it as that tool's failed result instead.
           results[i] = {
             success: false,
-            error: approval.message || `Tool ${calls[i].name} was rejected by the user.`,
-            data: { rejected: true, tool: calls[i].name, callId: calls[i].id }
+            error: `Tool ${calls[i].name} failed unexpectedly: ${error instanceof Error ? error.message : String(error)}`
           };
-          return;
         }
-        results[i] = await this.executeToolCall(calls[i], { approved: approval.approved });
-        // P2-D: bound the size of every tool result before it lands in the
-        // history. Truncation is non-destructive — the full result stays in
-        // the `AgentToolCall` row in the database.
-        results[i] = this.truncateToolResult(results[i]!, calls[i]);
-        // Evict oversized results to disk (preview + file path in history)
-        results[i] = await this.evictIfNeeded(results[i]!, calls[i]);
       });
       await Promise.all(readOnlyTasks);
     }

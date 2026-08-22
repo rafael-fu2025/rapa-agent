@@ -43,7 +43,7 @@ export const Suggest = {
   },
 
   /** Edit file — "match not found" / "0 occurrences" / "multiple matches". */
-  editNotFound(result: ToolResult, oldText: string): ToolResult {
+  editNotFound(result: ToolResult, _oldText: string): ToolResult {
     return withSuggestions(result, [
       "Call read_file on the target file to see its current content; the file may have changed since you last read it.",
       "Re-read the surrounding lines and try edit_file again with a smaller, more unique snippet of oldText.",

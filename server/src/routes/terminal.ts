@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import "@fastify/websocket";
 import { z } from "zod";
-import { resolve } from "node:path";
 
 import { getLocalUser, prisma } from "../lib/db.js";
 import {
@@ -11,7 +10,6 @@ import {
 } from "../tools/filesystem.js";
 import {
   closeTerminalSession,
-  ensureTerminalSession,
   listTerminalSessions,
   resizeTerminalSession,
   startBackgroundCommand,

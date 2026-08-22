@@ -69,7 +69,10 @@ async function runTscCheck(absolutePath: string): Promise<CodeValidationResult> 
       "--noEmit",
       "--pretty",
       "false",
-      absolutePath
+      // .cmd shims require shell:true on Windows, and shell mode concatenates
+      // args into a cmd.exe string — quote the path so `&`/spaces in a
+      // workspace-controlled filename can't break out into a command.
+      shellQuote(absolutePath)
     ], { timeout: VALIDATE_TIMEOUT_MS, maxBuffer: 1024 * 256, shell: isWindows });
     return { ok: true, validator: "tsc" };
   } catch (error) {
@@ -87,12 +90,20 @@ async function runTscCheck(absolutePath: string): Promise<CodeValidationResult> 
   }
 }
 
+/**
+ * Wrap a value in double quotes when it will pass through cmd.exe
+ * (shell:true). Double quotes cannot occur in Windows file names, so the
+ * quoted form is injection-safe for paths.
+ */
+function shellQuote(value: string): string {
+  return isWindows ? `"${value}"` : value;
+}
+
 async function runNodeSyntaxCheck(absolutePath: string): Promise<CodeValidationResult> {
   try {
     await execFileAsync("node", ["--check", absolutePath], {
       timeout: VALIDATE_TIMEOUT_MS,
-      maxBuffer: 1024 * 64,
-      shell: isWindows
+      maxBuffer: 1024 * 64
     });
     return { ok: true, validator: "node-check" };
   } catch (error) {
@@ -111,14 +122,13 @@ async function runPyCompileCheck(absolutePath: string): Promise<CodeValidationRe
   try {
     await execFileAsync(pythonBin, ["-m", "py_compile", absolutePath], {
       timeout: VALIDATE_TIMEOUT_MS,
-      maxBuffer: 1024 * 64,
-      shell: isWindows
+      maxBuffer: 1024 * 64
     });
     return { ok: true, validator: "py_compile" };
   } catch (error) {
     if (isWindows) {
       try {
-        await execFileAsync("python", ["-m", "py_compile", absolutePath], {
+        await execFileAsync("python", ["-m", "py_compile", shellQuote(absolutePath)], {
           timeout: VALIDATE_TIMEOUT_MS,
           maxBuffer: 1024 * 64,
           shell: true

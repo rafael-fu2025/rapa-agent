@@ -102,8 +102,10 @@ export class CircuitBreaker {
         state.openedAt = undefined;
       }
     } else if (state.state === "closed") {
-      // Successful calls in closed state prune the failure history a bit.
-      if (state.failures.length > 0 && Math.random() < 0.1) {
+      // Successful calls in closed state prune one stale failure each —
+      // deterministic (the old Math.random()<0.1 drop made healing
+      // nondeterministic across runs).
+      if (state.failures.length > 0) {
         state.failures.shift();
       }
     }

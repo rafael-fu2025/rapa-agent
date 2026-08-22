@@ -320,6 +320,9 @@ export function buildAgentRulesMessage(rules: Array<{ name: string; content: str
 async function requestSummary(baseUrl: string, apiKey: string, model: string, prompt: string) {
   const response = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
+    // Bound the summary call — a stalled provider would otherwise leave this
+    // voided promise hanging forever.
+    signal: AbortSignal.timeout(60_000),
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`

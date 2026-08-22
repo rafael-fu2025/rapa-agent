@@ -90,7 +90,7 @@ const RULES: Rule[] = [
     id: "rm-rf-attempt",
     severity: "critical",
     label: "Destructive command embedded in untrusted text",
-    pattern: /\brm\s+(-\w*r\w*f\w*|--recursive\s+--force|-rf|-fr)\b\s+(\/|\.\.|\~\/|\$HOME|C:\\)/i
+    pattern: /\brm\s+(-\w*r\w*f\w*|--recursive\s+--force|-rf|-fr)\b\s+(\/|\.\.|~\/|\$HOME|C:\\)/i
   },
   {
     id: "curl-pipe-shell",

@@ -137,10 +137,12 @@ const getCommandSeparator = () => {
  * - Braille spinner characters (U+2800-U+28FF) from npm progress spinners
  * - Various C0/C1 control characters
  */
+/* eslint-disable no-control-regex -- these patterns match terminal control sequences by definition */
 const ANSI_CSI_PATTERN = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
 const ANSI_OSC_PATTERN = /\u001b\][^\x07\u001b]*(?:\x07|\u001b\\)/g;
 const BRAILLE_PATTERN = /[\u2800-\u28FF]/g;
 const C0_CONTROL_PATTERN = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+/* eslint-enable no-control-regex */
 
 function stripAnsi(text: string): string {
   return text
@@ -388,8 +390,11 @@ async function getOrCreateSession(sessionId: string, cwd: string, ownerId: strin
       existing.closed = true;
       existing.process.kill();
       sessions.delete(sessionId);
+    } else if (existing.ownerId !== ownerId) {
+      // Client-supplied session ids must not let one user adopt another
+      // user's live PTY — the old code silently reassigned ownerId here.
+      throw new Error("Terminal session is owned by another user.");
     } else {
-      existing.ownerId = ownerId;
       existing.conversationId = conversationId;
       touchSession(existing);
       return existing;
@@ -410,7 +415,12 @@ function getOwnedSession(sessionId: string, ownerId: string) {
   return session;
 }
 
-function diagnoseAndFixCommand(command: string): { command: string; diagnostic?: string } {
+/**
+ * Windows command translation applied before execution. Exported so the
+ * approval layer can analyze the EFFECTIVE command (what will actually run)
+ * rather than the raw model output.
+ */
+export function diagnoseAndFixCommand(command: string): { command: string; diagnostic?: string } {
   if (process.platform !== "win32") {
     return { command };
   }
@@ -458,7 +468,6 @@ async function runInSession(session: TerminalSession, command: string, timeout: 
   const wrapped = `${command} ${separator} echo ${marker}`;
   session.process.write(`${wrapped}\r\n`);
 
-  const started = Date.now();
   let inputSent = false;
 
   if (input) {
@@ -591,6 +600,26 @@ const BLOCKED_PIPE_PATTERNS: RegExp[] = [
   /invoke-restmethod\s+.*\|\s*invoke-expression/i,
 ];
 
+// Inline-code execution: the interpreter's first word is allowlisted
+// (node/python/npm/...), but `-e`/`-c`/`exec` forms execute an arbitrary
+// string that no pattern layer can inspect — always force approval.
+const INLINE_CODE_EXECUTION_PATTERNS: RegExp[] = [
+  /\bnode\s+(-e|--eval)\b/i,
+  /\bpython3?\s+(-c|--command)\b/i,
+  /\bpy\s+(-c|--command)\b/i,
+  /\bdeno\s+(eval|--eval)\b/i,
+  /\bbun\s+(-e|--eval)\b/i,
+  /\bperl\s+(-e|--eval)\b/i,
+  /\bruby\s+(-e)\b/i,
+  /\bnpm\s+(exec|execute)\b/i,
+  /\bpnpm\s+(exec|dlx)\b/i,
+  /\byarn\s+(exec|dlx)\b/i,
+  /\b(bash|sh|zsh|dash|ksh)\s+-c\b/i,
+  /\bpowershell\b[^\n]*(-command|-enc\b)/i,
+  /\bpwsh\b[^\n]*(-command|-enc\b)/i,
+  /\bcmd\b\s+\/c\b/i,
+];
+
 export function isDangerousCommand(command: string): boolean {
   const normalized = command.trim();
 
@@ -599,6 +628,13 @@ export function isDangerousCommand(command: string): boolean {
   }
 
   for (const pattern of BLOCKED_PIPE_PATTERNS) {
+    if (pattern.test(normalized)) return true;
+  }
+
+  // Inline-code execution beats the first-word allowlist — and a fully
+  // quoted command is NOT automatically safe (the old /^["'].*["']$/
+  // branch treated '"sudo rm -rf /"' as safe).
+  for (const pattern of INLINE_CODE_EXECUTION_PATTERNS) {
     if (pattern.test(normalized)) return true;
   }
 
@@ -625,8 +661,6 @@ export function isDangerousCommand(command: string): boolean {
     }
   }
 
-  if (/^["'].*["']$/.test(normalized)) return false;
-
   return true;
 }
 
@@ -639,21 +673,6 @@ function getRequestedCwd(params: Record<string, unknown>) {
   const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : undefined;
   const workdir = typeof params.workdir === "string" && params.workdir.trim() ? params.workdir.trim() : undefined;
   return cwd ?? workdir;
-}
-
-function resolveCommandCwd(params: Record<string, unknown>, context: ToolExecutionContext) {
-  const requestedCwd = getRequestedCwd(params);
-  const cwd = resolveWorkspacePath(requestedCwd, context.workspaceRoot);
-
-  // Fire-and-forget async check — we wrap in an IIFE because the caller is
-  // synchronous but the symlink-safe check is async.
-  // Instead, we export an async version and patch the callers.
-  // For now, do a synchronous lexical check first, then the async symlink
-  // check is done in the tool execute() methods that call this function.
-  return {
-    cwd,
-    relativeCwd: toWorkspaceRelativePath(cwd, context.workspaceRoot)
-  };
 }
 
 async function resolveCommandCwdSafe(params: Record<string, unknown>, context: ToolExecutionContext) {
@@ -837,7 +856,11 @@ export class ExecuteCommandTool extends Tool {
   async execute(params: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
     const rawCommand = params.command as string;
     const { command, diagnostic } = diagnoseAndFixCommand(rawCommand);
-    const timeout = (params.timeout as number) ?? 3_600_000;
+    // Default 1h, but clamp agent-supplied values to 5 minutes — the HTTP
+    // route caps at 300s while the agent loop previously accepted anything.
+    const MAX_COMMAND_TIMEOUT_MS = 300_000;
+    const rawTimeout = (params.timeout as number) ?? 3_600_000;
+    const timeout = Math.max(1_000, Math.min(rawTimeout, MAX_COMMAND_TIMEOUT_MS));
     const closeSession = (params.closeSession as boolean | undefined) ?? false;
     const background = (params.background as boolean | undefined) ?? false;
     const cwdInfo = await resolveCommandCwdSafe(params, context);
@@ -1223,7 +1246,16 @@ function formatProcessOutput(
 
   if (filter) {
     try {
-      const regex = new RegExp(filter, "gmi");
+      // No /g flag: with /g, regex.test() advances lastIndex and silently
+      // skips every OTHER matching line. Also bound the pattern length so a
+      // pathological LLM-supplied pattern can't burn CPU.
+      if (filter.length > 200) {
+        return {
+          success: false,
+          error: "Filter regex too long (max 200 characters)."
+        };
+      }
+      const regex = new RegExp(filter, "mi");
       const lines = output.split("\n");
       const matching = lines.filter((line) => regex.test(line));
       filterMatchCount = matching.length;

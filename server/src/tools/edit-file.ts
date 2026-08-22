@@ -3,7 +3,7 @@ import { Tool, type ToolDefinition, type ToolExecutionContext, type ToolResult }
 import { Suggest } from "../lib/suggestions.js";
 import {
   filesystemInternals,
-  isWithinWorkspace,
+  isWithinWorkspaceSymlinkSafe,
   resolveWorkspacePath,
   toWorkspaceRelativePath
 } from "./filesystem.js";
@@ -214,7 +214,7 @@ function buildClosestLineHint(content: string, oldText: string, startLine: numbe
     const trimmed = line.toLowerCase().trim();
     if (trimmed.length === 0) continue;
 
-    let score = 0;
+    let score: number;
     if (lower && trimmed.includes(lower)) {
       score = 100 + (lower.length / Math.max(trimmed.length, 1)) * 20;
     } else if (lower && trimmed.includes(lower.slice(0, Math.min(20, lower.length)))) {
@@ -321,7 +321,7 @@ class BaseEditFileTool extends Tool {
       );
     }
 
-    if (!isWithinWorkspace(fullPath, context.workspaceRoot)) {
+    if (!(await isWithinWorkspaceSymlinkSafe(fullPath, context.workspaceRoot))) {
       return {
         success: false,
         error: "Access denied: path is outside workspace"
@@ -476,7 +476,7 @@ export class AppendFileTool extends Tool {
       };
     }
 
-    if (!isWithinWorkspace(fullPath, context.workspaceRoot)) {
+    if (!(await isWithinWorkspaceSymlinkSafe(fullPath, context.workspaceRoot))) {
       return {
         success: false,
         error: "Access denied: path is outside workspace"

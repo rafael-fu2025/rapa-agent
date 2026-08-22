@@ -7,7 +7,7 @@
 // Each rule returns a list of issues. If any issue has severity === "fail",
 // the response is considered unreliable.
 
-import type { AgentStep, ToolCall, ToolResult } from "./types.js";
+import type { AgentStep } from "./types.js";
 
 export type QaSeverity = "pass" | "warn" | "fail";
 

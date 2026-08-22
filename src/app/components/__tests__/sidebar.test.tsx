@@ -95,10 +95,8 @@ describe("Sidebar", () => {
 
     const historyHeading = screen.getByText("History");
     const scrollHost = historyHeading.parentElement?.nextElementSibling;
-    const conversationLink = await screen.findByRole("link", { name: /example conversation/i });
-    const title = screen.getByText("Example conversation");
+    const title = await screen.findByText("Example conversation");
     const actionButton = screen.getByLabelText("Actions for Example conversation");
-    const contentWrapper = conversationLink.closest(".pl-2");
 
     expect(scrollHost).toHaveClass("sidebar-scroll");
     expect(scrollHost).toHaveClass("overflow-y-auto");

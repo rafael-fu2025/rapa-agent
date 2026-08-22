@@ -19,6 +19,8 @@ import { getDefaultBaseUrl, getDefaultModels } from "../lib/constants.js";
 import { decryptText, encryptText } from "../lib/crypto.js";
 import { prisma, getLocalUser } from "../lib/db.js";
 import { recordUsage } from "../lib/usage.js";
+import { resolveSseAllowOrigin } from "../lib/cors-origins.js";
+import { providerAllowsKeylessAccess } from "../lib/providers.js";
 import { translateReasoning } from "../lib/agent/reasoning-translator.js";
 
 
@@ -104,10 +106,6 @@ type ApiKeySwitchInfo = {
   fromKeyName: string;
   toKeyName: string;
 };
-
-function providerAllowsKeylessAccess(provider: string) {
-  return provider === "ollama";
-}
 
 const DEFAULT_LLM_TIMEOUT_MS = 180000;
 
@@ -286,7 +284,7 @@ async function fetchWithLlmTimeout(url: string, init: RequestInit, timeoutMs: nu
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(`LLM call timed out after ${timeoutMs}ms`);
+      throw new Error(`LLM call timed out after ${timeoutMs}ms`, { cause: error });
     }
     throw error;
   } finally {
@@ -1244,7 +1242,10 @@ export async function registerChatRoutes(app: FastifyInstance) {
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
-        "Access-Control-Allow-Origin": request.headers.origin ?? "*",
+        "X-Accel-Buffering": "no",
+        ...(resolveSseAllowOrigin(request.headers.origin)
+          ? { "Access-Control-Allow-Origin": resolveSseAllowOrigin(request.headers.origin) }
+          : {}),
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
         "Access-Control-Allow-Methods": "POST, OPTIONS"
       });
@@ -1452,12 +1453,13 @@ export async function registerChatRoutes(app: FastifyInstance) {
 
 
     reply.raw.writeHead(200, {
-
-
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
-      "Access-Control-Allow-Origin": request.headers.origin ?? "*",
+      "X-Accel-Buffering": "no",
+      ...(resolveSseAllowOrigin(request.headers.origin)
+        ? { "Access-Control-Allow-Origin": resolveSseAllowOrigin(request.headers.origin) }
+        : {}),
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
       "Access-Control-Allow-Methods": "POST, OPTIONS"
     });
@@ -1477,6 +1479,28 @@ export async function registerChatRoutes(app: FastifyInstance) {
       return reply;
     }
 
+    // Idle body-read timeout: a provider that accepts the request then stalls
+    // the stream would otherwise hang this request forever. fetchWithLlmTimeout
+    // only bounds time-to-headers.
+    const IDLE_READ_TIMEOUT_MS = 120_000;
+    let idleReadTimer = setInterval(() => {
+      reader.cancel().catch(() => undefined);
+    }, IDLE_READ_TIMEOUT_MS);
+    const resetIdleTimer = () => {
+      clearInterval(idleReadTimer);
+      idleReadTimer = setInterval(() => {
+        reader.cancel().catch(() => undefined);
+      }, IDLE_READ_TIMEOUT_MS);
+    };
+    // SSE keepalive + client-disconnect cancellation.
+    const keepalive = setInterval(() => {
+      reply.raw.write(": ping\n\n");
+    }, 25_000);
+    const onClientDisconnect = () => {
+      reader.cancel().catch(() => undefined);
+    };
+    request.raw.once("close", onClientDisconnect);
+
     const decoder = new TextDecoder();
     let buffer = "";
     let assistantContent = "";
@@ -1487,6 +1511,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
       while (!streamDone) {
         const { value, done } = await reader.read();
         if (done) break;
+        resetIdleTimer();
 
         buffer += decoder.decode(value, { stream: true });
 
@@ -1609,6 +1634,10 @@ export async function registerChatRoutes(app: FastifyInstance) {
           message: error instanceof Error ? error.message : "Stream failed"
         })}\n\n`
       );
+    } finally {
+      clearInterval(idleReadTimer);
+      clearInterval(keepalive);
+      request.raw.removeListener("close", onClientDisconnect);
     }
 
     reply.raw.end();

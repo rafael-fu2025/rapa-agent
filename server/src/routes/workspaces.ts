@@ -862,6 +862,14 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       if (s.isDirectory()) {
         return reply.code(400).send({ message: "Cannot download a directory" });
       }
+      // Whole-file buffer read — refuse absurd sizes rather than trying to
+      // allocate them. (The /file preview endpoint already caps at 1 MB.)
+      const RAW_MAX_BYTES = 100 * 1024 * 1024;
+      if (s.size > RAW_MAX_BYTES) {
+        return reply.code(413).send({
+          message: `File too large to download (${(s.size / 1024 / 1024).toFixed(0)} MB > ${RAW_MAX_BYTES / 1024 / 1024} MB cap)`
+        });
+      }
     } catch {
       return reply.code(404).send({ message: "File not found" });
     }
@@ -1031,8 +1039,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       if (entry.isDir) continue; // Go-to-file only matches files
       const lowerName = entry.name.toLowerCase();
       const lowerPath = entry.relativePath.toLowerCase();
-      let score = 0;
-      let matchedField: Scored["matchedField"] = "fuzzy";
+      let score: number;
+      let matchedField: Scored["matchedField"];
       if (lowerName === q) {
         score = 200;
         matchedField = "basename";

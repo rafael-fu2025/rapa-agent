@@ -46,7 +46,13 @@ describe("translateReasoning", () => {
     ] as const)("emits reasoning_effort for %s/%s", (provider, model) => {
       expect(translateReasoning(provider, model, "medium")).toEqual({ reasoning_effort: "medium" });
       expect(translateReasoning(provider, model, "high")).toEqual({ reasoning_effort: "high" });
-      expect(translateReasoning(provider, model, "max")).toEqual({ reasoning_effort: "max" });
+      // "max" is not part of the OpenAI reasoning_effort enum — strict
+      // providers 400 on it, so it must clamp to "high".
+      if (provider === "custom") {
+        expect(translateReasoning(provider, model, "max")).toEqual({ reasoning_effort: "max" });
+      } else {
+        expect(translateReasoning(provider, model, "max")).toEqual({ reasoning_effort: "high" });
+      }
     });
 
     it("emits reasoning_effort for azure-openai (case-insensitive)", () => {

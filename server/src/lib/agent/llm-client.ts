@@ -13,7 +13,6 @@ import {
   type ReasoningSetting
 } from "./reasoning-translator.js";
 import {
-  mergeTokenUsage,
   normalizeTokenUsage,
   RETRY_LLM_TIMEOUT_MS,
   type AgentConfig,
@@ -367,7 +366,7 @@ function splitConcatenatedToolName(
  * Split concatenated JSON objects like `{"path":"."} {"command":"ls"}` into
  * individual parsed objects.
  */
-function splitConcatenatedJsonArgs(raw: string, expectedCount: number): Array<Record<string, unknown>> {
+function splitConcatenatedJsonArgs(raw: string, _expectedCount: number): Array<Record<string, unknown>> {
   if (!raw || !raw.trim()) return [];
 
   try {
@@ -456,10 +455,30 @@ export class LLMClient {
   async *streamChat(
     messages: ProviderChatMessage[],
     timeoutMs: number,
-    openAITools: ReturnType<typeof buildOpenAITools>
+    openAITools: ReturnType<typeof buildOpenAITools>,
+    signal?: AbortSignal
   ): AsyncGenerator<LLMStreamEvent, AgentMessage, unknown> {
     const keysToTry = resolveKeysToTry(this.config);
     console.log(`[Auto-Switch] Total API keys available: ${keysToTry.length} (1 primary + ${keysToTry.length - 1} fallback)`);
+
+    // External cancellation (client disconnect / aborted run). Every per-attempt
+    // AbortController registers itself here so an external abort cancels the
+    // in-flight fetch or stalled body read immediately.
+    let activeController: AbortController | undefined;
+    const onExternalAbort = () => activeController?.abort();
+    if (signal) {
+      if (signal.aborted) throw new Error("LLM call aborted before start");
+      signal.addEventListener("abort", onExternalAbort, { once: true });
+    }
+
+    // A provider may accept the request then stall the body forever. Headers
+    // arriving is not liveness — cap the gap between body chunks instead.
+    const idleReadTimeoutMs = Math.min(timeoutMs, 120_000);
+    let idleReadTimer: NodeJS.Timeout | undefined;
+    const armIdleReadTimer = () => {
+      if (idleReadTimer) clearTimeout(idleReadTimer);
+      idleReadTimer = setTimeout(() => activeController?.abort(), idleReadTimeoutMs);
+    };
 
     let lastError: Error | undefined;
 
@@ -471,10 +490,13 @@ export class LLMClient {
       const MAX_RATE_LIMIT_RETRIES = 3;
       let rateLimitAttempt = 0;
       let response: Response | undefined;
+      let timedOut = false;
+      let connectTimeout: NodeJS.Timeout | undefined;
 
       while (rateLimitAttempt <= MAX_RATE_LIMIT_RETRIES) {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        activeController = controller;
+        connectTimeout = setTimeout(() => controller.abort(), timeoutMs);
 
         try {
           const providerExtras = buildProviderRequestExtras(
@@ -509,21 +531,30 @@ export class LLMClient {
           signal: controller.signal
         });
       } catch (error) {
-        clearTimeout(timeout);
+        if (connectTimeout) clearTimeout(connectTimeout);
+        if (signal?.aborted) {
+          throw new Error("LLM call aborted (client disconnected or run aborted)", { cause: error });
+        }
         if (error instanceof Error && error.name === "AbortError") {
           lastError = new Error(`LLM call timed out after ${timeoutMs}ms`);
           const hasMoreKeys = ki < keysToTry.length - 1;
           console.log(`[Auto-Switch] API key ${id} timed out after ${timeoutMs}ms`);
           console.log(`[Auto-Switch] Timeout fallback eligible: ${hasMoreKeys} (${ki + 1}/${keysToTry.length})`);
-          if (hasMoreKeys) {
-            console.log("[Auto-Switch] Trying next API key after timeout...");
-            continue;
+          if (!hasMoreKeys) {
+            throw lastError;
           }
-          throw lastError;
+          console.log("[Auto-Switch] Trying next API key after timeout...");
+          // Break the rate-limit retry loop so the outer for-loop advances to
+          // the next key. A bare `continue` here would re-enter this while
+          // loop with the SAME key and retry it forever.
+          timedOut = true;
+          break;
         }
         throw error;
       }
-      clearTimeout(timeout);
+      // Headers arrived — the connect timeout no longer applies. Body-read
+      // liveness is enforced below by the idle timer re-armed on every chunk.
+      if (connectTimeout) clearTimeout(connectTimeout);
 
       // -----------------------------------------------------------------
       // Rate-limit retry (429). Instead of immediately failing or switching
@@ -533,8 +564,12 @@ export class LLMClient {
       if (response.status === 429 && rateLimitAttempt < MAX_RATE_LIMIT_RETRIES) {
         rateLimitAttempt += 1;
         const retryAfter = response.headers.get("retry-after");
-        const delayMs = retryAfter
-          ? Math.min(parseInt(retryAfter, 10) * 1000, 60_000)
+        // retry-after may be an HTTP-date, in which case parseInt yields NaN —
+        // fall back to exponential backoff instead of a setTimeout(NaN) that
+        // fires immediately.
+        const retryAfterMs = parseInt(retryAfter ?? "", 10) * 1000;
+        const delayMs = Number.isFinite(retryAfterMs) && retryAfterMs >= 0
+          ? Math.min(retryAfterMs, 60_000)
           : Math.min(2000 * Math.pow(2, rateLimitAttempt - 1), 30_000);
         console.log(`[Auto-Switch] API key ${id} rate-limited (429). Retry ${rateLimitAttempt}/${MAX_RATE_LIMIT_RETRIES} in ${delayMs}ms`);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -544,6 +579,12 @@ export class LLMClient {
       // or we exhausted rate-limit retries. Break out of the retry loop.
       break;
       } // end while (rate-limit retry loop)
+
+      if (timedOut) {
+        // The current key timed out but another key is available — advance
+        // the outer for-loop to try it.
+        continue;
+      }
 
       if (!response) {
         throw lastError ?? new Error("LLM call failed: no response");
@@ -632,8 +673,22 @@ export class LLMClient {
         const nativeToolCallsMap = new Map<number, { id?: string; name: string; arguments: string; thoughtSignature?: string }>();
         let streamDone = false;
 
+        try {
         while (!streamDone) {
-          const { value, done } = await reader.read();
+          armIdleReadTimer();
+          let readResult: ReadableStreamReadResult<Uint8Array>;
+          try {
+            readResult = await reader.read();
+          } catch (readError) {
+            if (signal?.aborted) {
+              throw new Error("LLM stream aborted (client disconnected or run aborted)", { cause: readError });
+            }
+            if (readError instanceof Error && readError.name === "AbortError") {
+              throw new Error(`LLM stream stalled: no data received for ${idleReadTimeoutMs}ms`, { cause: readError });
+            }
+            throw readError;
+          }
+          const { value, done } = readResult;
           if (done) break;
 
           buffer += decoder.decode(value, { stream: true });
@@ -753,7 +808,7 @@ export class LLMClient {
               if (tc.arguments) {
                 parameters = JSON.parse(tc.arguments);
               }
-            } catch (e) {
+            } catch {
               console.warn(`[Native Tool] Failed to parse arguments for ${tc.name}:`, tc.arguments);
             }
             finalToolCalls.push({
@@ -791,6 +846,10 @@ export class LLMClient {
           reasoning: finalReasoning || undefined,
           toolCalls: finalToolCalls.length > 0 ? finalToolCalls : undefined
         };
+        } finally {
+          if (idleReadTimer) clearTimeout(idleReadTimer);
+          signal?.removeEventListener("abort", onExternalAbort);
+        }
       }
 
       const details = await response.text().catch(() => response.statusText);

@@ -15,6 +15,10 @@ const conversationParamsSchema = z.object({
   id: z.string().min(1)
 });
 
+const messagesQuerySchema = z.object({
+  limit: z.coerce.number().min(1).max(2000).optional()
+});
+
 export async function registerConversationRoutes(app: FastifyInstance) {
   const getConversationsSchema = z.object({
     cursor: z.string().optional(),
@@ -207,8 +211,14 @@ export async function registerConversationRoutes(app: FastifyInstance) {
   app.get("/conversations/:id/messages", async (request, reply) => {
     const params = conversationParamsSchema.safeParse(request.params);
     if (!params.success) {
-      return reply.code(400).send({ message: "Invalid params" });
+      return reply.code(400).send({ message: "Invalid params", issues: params.error.issues });
     }
+
+    const query = messagesQuerySchema.safeParse(request.query ?? {});
+    if (!query.success) {
+      return reply.code(400).send({ message: "Invalid query", issues: query.error.issues });
+    }
+    const limitParam = Math.max(1, Math.min(2_000, Math.floor(query.data.limit ?? 500)));
 
     const user = await getLocalUser();
     const conversation = await prisma.conversation.findFirst({
@@ -229,10 +239,15 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       return reply.code(404).send({ message: "Conversation not found" });
     }
 
+    // Bound the payload: conversations can grow unbounded, and the whole
+    // array is serialized to the client in one response. Default 500 most
+    // recent messages, oldest-first; `limit` query param adjusts (max 2000).
     const rawMessages = await prisma.message.findMany({
       where: { conversationId: params.data.id },
-      orderBy: { createdAt: "asc" }
+      orderBy: { createdAt: "desc" },
+      take: limitParam
     });
+    rawMessages.reverse();
 
     // Deduplicate: if consecutive messages have identical role and content
     // and were created within 5 minutes of each other, keep only the first.

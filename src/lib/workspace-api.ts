@@ -1,40 +1,6 @@
 // Workspace API client
 
-const viteEnv = (import.meta as ImportMeta & { env?: { VITE_API_URL?: string } }).env;
-// Default to `127.0.0.1` (IPv4 loopback) rather than `localhost` to
-// avoid the IPv6/IPv4 resolution flakiness on Windows — see the
-// longer comment in src/lib/api.ts. Override via VITE_API_URL.
-const API_BASE = (viteEnv?.VITE_API_URL ?? "http://127.0.0.1:8787") + "/api";
-
-function authHeaders(): Record<string, string> {
-  const token = localStorage.getItem("auth_token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-/** Retry wrapper for 429 (rate limit) with exponential backoff. */
-async function fetchWithRetry(url: string, init?: RequestInit, maxRetries = 3): Promise<Response> {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    let response: Response;
-    try {
-      response = await fetch(url, init);
-    } catch (err) {
-      // Network-level failure (DNS, connection refused, etc.).
-      // Surface a clear message instead of the raw TypeError.
-      const message = err instanceof Error ? err.message : "Unknown network error";
-      throw new Error(
-        `Couldn't reach ${url}: ${message}. ` +
-          "Is the backend running? Try `cd server && npm run dev` in a terminal."
-      );
-    }
-    if (response.status !== 429 || attempt === maxRetries) return response;
-    const retryAfter = response.headers.get("retry-after");
-    const delayMs = retryAfter
-      ? Math.min(parseInt(retryAfter, 10) * 1000, 30_000)
-      : Math.min(1000 * Math.pow(2, attempt), 10_000);
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
-  }
-  return fetch(url, init);
-}
+import { API_BASE, authHeaders, fetchWithRateLimitRetry as fetchWithRetry } from "./http";
 
 export type Workspace = {
   id: string;

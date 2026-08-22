@@ -10,8 +10,7 @@
  * and survives all compaction levels.
  */
 
-import type { AgentMessage } from "./types.js";
-import { PROVIDER_HISTORY_CHAR_BUDGET } from "./types.js";
+import { PROVIDER_HISTORY_CHAR_BUDGET, type AgentMessage } from "./types.js";
 
 export const COMPACTION_WARN_THRESHOLD = 0.55;
 export const COMPACTION_THRESHOLD = 0.65;

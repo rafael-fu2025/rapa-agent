@@ -1,5 +1,7 @@
 // Tool system for agentic capabilities
 
+import { PLAN_MODE_ALLOWED_TOOLS } from "./tool-scopes.js";
+
 export type ToolParameter = {
   type: "string" | "number" | "boolean" | "object" | "array";
   description: string;
@@ -223,32 +225,7 @@ export class ToolRegistry {
     }
 
     if (mode === "plan") {
-      const allowedTools = new Set([
-        "read_file",
-        "read_image",
-        "list_directory",
-        "search_files",
-        "search_content",
-        "fetch_url",
-        "web_search",
-        "think",
-        "ask_user",
-        "add_task",
-        "update_task",
-        "list_tasks",
-        "summarize_progress",
-        "delegate_task",
-        "get_agent_status",
-        "git_status",
-        "git_diff",
-        "git_log",
-        "git_branch",
-        "list_changed_files",
-        "read_lints",
-        "read_document"
-      ]);
-
-      return this.list().filter((def) => allowedTools.has(def.name));
+      return this.list().filter((def) => PLAN_MODE_ALLOWED_TOOLS.has(def.name));
     }
 
     return this.list();

@@ -15,8 +15,10 @@ export type ToolRiskLevel = "none" | "read" | "write" | "destructive" | "network
 
 /**
  * Service Definition — pure metadata. No execution, no policy.
+ * (Parameters are JSON-schema-like `ToolParameter` records, so there is no
+ * runtime-typed params generic here — only the result type is carried.)
  */
-export interface CapabilityDefinition<TParams = unknown, TResult = unknown> {
+export interface CapabilityDefinition<TResult = unknown> {
   name: string;
   description: string;
   parameters: Record<string, ToolParameter>;
@@ -37,7 +39,7 @@ export interface CapabilityDefinition<TParams = unknown, TResult = unknown> {
  * different generics can coexist.
  */
 export interface CapabilityProvider<TParams = unknown, TResult = unknown> {
-  readonly definition: CapabilityDefinition<TParams, TResult>;
+  readonly definition: CapabilityDefinition<TResult>;
   execute(params: TParams, context: ToolExecutionContext): Promise<TResult>;
 }
 

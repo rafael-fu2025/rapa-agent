@@ -38,21 +38,24 @@ export class LoopDetector {
 
   recordAndAnalyze(step: AgentStep): LoopDetectionResult {
     const toolCalls = step.toolCalls ?? [];
+    const toolResults = step.toolResults ?? [];
     if (toolCalls.length === 0) {
       return { detected: false, loopType: 'none', action: 'none' };
     }
 
     const primaryTool = toolCalls[0];
     const target = this.extractTarget(primaryTool);
-    const hasFailure = toolCalls.some(tc => tc.status === 'failed');
-    const failedCall = toolCalls.find(tc => tc.status === 'failed');
+    const failedIndex = toolResults.findIndex(r => r.success === false);
+    const hasFailure = failedIndex !== -1;
+    const failedCall = failedIndex !== -1 ? toolCalls[failedIndex] : undefined;
+    const errorMessage = failedIndex !== -1 ? toolResults[failedIndex].error : undefined;
 
     const fingerprint: StepFingerprint = {
-      stepIndex: step.stepNumber,
+      stepIndex: step.iteration,
       toolNames: toolCalls.map(tc => tc.name),
       primaryTarget: target,
       hasFailure,
-      errorMessage: failedCall?.error
+      errorMessage
     };
 
     this.history.push(fingerprint);
@@ -69,7 +72,8 @@ export class LoopDetector {
     }
 
     if (hasFailure && target) {
-      const failKey = `${primaryTool.name}:${target}`;
+      const failedToolName = failedCall?.name ?? primaryTool.name;
+      const failKey = `${failedToolName}:${target}`;
       const currentFails = (this.consecutiveFailuresOnTarget.get(failKey) ?? 0) + 1;
       this.consecutiveFailuresOnTarget.set(failKey, currentFails);
 
@@ -79,7 +83,7 @@ export class LoopDetector {
           loopType: "stalled_failure",
           action: "rollback_hint",
           target,
-          message: `Loop Guard: Tool '${primaryTool.name}' has failed ${currentFails} times in a row on '${target}'. Stop repeating the same action. Switch strategy: read the full file with read_file, use write_file for a complete rewrite, or revisit your assumptions.`
+          message: `Loop Guard: Tool '${failedToolName}' has failed ${currentFails} times in a row on '${target}'. Stop repeating the same action. Switch strategy: read the full file with read_file, use write_file for a complete rewrite, or revisit your assumptions.`
         };
       } else if (currentFails === 2) {
         return {
@@ -87,7 +91,7 @@ export class LoopDetector {
           loopType: "stalled_failure",
           action: "nudge",
           target,
-          message: `Loop Warning: '${primaryTool.name}' failed twice on '${target}'. Error: ${failedCall?.error ?? 'unknown'}. Carefully inspect the file content before attempting another edit.`
+          message: `Loop Warning: '${failedToolName}' failed twice on '${target}'. Error: ${errorMessage ?? 'unknown'}. Carefully inspect the file content before attempting another edit.`
         };
       }
     } else if (!hasFailure && target) {

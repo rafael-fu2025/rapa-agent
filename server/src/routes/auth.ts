@@ -19,8 +19,14 @@ export async function registerAuthRoutes(app: FastifyInstance) {
 
     let user = await prisma.appUser.findUnique({ where: { email } });
 
-    // For single-user local deployment, auto-create user (or set password) on first login
-    if ((!user || !user.passwordHash) && email === "local@localhost.com") {
+    // For single-user local deployment, auto-create user (or set password) on
+    // first login. Provisioning is restricted to LOOPBACK requests: whoever
+    // reaches the server first would otherwise claim the sole account with a
+    // password of their choosing — harmless on the default 127.0.0.1 bind,
+    // a permanent takeover if the API is ever exposed to the LAN.
+    const isLoopback =
+      request.ip === "127.0.0.1" || request.ip === "::1" || request.ip === "::ffff:127.0.0.1";
+    if ((!user || !user.passwordHash) && email === "local@localhost.com" && isLoopback) {
       const passwordHash = await bcrypt.hash(password, 10);
       if (user) {
         user = await prisma.appUser.update({

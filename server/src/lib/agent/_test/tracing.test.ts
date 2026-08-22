@@ -5,7 +5,6 @@ import {
   configureTracing,
   consoleSpanExporter,
   endTrace,
-  flushTrace,
   getActiveExporter,
   getCurrentSpan,
   getCurrentTraceId,

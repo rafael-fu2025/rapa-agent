@@ -163,14 +163,16 @@ export type ChatResponse = {
   message: ConversationMessage;
 };
 
-const viteEnv = (import.meta as ImportMeta & { env?: { VITE_API_URL?: string } }).env;
-// Default to `127.0.0.1` (IPv4 loopback) rather than `localhost` to avoid
+// API_BASE lives in ./http (shared with agent-api.ts and workspace-api.ts).
+// It defaults to `127.0.0.1` (IPv4 loopback) rather than `localhost` to avoid
 // IPv6/IPv4 resolution flakiness on Windows — on some machines
 // `localhost` resolves to `::1` first and our backend only binds to
 // IPv4, so requests would silently fail. The user can override via
 // the Vite env `VITE_API_URL` (e.g. "http://192.168.1.5:8787" for
 // LAN access).
-export const API_BASE = (viteEnv?.VITE_API_URL ?? "http://127.0.0.1:8787") + "/api";
+import { API_BASE } from "./http";
+
+export { API_BASE };
 
 export async function consumeSseStream<TEvent>(
   response: Response,
@@ -196,42 +198,49 @@ export async function consumeSseStream<TEvent>(
   let buffer = "";
   const idleTimeoutMs = options?.idleTimeoutMs ?? 30000;
 
-  while (true) {
-    // Race reader.read() against an idle timeout
-    const timeoutId = setTimeout(() => {
-      reader.cancel().catch(() => {});
-    }, idleTimeoutMs);
+  // try/finally on every exit path: a throwing onEvent handler or an aborted
+  // read used to leave the reader locked and the HTTP stream unconsumed.
+  try {
+    while (true) {
+      // Race reader.read() against an idle timeout
+      const timeoutId = setTimeout(() => {
+        reader.cancel().catch(() => {});
+      }, idleTimeoutMs);
 
-    const { done, value } = await reader.read();
-    clearTimeout(timeoutId);
+      const { done, value } = await reader.read();
+      clearTimeout(timeoutId);
 
-    if (done) break;
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
+      buffer += decoder.decode(value, { stream: true });
 
-    let boundaryIndex = buffer.indexOf("\n\n");
-    while (boundaryIndex !== -1) {
-      const rawEvent = buffer.slice(0, boundaryIndex);
-      buffer = buffer.slice(boundaryIndex + 2);
+      let boundaryIndex = buffer.indexOf("\n\n");
+      while (boundaryIndex !== -1) {
+        const rawEvent = buffer.slice(0, boundaryIndex);
+        buffer = buffer.slice(boundaryIndex + 2);
 
-      const dataLines = rawEvent
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trim());
+        const dataLines = rawEvent
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trim());
 
-      if (dataLines.length > 0) {
-        const data = dataLines.join("\n");
+        if (dataLines.length > 0) {
+          const data = dataLines.join("\n");
 
-        try {
-          handlers.onEvent(JSON.parse(data) as TEvent);
-        } catch {
-          handlers.onInvalidEvent?.();
+          try {
+            handlers.onEvent(JSON.parse(data) as TEvent);
+          } catch {
+            handlers.onInvalidEvent?.();
+          }
         }
-      }
 
-      boundaryIndex = buffer.indexOf("\n\n");
+        boundaryIndex = buffer.indexOf("\n\n");
+      }
     }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
 }
 
@@ -265,7 +274,8 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
       const message = err instanceof Error ? err.message : "Unknown network error";
       throw new Error(
         `Couldn't reach the API at ${API_BASE}${path}: ${message}. ` +
-          "Is the backend running? Try `cd server && npm run dev` in a terminal."
+          "Is the backend running? Try `cd server && npm run dev` in a terminal.",
+        { cause: err }
       );
     }
 
@@ -526,7 +536,8 @@ export async function streamChat(
         const message = err instanceof Error ? err.message : "Unknown network error";
         throw new Error(
           `Couldn't reach the API at ${API_BASE}/chat/stream: ${message}. ` +
-            "Is the backend running? Try `cd server && npm run dev` in a terminal."
+            "Is the backend running? Try `cd server && npm run dev` in a terminal.",
+          { cause: err }
         );
       }
 

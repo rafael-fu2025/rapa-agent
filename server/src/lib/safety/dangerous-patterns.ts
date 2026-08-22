@@ -40,7 +40,7 @@ const PATTERNS: DangerousPattern[] = [
     label: "Recursive delete of root or system directory",
     explanation: "This command will recursively delete files starting from a system-critical location.",
     consequence: "All files in the target directory and its children will be permanently deleted.",
-    pattern: /\brm\s+(-\w*r\w*f\w*|--recursive\s+--force|-rf|-fr|-r\s+-f|-f\s+-r)\s+(\/|\.\.|\~\/|\$HOME|\/etc|\/usr|\/var|\/boot|\/sys|\/proc|C:\\Windows)/i
+    pattern: /\brm\s+(-\w*r\w*f\w*|--recursive\s+--force|-rf|-fr|-r\s+-f|-f\s+-r)\s+(\/|\.\.|~\/|\$HOME|\/etc|\/usr|\/var|\/boot|\/sys|\/proc|C:\\Windows)/i
   },
   {
     id: "rm-rf-wildcard",
@@ -57,6 +57,30 @@ const PATTERNS: DangerousPattern[] = [
     explanation: "This command will recursively and forcefully delete files. There is no recycle bin to recover from.",
     consequence: "Files at the target path (and all subdirectories) will be permanently deleted.",
     pattern: /\brm\s+(-\w*r\w*f\w*|--recursive\s+--force|-rf|-fr|-r\s+-f|-f\s+-r)\b/i
+  },
+  {
+    id: "windows-rd-silent",
+    severity: "destructive",
+    label: "Silent recursive delete (rd/del)",
+    explanation: "`rd /s /q` and `del /f /s /q` are the Windows equivalents of `rm -rf` — recursive, forced, and without confirmation.",
+    consequence: "All files under the target directory will be permanently deleted with no confirmation prompt.",
+    pattern: /\b(rd|rmdir)\s+.*\/s\b.*\/q\b|\bdel\s+.*\/f\b.*\/(s|q)\b/i
+  },
+  {
+    id: "powershell-remove-item-recurse",
+    severity: "destructive",
+    label: "PowerShell recursive forced removal",
+    explanation: "`Remove-Item -Recurse -Force` recursively deletes without confirmation.",
+    consequence: "All items under the target path will be permanently deleted with no confirmation prompt.",
+    pattern: /\bremove-item\b[^\n|;&]*\b(-recurse|-r)\b[^\n|;&]*\b(-force|-f)\b|\bremove-item\b[^\n|;&]*\b(-force|-f)\b[^\n|;&]*\b(-recurse|-r)\b|\brm\b[^\n|;&]*-recurse[^\n|;&]*-force/i
+  },
+  {
+    id: "format-drive",
+    severity: "irreversible",
+    label: "Format a drive",
+    explanation: "`format` erases an entire drive volume.",
+    consequence: "All data on the target drive will be lost.",
+    pattern: /\bformat\s+[a-z]:/i
   },
   {
     id: "dd-disk-overwrite",

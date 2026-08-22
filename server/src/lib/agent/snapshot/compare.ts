@@ -3,12 +3,13 @@
  * `.agents/notes/implemented/testing/2026-08-15-snapshot-harness-for-agent-loop.md`
  */
 
-import type {
-  SnapshotAssertion,
-  SnapshotComparisonResult,
-  SnapshotFixture
+import {
+  REASONING_PREFIX_CHARS,
+  SNAPSHOT_IGNORED_FIELDS,
+  type SnapshotAssertion,
+  type SnapshotComparisonResult,
+  type SnapshotFixture
 } from "./types.js";
-import { REASONING_PREFIX_CHARS, SNAPSHOT_IGNORED_FIELDS } from "./types.js";
 
 /**
  * Strip noise from a recorded event for comparison.

@@ -11,22 +11,20 @@ describe("LoopDetector", () => {
 
   it("returns no loop for clean sequential executions", () => {
     const step1: AgentStep = {
-      stepNumber: 1,
       iteration: 1,
       reasoning: "reading a",
-      toolCalls: [{ id: "1", name: "read_file", parameters: { path: "a.ts" }, status: "completed" }],
-      toolResults: [],
+      toolCalls: [{ id: "1", name: "read_file", parameters: { path: "a.ts" } }],
+      toolResults: [{ success: true, output: "contents of a" }],
       timestamp: new Date()
     };
     const res1 = detector.recordAndAnalyze(step1);
     expect(res1.detected).toBe(false);
 
     const step2: AgentStep = {
-      stepNumber: 2,
       iteration: 2,
       reasoning: "writing a",
-      toolCalls: [{ id: "2", name: "write_file", parameters: { path: "a.ts", content: "x" }, status: "completed" }],
-      toolResults: [],
+      toolCalls: [{ id: "2", name: "write_file", parameters: { path: "a.ts", content: "x" } }],
+      toolResults: [{ success: true }],
       timestamp: new Date()
     };
     const res2 = detector.recordAndAnalyze(step2);
@@ -35,11 +33,10 @@ describe("LoopDetector", () => {
 
   it("detects repeated failures on the same file", () => {
     const failedStep = (num: number): AgentStep => ({
-      stepNumber: num,
       iteration: num,
       reasoning: "editing bad",
-      toolCalls: [{ id: String(num), name: 'edit_file', parameters: { path: 'src/app.ts' }, status: 'failed', error: 'target text not found' }],
-      toolResults: [],
+      toolCalls: [{ id: String(num), name: 'edit_file', parameters: { path: 'src/app.ts' } }],
+      toolResults: [{ success: false, error: 'target text not found' }],
       timestamp: new Date()
     });
 
@@ -58,11 +55,10 @@ describe("LoopDetector", () => {
 
   it("detects redundant reading without modification", () => {
     const readStep = (num: number): AgentStep => ({
-      stepNumber: num,
       iteration: num,
       reasoning: "reading again",
-      toolCalls: [{ id: String(num), name: 'read_file', parameters: { path: 'src/main.ts' }, status: 'completed' }],
-      toolResults: [],
+      toolCalls: [{ id: String(num), name: 'read_file', parameters: { path: 'src/main.ts' } }],
+      toolResults: [{ success: true, output: "contents" }],
       timestamp: new Date()
     });
 
@@ -76,11 +72,10 @@ describe("LoopDetector", () => {
 
   it("detects cyclic oscillation between two files", () => {
     const makeStep = (num: number, path: string): AgentStep => ({
-      stepNumber: num,
       iteration: num,
       reasoning: "checking",
-      toolCalls: [{ id: String(num), name: 'edit_file', parameters: { path }, status: 'completed' }],
-      toolResults: [],
+      toolCalls: [{ id: String(num), name: 'edit_file', parameters: { path } }],
+      toolResults: [{ success: true }],
       timestamp: new Date()
     });
 

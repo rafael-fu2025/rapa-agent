@@ -171,7 +171,7 @@ export function InteractiveOptions({
     setExpandedPreview((current) => (current === key ? null : key));
   };
 
-  const allQuestionsAnswered = questions.every((q, idx) => {
+  const allQuestionsAnswered = questions.every((_q, idx) => {
     const answer = answers[idx];
     if (!answer) return false;
     return answer.selectedIndexes.size > 0 || answer.customValue.trim().length > 0;

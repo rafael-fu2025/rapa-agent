@@ -233,11 +233,11 @@ export function createLangfuseExporter(options: LangfuseExporterOptions): SpanEx
       if (!res.ok) {
         // Don't retry — fail soft and log. Spans are best-effort.
         const text = await res.text().catch(() => "");
-        // eslint-disable-next-line no-console
+         
         console.warn(`[langfuse-exporter] non-2xx response (${res.status}): ${text.slice(0, 200)}`);
       }
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.warn(`[langfuse-exporter] failed to send spans:`, (err as Error).message);
     }
   }

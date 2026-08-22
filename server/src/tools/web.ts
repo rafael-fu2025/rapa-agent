@@ -1,5 +1,7 @@
 // Web tools for fetching and searching
 
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { Tool, type ToolDefinition, type ToolResult, type ToolExecutionContext } from "../lib/tools.js";
 import { Suggest } from "../lib/suggestions.js";
 import { prisma, getLocalUser } from "../lib/db.js";
@@ -9,6 +11,70 @@ import { decryptText } from "../lib/crypto.js";
 const FETCH_URL_MAX_CHARS = 80_000;
 // Maximum characters sent to the LLM for processing
 const LLM_CONTENT_MAX_CHARS = 60_000;
+// Hard wall-clock bound for a single fetch (connect + headers + body).
+const FETCH_URL_TIMEOUT_MS = 30_000;
+// Hard cap on downloaded bytes — the old code buffered the ENTIRE response
+// (response.text()) before truncating, so a 2 GB response was fully read
+// into memory. We stream and stop at the cap instead.
+const FETCH_URL_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Resolve the URL's host and reject link-local / cloud-metadata addresses
+ * (169.254.0.0/16 IPv4, fe80::/10 IPv6). Balanced policy: loopback and
+ * private LAN ranges remain reachable on purpose.
+ * Returns the offending address on block, or null when allowed.
+ */
+async function checkLinkLocalAddress(rawUrl: string): Promise<string | null> {
+  let host: string;
+  try {
+    host = new URL(rawUrl).hostname;
+  } catch {
+    return null; // malformed URL — let fetch() produce the error
+  }
+  const literal = isIP(host);
+  const addresses: string[] = literal ? [host] : (await lookup(host, { all: true }).catch(() => []))
+    .map((entry) => entry.address);
+  for (const address of addresses) {
+    const kind = isIP(address);
+    if (kind === 4 && address.startsWith("169.254.")) return address;
+    if (kind === 6) {
+      const lower = address.toLowerCase();
+      if (lower.startsWith("fe80:") || lower === "::1%0") return address;
+    }
+  }
+  return null;
+}
+
+/**
+ * Read a response body as text, streaming with a hard byte cap. Aborts the
+ * download once the cap is exceeded and returns what was read (the caller's
+ * truncation marks it as partial).
+ */
+async function readBodyCapped(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    return response.text().catch(() => "");
+  }
+  const decoder = new TextDecoder();
+  let received = 0;
+  let text = "";
+  let capped = false;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    text += decoder.decode(value, { stream: true });
+    if (received >= FETCH_URL_MAX_BYTES) {
+      capped = true;
+      await reader.cancel().catch(() => undefined);
+      break;
+    }
+  }
+  if (capped) {
+    text += `\n[Download capped at ${FETCH_URL_MAX_BYTES} bytes — content truncated]`;
+  }
+  return text;
+}
 
 /**
  * Lightweight HTML-to-text converter. Strips tags, decodes entities, collapses
@@ -133,7 +199,7 @@ export class FetchUrlTool extends Tool {
     name: "fetch_url",
     description: "Fetch content from a URL with optional AI-powered processing. When a prompt is provided, the fetched content is processed by the LLM to extract, summarize, or answer questions about the page.",
     category: "web",
-    riskLevel: "read",
+    riskLevel: "network",
     parameters: {
       url: {
         type: "string",
@@ -172,10 +238,24 @@ export class FetchUrlTool extends Tool {
     const prompt = (params.prompt as string | undefined)?.trim() || undefined;
 
     try {
+      // SSRF guard (balanced policy): block link-local / cloud-metadata
+      // addresses, which are never legitimate fetch targets and are the
+      // standard prompt-injection exfiltration path. Loopback and LAN stay
+      // reachable — this is a personal-machine tool and users legitimately
+      // fetch their own dev servers.
+      const ssrf = await checkLinkLocalAddress(url);
+      if (ssrf) {
+        return {
+          success: false,
+          error: `Blocked: ${url} resolves to a link-local/metadata address (${ssrf}), which fetch_url is not allowed to reach.`
+        };
+      }
+
       const response = await fetch(url, {
         method,
         headers,
-        body: body ? body : undefined
+        body: body ? body : undefined,
+        signal: AbortSignal.timeout(FETCH_URL_TIMEOUT_MS)
       });
 
       // 4xx/5xx — surface the body in the error, with a recovery hint.
@@ -207,10 +287,11 @@ export class FetchUrlTool extends Tool {
       let rawText: string;
 
       if (contentType.includes("application/json")) {
-        rawData = await response.json();
+        const jsonText = await readBodyCapped(response);
+        rawData = JSON.parse(jsonText);
         rawText = typeof rawData === "string" ? rawData : JSON.stringify(rawData, null, 2);
       } else {
-        rawText = await response.text();
+        rawText = await readBodyCapped(response);
         rawData = rawText;
       }
 
@@ -262,7 +343,7 @@ export class WebSearchTool extends Tool {
     name: "web_search",
     description: "Search the web for information using Serper API or DuckDuckGo fallback. When searching for 'latest' or 'current' info, ALWAYS include the current year in your search query string.",
     category: "web",
-    riskLevel: "read",
+    riskLevel: "network",
     parameters: {
       query: {
         type: "string",
@@ -373,7 +454,7 @@ export class WebSearchTool extends Tool {
     }
 
     const html = await response.text();
-    const resultRegex = /<a[^>]+class=\"result__a\"[^>]+href=\"([^\"]+)\"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]+class=\"result__snippet\"[^>]*>([\s\S]*?)<\/a>/gi;
+    const resultRegex = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi;
     const results: Array<{ rank: number; title: string; url: string; snippet: string }> = [];
 
     let match: RegExpExecArray | null;

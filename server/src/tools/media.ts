@@ -6,7 +6,6 @@
 // tool always succeeds in a sensible way during development.
 
 import { writeFile } from "node:fs/promises";
-import { resolve, join } from "node:path";
 import { randomBytes } from "node:crypto";
 
 import { Tool, type ToolDefinition, type ToolExecutionContext, type ToolResult } from "../lib/tools.js";
@@ -39,12 +38,6 @@ function pickOutputPath(suggested: string | undefined, workspaceRoot: string, ex
 
 function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value);
-}
-
-function decodeDataUrl(dataUrl: string): { mime: string; bytes: Buffer } {
-  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-  if (!match) throw new Error("data URL is not in base64 form");
-  return { mime: match[1], bytes: Buffer.from(match[2], "base64") };
 }
 
 export class GenerateImageTool extends Tool {
@@ -171,7 +164,6 @@ export class GenerateImageTool extends Tool {
       const item = items[i];
       let buffer: Buffer;
       let ext: string;
-      let placeholder = false;
 
       if (item.b64_json) {
         buffer = Buffer.from(item.b64_json, "base64");

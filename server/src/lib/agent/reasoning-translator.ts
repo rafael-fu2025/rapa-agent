@@ -171,7 +171,9 @@ export function translateReasoning(
       //
       // NOTE: deepseek only honors "high" and "max" — low/medium are
       // silently dropped. That's fine: it degrades gracefully.
-      return { reasoning_effort: setting };
+      // "max" is NOT part of the standard enum — clamp to "high" so
+      // strict providers don't 400 the whole request.
+      return { reasoning_effort: setting === "max" ? "high" : setting };
     }
 
     case "anthropic":
@@ -234,7 +236,9 @@ export function translateReasoning(
       // unknown body fields to the upstream, so `reasoning_effort`
       // is the safest universal shape (works for the OpenAI /
       // DeepSeek / OpenRouter upstreams Puter serves).
-      return { reasoning_effort: setting };
+      // Clamp "max" → "high": the upstreams Puter serves reject
+      // non-enum values.
+      return { reasoning_effort: setting === "max" ? "high" : setting };
     }
 
     case "minimax": {

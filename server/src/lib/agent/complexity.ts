@@ -70,7 +70,6 @@ export function estimateComplexity(
   const fileScore = Math.min(1, filePathCount / 6);
   const verbScore = Math.min(1, heavyVerbCount / 3);
   const codeScore = Math.min(1, codeFenceCount / 2);
-  const questionScore = Math.min(1, questionCount / 3);
 
   const score = Math.max(
     lengthScore,

@@ -1,18 +1,21 @@
 import { promisify } from "node:util";
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { Tool, type ToolDefinition, type ToolExecutionContext, type ToolResult } from "../lib/tools.js";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 async function runGit(args: string[], cwd: string, timeout = 30000): Promise<ToolResult> {
   try {
-    const { stdout, stderr } = await execAsync(`git ${args.join(" ")}`, {
+    // execFile passes args directly to git without a shell, so LLM-controlled
+    // values (commit messages, refs, paths) can never break out into commands.
+    const { stdout, stderr } = await execFileAsync("git", args, {
       cwd,
       timeout,
       maxBuffer: 1024 * 1024 * 8,
+      windowsHide: true,
       env: { ...process.env, LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" }
     });
 

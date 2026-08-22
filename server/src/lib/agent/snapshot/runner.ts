@@ -9,8 +9,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Agent } from "../../agent.js";
-import { toolRegistry } from "../../tools.js";
-import type { ToolExecutionContext } from "../../tools.js";
+import { toolRegistry, type ToolExecutionContext } from "../../tools.js";
 import type { AgentConfig } from "../types.js";
 
 import { ReplayLLMClient } from "./replay-llm.js";

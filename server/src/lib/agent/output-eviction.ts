@@ -13,6 +13,10 @@ export const EVICTION_THRESHOLD_CHARS = 8_000;
 export const EVICTION_PREVIEW_CHARS = 2_000;
 export const EVICTION_DIR = ".rapa/evicted";
 
+// Process-unique suffix so parallel evictions in the same millisecond don't
+// collide on the same filename.
+let evictionFileCounter = 0;
+
 export type EvictableResult = {
   success: boolean;
   data?: unknown;
@@ -61,7 +65,11 @@ export async function evictResult(
   }
 
   const timestamp = Date.now().toString(36);
-  const filename = `${toolName}-${timestamp}.txt`;
+  // Parallel read-only tools evicted within the same millisecond would
+  // collide on `${toolName}-${timestamp}` and silently overwrite each other —
+  // append a process-unique counter.
+  evictionFileCounter += 1;
+  const filename = `${toolName}-${timestamp}-${evictionFileCounter.toString(36)}.txt`;
   const filePath = join(evictionDir, filename);
   const relativePath = relative(workspacePath, filePath);
 
@@ -98,7 +106,7 @@ export async function evictResult(
   const HEAD_CHARS = 1_000;
   const TAIL_CHARS = 1_500;
 
-  let preview = "";
+  let preview: string;
   if (charCount <= HEAD_CHARS + TAIL_CHARS) {
     preview = evictedContent;
   } else {

@@ -18,6 +18,38 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 export type ToolScope = `tool:${string}` | `category:${string}` | "*";
 
+/**
+ * Single source of truth for the plan-mode read-only tool allowlist.
+ * Both the advertised tool list (ToolRegistry.listForMode) and the
+ * enforcement gate (ToolOrchestrator) must use THIS set — previously two
+ * hand-maintained lists diverged and the LLM was offered tools that were
+ * then rejected at execution time.
+ */
+export const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
+  "read_file",
+  "read_image",
+  "read_document",
+  "list_directory",
+  "search_files",
+  "search_content",
+  "fetch_url",
+  "web_search",
+  "think",
+  "ask_user",
+  "add_task",
+  "update_task",
+  "list_tasks",
+  "summarize_progress",
+  "delegate_task",
+  "get_agent_status",
+  "git_status",
+  "git_diff",
+  "git_log",
+  "git_branch",
+  "list_changed_files",
+  "read_lints"
+]);
+
 export type CapabilityTokenPayload = {
   /** Issuing agent (or "user" for human operators). */
   sub: string;

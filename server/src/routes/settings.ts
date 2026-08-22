@@ -57,12 +57,10 @@ const GENERAL_DEFAULTS: Omit<GeneralSettingsResponse, "version"> = {
   reportIssueUrl: "https://github.com/issues"
 };
 
+import { providerAllowsKeylessAccess as sharedProviderAllowsKeylessAccess } from "../lib/providers.js";
+
 function providerAllowsKeylessAccess(provider: string) {
-  // Puter doesn't require an API key in our system — it proxies user auth via
-  // the browser session when called from `puter.ai.chat()`. For model-listing
-  // purposes, Puter's catalog endpoint is also publicly readable, so we treat
-  // it as keyless like Ollama.
-  return provider === "ollama" || provider === "puter";
+  return sharedProviderAllowsKeylessAccess(provider);
 }
 
 /**
@@ -301,9 +299,20 @@ function formatLocalDate(date: Date): string {
 }
 
 async function buildUsageAnalytics(userId: string) {
+  // Project only the columns the aggregation reads — the previous unbounded
+  // findMany materialized every UsageRecord row in full.
   const records = await prisma.usageRecord.findMany({
     where: { userId },
-    orderBy: { recordedAt: "asc" }
+    orderBy: { recordedAt: "asc" },
+    select: {
+      provider: true,
+      model: true,
+      mode: true,
+      promptTokens: true,
+      completionTokens: true,
+      totalTokens: true,
+      recordedAt: true
+    }
   });
 
   const providerMap = new Map<string, UsageAnalyticsAccumulator>();
@@ -698,7 +707,7 @@ export async function registerSettingsRoutes(app: FastifyInstance) {
         apiKey: decrypted,
         isActive: apiKey.isActive
       };
-    } catch (error) {
+    } catch {
       return reply.code(400).send({ message: "Failed to decrypt API key. It may be corrupted." });
     }
   });

@@ -8,6 +8,7 @@
 
 import type { ToolApprovalDecision, ToolApprovalRequest } from "../../lib/agent.js";
 import { shouldAutoApprove } from "../../lib/auto-approve.js";
+import { analyseCommandRisk } from "../../lib/safety/dangerous-patterns.js";
 import { APPROVAL_TIMEOUT_MS } from "./schemas.js";
 
 export type PendingToolApproval = {
@@ -76,23 +77,32 @@ export async function handleToolApproval(
     ? request.call.parameters.command
     : "";
 
-  // Check auto-approve patterns first
   if (command) {
-    const autoApproveResult = await shouldAutoApprove({
-      userId,
-      command,
-      toolName: request.call.name,
-      workspaceId,
-      conversationId
-    });
+    // Severity gate FIRST — the documented contract (dangerous-patterns.ts):
+    // a "destructive"/"irreversible" finding always goes to the human and
+    // overrides any stored auto-approve pattern. Previously a saved wildcard
+    // pattern could silently auto-approve `rm -rf /`.
+    const risk = analyseCommandRisk(command);
+    const severityForcesHuman =
+      risk.severity === "destructive" || risk.severity === "irreversible";
 
-    if (autoApproveResult.approved) {
-      return {
-        approved: true,
-        message: `Auto-approved by pattern: ${autoApproveResult.matchedPattern?.name}`,
-        autoApproved: true,
-        matchedPatternId: autoApproveResult.matchedPattern?.id
-      };
+    if (!severityForcesHuman) {
+      const autoApproveResult = await shouldAutoApprove({
+        userId,
+        command,
+        toolName: request.call.name,
+        workspaceId,
+        conversationId
+      });
+
+      if (autoApproveResult.approved) {
+        return {
+          approved: true,
+          message: `Auto-approved by pattern: ${autoApproveResult.matchedPattern?.name}`,
+          autoApproved: true,
+          matchedPatternId: autoApproveResult.matchedPattern?.id
+        };
+      }
     }
   }
 
