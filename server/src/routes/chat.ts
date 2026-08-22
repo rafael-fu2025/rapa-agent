@@ -18,6 +18,7 @@ import { getDefaultBaseUrl, getDefaultModels } from "../lib/constants.js";
 
 import { decryptText, encryptText } from "../lib/crypto.js";
 import { prisma, getLocalUser } from "../lib/db.js";
+import { loadWorkspaceInstructionsSystemMessage } from "../lib/workspace-instructions.js";
 import { recordUsage } from "../lib/usage.js";
 import { resolveSseAllowOrigin } from "../lib/cors-origins.js";
 import { providerAllowsKeylessAccess } from "../lib/providers.js";
@@ -881,6 +882,9 @@ export async function registerChatRoutes(app: FastifyInstance) {
     const workspaceSystemMessage = payload.mode === "chat" ? null : buildWorkspaceSystemMessage(
       workspace ? { name: workspace.name, path: workspace.path } : null
     );
+    const instructionsSystemMessage = payload.mode === "chat" || !workspace
+      ? null
+      : await loadWorkspaceInstructionsSystemMessage(workspace.path);
 
     if (payload.mode === "chat" && shouldOfferAgentMode(payload.prompt)) {
       const suggestion = buildAgentModeSuggestion(payload.prompt, conversation.id);
@@ -962,6 +966,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
           buildMathFormattingSystemMessage(),
           ...(payload.mode === "chat" ? [buildChatModeSystemMessage()] : []),
           ...(workspaceSystemMessage ? [workspaceSystemMessage] : []),
+          ...(instructionsSystemMessage ? [instructionsSystemMessage] : []),
           ...(memorySystemMessage ? [memorySystemMessage] : []),
           ...loadedMemory.recentMessages,
           { role: "user", content: preparedUserPrompt.modelContent }
@@ -1190,6 +1195,9 @@ export async function registerChatRoutes(app: FastifyInstance) {
     const workspaceSystemMessage = payload.mode === "chat" ? null : buildWorkspaceSystemMessage(
       workspace ? { name: workspace.name, path: workspace.path } : null
     );
+    const instructionsSystemMessage = payload.mode === "chat" || !workspace
+      ? null
+      : await loadWorkspaceInstructionsSystemMessage(workspace.path);
 
     if (payload.mode === "chat" && shouldOfferAgentMode(payload.prompt)) {
       // For the suggestion path we DO need a real conversation row, so
@@ -1310,6 +1318,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
           buildMathFormattingSystemMessage(),
           ...(payload.mode === "chat" ? [buildChatModeSystemMessage()] : []),
           ...(workspaceSystemMessage ? [workspaceSystemMessage] : []),
+          ...(instructionsSystemMessage ? [instructionsSystemMessage] : []),
           ...(memorySystemMessage ? [memorySystemMessage] : []),
           ...loadedMemory.recentMessages,
           { role: "user", content: preparedUserPrompt.modelContent }

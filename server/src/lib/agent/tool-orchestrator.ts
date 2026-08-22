@@ -4,6 +4,7 @@
 import { isWithinWorkspaceSymlinkSafe, resolveWorkspacePath } from "../../tools/filesystem.js";
 import { toolRegistry } from "../../tools/index.js";
 import { isDangerousCommand, diagnoseAndFixCommand } from "../../tools/shell.js";
+import { hasTestInfrastructure, resolveTypecheckCommand } from "../../tools/diagnostics.js";
 import { analyseCommandRisk, type CommandRiskAssessment } from "../safety/dangerous-patterns.js";
 import { detectPromptInjection, wrapUntrustedContent } from "../safety/prompt-injection.js";
 import type {
@@ -24,6 +25,7 @@ import { shouldEvictResult, evictResult, type EvictableResult } from "./output-e
 import { validateWrittenFile } from "./code-validators.js";
 import { buildSchemaCorrection, renderSchemaCorrection } from "./schema-correction.js";
 import { resolve as resolvePath } from "node:path";
+import { createHash } from "node:crypto";
 
 /**
  * Detect wasteful environment-check commands that burn turns without producing
@@ -135,6 +137,25 @@ export class ToolOrchestrator {
   private config: AgentConfig;
   /** Files written during this agent run — used to skip eviction on re-reads. */
   private writtenFiles: Set<string> = new Set();
+  /**
+   * Per-file read snapshots (context economy): hash + range of the last
+   * read_file result. An identical re-read of the same unchanged range is
+   * stubbed instead of re-sending full content. Invalidated when the file
+   * is written this run.
+   */
+  private readFileSnapshots = new Map<string, {
+    contentHash: string;
+    startLine: number;
+    endLine: number;
+    totalLines: number;
+  }>();
+  /**
+   * Post-write verification throttle: tests/typecheck run at most once per
+   * window per run so a batch of micro-edits doesn't re-run the suite
+   * after every write. Lint stays unthrottled (cheap).
+   */
+  private lastHeavyValidationAt = 0;
+  private static readonly HEAVY_VALIDATION_THROTTLE_MS = 60_000;
 
   constructor(options: ToolOrchestratorOptions) {
     this.context = options.context;
@@ -548,6 +569,47 @@ export class ToolOrchestrator {
   }
 
   /**
+   * Context economy: when the model re-reads the exact same range of a file
+   * whose content is unchanged since the previous read this run, replace the
+   * full content with a short stub. The path/line metadata survives so the
+   * model still knows what it has seen; it can deliberately re-read with an
+   * offset when it needs the bytes again. Disabled via
+   * `config.memoryBudget.readDedup === false`.
+   */
+  private dedupeReadResult(result: ToolResult, call: ToolCall): ToolResult {
+    if (this.config.memoryBudget?.readDedup === false) return result;
+    if (call.name !== "read_file" || !result.success) return result;
+    if (!result.data || typeof result.data !== "object") return result;
+    const data = result.data as Record<string, unknown>;
+    const path = typeof data.path === "string" ? data.path : null;
+    const content = typeof data.content === "string" ? data.content : null;
+    if (!path || content === null) return result;
+
+    const startLine = typeof data.startLine === "number" ? data.startLine : 1;
+    const endLine = typeof data.endLine === "number" ? data.endLine : 0;
+    const totalLines = typeof data.totalLines === "number" ? data.totalLines : 0;
+    const contentHash = createHash("sha256").update(content).digest("hex");
+
+    const previous = this.readFileSnapshots.get(path);
+    const unchanged = previous !== undefined
+      && previous.contentHash === contentHash
+      && previous.startLine === startLine
+      && previous.endLine === endLine;
+
+    this.readFileSnapshots.set(path, { contentHash, startLine, endLine, totalLines });
+    if (!unchanged) return result;
+
+    return {
+      ...result,
+      data: {
+        ...data,
+        deduped: true,
+        content: `[UNCHANGED — lines ${startLine}–${endLine} of ${path} were already read earlier this run and the file has not changed since. Content omitted to conserve context. Re-read with read_file if you need to see it again.]`
+      }
+    };
+  }
+
+  /**
    * Evict oversized tool results to disk. Called after truncation.
    * If the result's output or data.content exceeds the eviction threshold,
    * the full content is written to .rapa/evicted/ and replaced with a
@@ -637,11 +699,13 @@ export class ToolOrchestrator {
           }
           results[i] = await this.executeToolCall(calls[i], { approved: approval.approved });
           // P2-D: bound the size of every tool result before it lands in the
-          // history. Truncation is non-destructive — the full result stays in
-          // the `AgentToolCall` row in the database.
+          // history. Truncation is non-destructive — the full result stays in the
+          // `AgentToolCall` row in the database.
           results[i] = this.truncateToolResult(results[i]!, calls[i]);
           // Evict oversized results to disk (preview + file path in history)
           results[i] = await this.evictIfNeeded(results[i]!, calls[i]);
+          // Context economy: stub an identical re-read of an unchanged range.
+          results[i] = this.dedupeReadResult(results[i]!, calls[i]);
         } catch (error) {
           // One tool's unexpected failure (approval plumbing, eviction disk
           // error, …) must not reject the Promise.all batch and kill the run —
@@ -681,6 +745,8 @@ export class ToolOrchestrator {
           if (writtenPath) {
             // Track this file so re-reads skip eviction
             this.writtenFiles.add(writtenPath);
+            // The file changed — any read snapshot is now stale.
+            this.readFileSnapshots.delete(writtenPath);
 
             const memTool = toolRegistry.get("update_working_memory");
             if (memTool) {
@@ -771,20 +837,99 @@ export class ToolOrchestrator {
       }
     }
 
-    // Only run tests when source code was modified AND a test file was written
-    // (indicates the agent is in the "write tests" phase, not "create project" phase)
-    if (hasSourceWrites && hasTestWrites) {
-      const testTool = toolRegistry.get("run_tests");
-      if (testTool) {
-        try {
-          const testResult = await testTool.execute({}, this.context);
-          if (testResult) validationResults.push(testResult);
-        } catch {
-          // Test failure is non-fatal
+    // Heavy verification (tests + typecheck): run when source code was
+    // written AND the workspace actually has test infrastructure — not just
+    // when a test file happened to be in the same batch. The original
+    // same-batch condition missed the common case of editing source while
+    // an existing suite watches from the sidelines.
+    const throttleOpen = Date.now() - this.lastHeavyValidationAt
+      >= ToolOrchestrator.HEAVY_VALIDATION_THROTTLE_MS;
+
+    if (hasSourceWrites && throttleOpen) {
+      const workspaceHasTests = hasTestWrites || hasTestInfrastructure(this.context.workspaceRoot);
+      if (workspaceHasTests) {
+        const testTool = toolRegistry.get("run_tests");
+        if (testTool) {
+          try {
+            const testResult = await testTool.execute({}, this.context);
+            if (testResult) validationResults.push(testResult);
+            this.lastHeavyValidationAt = Date.now();
+          } catch {
+            // Test failure is non-fatal
+          }
+        }
+      }
+
+      const typecheckCommand = resolveTypecheckCommand(this.context.workspaceRoot);
+      if (typecheckCommand) {
+        const typecheckTool = toolRegistry.get("run_typecheck");
+        if (typecheckTool) {
+          try {
+            const typecheckResult = await typecheckTool.execute({}, this.context);
+            if (typecheckResult) validationResults.push(typecheckResult);
+            this.lastHeavyValidationAt = Date.now();
+          } catch {
+            // Typecheck failure is non-fatal
+          }
         }
       }
     }
 
     return validationResults;
+  }
+
+  /**
+   * Run the full verification suite (tests + typecheck) for the
+   * failure-gated completion check — bypasses the write-batch throttle
+   * because it runs at most once per run (the agent loop budgets retries).
+   * Returns the raw results; empty when the workspace has nothing to run.
+   */
+  async runVerificationSuite(): Promise<ToolResult[]> {
+    const results: ToolResult[] = [];
+    if (hasTestInfrastructure(this.context.workspaceRoot)) {
+      const testTool = toolRegistry.get("run_tests");
+      if (testTool) {
+        try {
+          const testResult = await testTool.execute({}, this.context);
+          if (testResult) results.push(testResult);
+        } catch {
+          // Treated as "could not verify" by the caller
+        }
+      }
+    }
+    if (resolveTypecheckCommand(this.context.workspaceRoot)) {
+      const typecheckTool = toolRegistry.get("run_typecheck");
+      if (typecheckTool) {
+        try {
+          const typecheckResult = await typecheckTool.execute({}, this.context);
+          if (typecheckResult) results.push(typecheckResult);
+        } catch {
+          // Treated as "could not verify" by the caller
+        }
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Summarize verification results into the shape carried on the `done`
+   * event and the AgentRun row: null when nothing ran.
+   */
+  summarizeVerification(results: ToolResult[]): { testsPassed: boolean; typecheckPassed: boolean } | null {
+    const testResults = results.filter((r) => {
+      const command = (r.data as { command?: unknown } | null | undefined)?.command;
+      return typeof command === "string" && !/typecheck|tsc|cargo check|go vet/.test(command);
+    });
+    const typecheckResults = results.filter((r) => {
+      const command = (r.data as { command?: unknown } | null | undefined)?.command;
+      return typeof command === "string" && /typecheck|tsc|cargo check|go vet/.test(command);
+    });
+    if (testResults.length === 0 && typecheckResults.length === 0) return null;
+    return {
+      testsPassed: testResults.length === 0
+        || testResults.every((r) => r.success && (r.data as { pass?: unknown } | null)?.pass !== false),
+      typecheckPassed: typecheckResults.length === 0
+        || typecheckResults.every((r) => r.success && (r.data as { pass?: unknown } | null)?.pass !== false)
+    };
   }
 }

@@ -52,6 +52,67 @@ function detectProjectType(cwd: string): "node" | "python" | "ruby" | "rust" | "
 }
 
 /**
+ * Cheap probe: does this workspace have ANY test infrastructure worth
+ * verifying against? Used by the orchestrator's post-write verification
+ * step to decide whether running the suite is meaningful (vs. a fresh
+ * scaffold where "no tests" is expected, not a failure).
+ */
+export function hasTestInfrastructure(workspaceRoot: string): boolean {
+  try {
+    const type = detectProjectType(workspaceRoot);
+    const has = (name: string) => existsSync(join(workspaceRoot, name));
+    switch (type) {
+      case "node":
+        if (has("vitest.config.ts") || has("vitest.config.mts") || has("jest.config.js")
+          || has("jest.config.ts") || has("jest.config.cjs") || has("jest.config.mjs")) return true;
+        return Boolean(readNodeScripts(workspaceRoot).test);
+      case "python":
+        return has("pytest.ini") || has("tox.ini") || has("conftest.py") || has("pyproject.toml");
+      case "ruby":
+        return has("Gemfile");
+      case "rust":
+        return has("Cargo.toml");
+      case "go":
+        return has("go.mod");
+      default:
+        return false;
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve the workspace's typecheck command, or null when none is
+ * configured. Prefers the project's own scripts so monorepo custom
+ * checks run instead of a bare tsc.
+ */
+export function resolveTypecheckCommand(workspaceRoot: string): string | null {
+  try {
+    const type = detectProjectType(workspaceRoot);
+    switch (type) {
+      case "node": {
+        const raw = readFileSync(join(workspaceRoot, "package.json"), "utf8");
+        const parsed = JSON.parse(raw) as { scripts?: Record<string, string> };
+        const scripts = parsed.scripts ?? {};
+        if (typeof scripts.typecheck === "string") return "npm run typecheck 2>&1";
+        if (typeof scripts.check === "string") return "npm run check 2>&1";
+        if (existsSync(join(workspaceRoot, "tsconfig.json"))) return "npx tsc --noEmit 2>&1";
+        return null;
+      }
+      case "rust":
+        return "cargo check 2>&1";
+      case "go":
+        return "go vet ./... 2>&1";
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Read the project's preferred scripts (`scripts.test`, `scripts.lint`)
  * from `package.json` so we know whether the user has defined them.
  */
@@ -99,7 +160,10 @@ function resolveTestCommand(
 
   switch (projectType) {
     case "node":
-      return "npm test --if-present 2>&1 || echo 'NO_TESTS'";
+      // NOTE: no `|| echo NO_TESTS` fallback here — it would swallow the
+      // failure exit code and make a FAILING suite report as success.
+      // `--if-present` already exits 0 when no test script is defined.
+      return "npm test --if-present 2>&1";
     case "python":
       return "python -m pytest -v 2>&1 || python -m unittest discover -v 2>&1 || echo 'NO_TESTS'";
     case "ruby":
@@ -459,6 +523,54 @@ export class RunTestsTool extends Tool {
       typeof params.command === "string" ? params.command : undefined,
       typeof params.framework === "string" ? params.framework : undefined
     );
+    return runCommand(command, timeout, resolvedWorkdir, parseTestOutput);
+  }
+}
+
+export class RunTypecheckTool extends Tool {
+  definition: ToolDefinition = {
+    name: "run_typecheck",
+    description: "Run the workspace's type checker (`npm run typecheck`, `tsc --noEmit`, `cargo check`, `go vet`). Use after editing source files to catch type errors before declaring work complete. Returns structured pass/fail with the first errors.",
+    category: "system",
+    riskLevel: "network",
+    requiresApproval: true,
+    parameters: {
+      workdir: {
+        type: "string",
+        description: "Optional working directory (must be relative to the workspace root, no `..` traversal)",
+        required: false
+      },
+      timeout: {
+        type: "number",
+        description: "Timeout in milliseconds (default 120000)",
+        required: false
+      }
+    }
+  };
+
+  async execute(params: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+    const resolvedWorkdir = resolveWorkdir(params.workdir, context.workspaceRoot);
+    if (!resolvedWorkdir) {
+      return {
+        success: false,
+        error: "workdir must be a relative path inside the workspace (no `..` traversal, no absolute paths)"
+      };
+    }
+    if (!existsSync(resolvedWorkdir)) {
+      return {
+        success: false,
+        error: `workdir does not exist: ${String(params.workdir)}`
+      };
+    }
+    const command = resolveTypecheckCommand(resolvedWorkdir);
+    if (!command) {
+      return {
+        success: true,
+        output: "No typecheck command configured for this workspace (no typecheck script, tsconfig.json, Cargo.toml, or go.mod).",
+        data: { command: null, pass: true, skipped: true }
+      };
+    }
+    const timeout = typeof params.timeout === "number" ? params.timeout : 120000;
     return runCommand(command, timeout, resolvedWorkdir, parseTestOutput);
   }
 }

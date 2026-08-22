@@ -423,3 +423,70 @@ describe("buildProviderMessages — sanitization integration", () => {
     expect(String(demoted!.content)).toContain("c1");
   });
 });
+
+// Provider-side prompt caching (Gemini implicit caching, OpenAI automatic
+// caching, OpenRouter cache_control passthrough) keys on a byte-identical
+// message PREFIX. Anything that rewrites, reorders, or re-truncates an
+// already-sent message on a later iteration invalidates the cache for the
+// whole conversation. These tests pin the property that matters: as the
+// history only ever APPENDS, the provider messages for the old prefix are
+// reproduced byte-for-byte on every subsequent call.
+describe("buildProviderMessages — prefix stability (prompt-cache friendliness)", () => {
+  const snapshot = (messages: ProviderChatMessage[]) => messages.map((m) => JSON.stringify(m));
+
+  it("reproduces the previous prefix byte-for-byte as the history grows", () => {
+    const base: AgentMessage[] = [
+      { role: "system", content: "Seed instructions." },
+      { role: "user", content: "First request" },
+      { role: "assistant", content: "First answer" }
+    ];
+
+    const first = snapshot(buildProviderMessages(base, undefined, false));
+
+    // Simulate the next two iterations: messages are only appended.
+    const secondHistory: AgentMessage[] = [
+      ...base,
+      { role: "user", content: "Second request" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "c1", name: "read_file", parameters: { path: "a.txt" } }]
+      },
+      {
+        role: "tool",
+        content: "[]",
+        toolResults: [toolResult("file body")]
+      }
+    ];
+    const second = snapshot(buildProviderMessages(secondHistory, undefined, false));
+
+    const thirdHistory: AgentMessage[] = [
+      ...secondHistory,
+      { role: "assistant", content: "Done with tools." },
+      { role: "user", content: "Third request" }
+    ];
+    const third = snapshot(buildProviderMessages(thirdHistory, undefined, false));
+
+    // Each successive call must start with the exact previous output.
+    expect(second.slice(0, first.length)).toEqual(first);
+    expect(third.slice(0, second.length)).toEqual(second);
+  });
+
+  it("keeps the prefix stable while staying under the budget", () => {
+    const history: AgentMessage[] = [
+      { role: "system", content: "Rules." }
+    ];
+    // Fill with modest-size turns — far below the 90k budget, so the
+    // newest-first trimmer must not touch any of them across calls.
+    for (let i = 0; i < 20; i += 1) {
+      history.push({ role: "user", content: `question ${i}` });
+      history.push({ role: "assistant", content: `answer ${i}` });
+    }
+    const before = snapshot(buildProviderMessages(history, undefined, false));
+    expect(before.length).toBe(41);
+
+    history.push({ role: "user", content: "one more" });
+    const after = snapshot(buildProviderMessages(history, undefined, false));
+    expect(after.slice(0, before.length)).toEqual(before);
+  });
+});

@@ -17,15 +17,15 @@ import {
   buildSpecialistCatalogMessage,
   resolveSpecialistDefinitions,
   buildActivatedSpecialistMessage,
-  getBuiltinSpecialists,
-  type SpecialistDefinition,
-  type SpecialistType
+  classifySpecialistMode,
+  getBuiltinSpecialists
 } from "../lib/sub-agents.js";
 import { retrieveRelevantContext, formatRetrievedContext } from "../lib/agent/context-retrieval.js";
 import { getDefaultBaseUrl, getDefaultModels } from "../lib/constants.js";
 
 import { decryptText } from "../lib/crypto.js";
 import { prisma, getLocalUser } from "../lib/db.js";
+import { loadWorkspaceInstructions, buildWorkspaceInstructionsMessage } from "../lib/workspace-instructions.js";
 import { persistAgentRun, startAgentRun } from "../lib/agent-run-store.js";
 import { resolveSseAllowOrigin } from "../lib/cors-origins.js";
 import { providerAllowsKeylessAccess } from "../lib/providers.js";
@@ -129,88 +129,6 @@ async function runShellToolCommand(params: {
     conversationId: params.conversationId,
     mode: "agent"
   });
-}
-
-function classifySpecialistMode(prompt: string, specialists: SpecialistDefinition[]): SpecialistDefinition | null {
-  const lower = prompt.toLowerCase();
-
-  type PatternGroup = {
-    name: SpecialistType;
-    primary: RegExp;
-    secondary: RegExp;
-    exclude?: RegExp;
-    weight: number;
-  };
-
-  const patterns: PatternGroup[] = [
-    {
-      name: "debug_specialist",
-      primary: /\b(debug|error|exception|fail|broken|crash|bug|why does|fix the error|vitest|jest|eslint|syntax error|type error|reference error|null pointer|undefined|cannot read|is not a function|segmentation fault|timeout|deadlock|regression)\b/i,
-      secondary: /\b(not working|doesn't work|won't work|stopped working|used to work|broke after|regression|unexpected|incorrect|wrong|misbehav|glitch|artifact|corrupt|stale|inconsist)\b/i,
-      exclude: /\b(debug.*feature|debug.*tool|debug.*mode|debug.*log|enable.*debug)\b/i,
-      weight: 1.0
-    },
-    {
-      name: "planning_specialist",
-      primary: /\b(plan|sequence|checklist|steps|tasks|roadmap|architect|design plan|implementation plan|sprint|milestone|phase|break down|decompose|scaffold|blueprint)\b/i,
-      secondary: /\b(should i|how should|what's the best way|approach|strategy|order of operations|dependency|prerequisite|before (doing|starting|implementing))\b/i,
-      exclude: /\b(plan file|plan mode|planned parenthood)\b/i,
-      weight: 1.0
-    },
-    {
-      name: "codebase_specialist",
-      primary: /\b(where is|how does|architecture|structure|find the file|trace|flow|dependencies|files|locate|codebase|code base|module|component|service|repository layout)\b/i,
-      secondary: /\b(who (owns|created|modified)|what (calls|uses|depends on|imports)|call chain|data flow|execution path|entry point|export|import)\b/i,
-      exclude: /\b(find the file manager|file explorer|file manager)\b/i,
-      weight: 1.0
-    },
-    {
-      name: "research_specialist",
-      primary: /\b(research|web|search|documentation|latest version|compare|gather evidence|browse|lookup|look up|find out|investigate|study|read about)\b/i,
-      secondary: /\b(what is|what are|how do|how does|difference between|vs|versus|alternative|option|library|framework|package|npm|dependency|version|changelog|release)\b/i,
-      exclude: /\b(search files|search content|search in)\b/i,
-      weight: 1.0
-    },
-    {
-      name: "design_specialist",
-      primary: /\b(design|ui|ux|interface|visual|layout|style|styling|css|tailwind|components?|accessible|accessibility|color|typography|font|spacing|animation|transition|responsive|mobile|desktop|mockup|wireframe|prototype|landing page|dashboard|portfolio|website|webpage|form|card|modal|dialog|sidebar|header|footer|navbar|navigation|hero section|redesign|restyle|make.*look|make.*beautiful|make.*pretty|polish|aesthetic|theme)\b/i,
-      secondary: /\b(look and feel|user experience|usability|heuristic|wcag|aria|contrast|alignment|hierarchy|whitespace|breathing room|pixel|grid|flexbox|flex|centering|gradient|border-radius|box-shadow|dark mode|light mode|color palette|font family|line height|letter spacing)\b/i,
-      exclude: /\b(design pattern|architecture design|system design|database design|api design)\b/i,
-      weight: 1.0
-    }
-  ];
-
-  const scored: Array<{ name: SpecialistType; score: number }> = [];
-
-  for (const group of patterns) {
-    const primaryMatch = group.primary.test(lower);
-    const secondaryMatch = group.secondary.test(lower);
-    const excluded = group.exclude?.test(lower) ?? false;
-
-    if (excluded) continue;
-
-    let score = 0;
-    if (primaryMatch) score += group.weight;
-    if (secondaryMatch) score += group.weight * 0.5;
-
-    if (primaryMatch && secondaryMatch) score += 0.2;
-
-    if (score > 0) {
-      scored.push({ name: group.name, score });
-    }
-  }
-
-  if (scored.length === 0) return null;
-
-  scored.sort((a, b) => b.score - a.score);
-
-  if (scored.length >= 2 && scored[0].score === scored[1].score) {
-    const debugFirst = scored[0].name === "debug_specialist" || scored[1].name === "debug_specialist";
-    if (debugFirst) return specialists.find((s) => s.name === "debug_specialist") ?? null;
-    return specialists.find((s) => s.name === scored[0].name) ?? null;
-  }
-
-  return specialists.find((s) => s.name === scored[0].name) ?? null;
 }
 
 async function prepareAgentRequest(payload: AgentRequestPayload): Promise<PreparedAgentRequest> {
@@ -357,6 +275,17 @@ async function prepareAgentRequest(payload: AgentRequestPayload): Promise<Prepar
     content: rule.content,
     scope: rule.scope
   }));
+
+  // Workspace instruction file (AGENTS.md / CLAUDE.md / .cursorrules) —
+  // injected BEFORE the rules unshift so it lands directly after the DB
+  // rules in the final seed order. Skipped silently when absent.
+  const workspaceInstructions = await loadWorkspaceInstructions(workspace.path);
+  if (workspaceInstructions) {
+    seedHistory.unshift({
+      role: "system",
+      content: buildWorkspaceInstructionsMessage(workspaceInstructions)
+    });
+  }
 
   if (agentRules.length > 0) {
     const rulesMessage = buildAgentRulesMessage(agentRules);

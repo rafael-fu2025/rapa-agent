@@ -49,7 +49,9 @@ export type SkillMdParseError = {
 };
 
 const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
+// Exported for workspace-instructions.ts, which strips optional frontmatter
+// from CLAUDE.md-style files using the same delimiter rules.
+export const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
 function unquote(value: string): string {
   const trimmed = value.trim();

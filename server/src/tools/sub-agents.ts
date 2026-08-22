@@ -155,9 +155,10 @@ export class DelegateTaskTool extends Tool {
 export class SpawnAgentTool extends Tool {
   definition: ToolDefinition = {
     name: "spawn_agent",
-    description: "Spawn an independent child agent to perform a task in parallel. The child agent runs its own conversation loop with its own tool access. Use this for complex, independent subtasks that benefit from isolation.",
+    description: "Spawn an isolated child agent with a FRESH context and a read-only toolset to research one bounded task, then return its report as this tool's result. The child cannot see this conversation, cannot modify files, and cannot ask the user questions. Use it to investigate codebases, trace bugs, or gather evidence without flooding your own context — the parent only pays for the final report.",
     category: "code",
     riskLevel: "read",
+    requiresApproval: false,
     parameters: {
       task: {
         type: "string",
@@ -203,23 +204,27 @@ export class SpawnAgentTool extends Tool {
       maxIterations
     });
 
-    // The actual child agent execution is deferred to the agent loop.
-    // The orchestrator picks up pending child agents and runs them.
-    // For now, mark as pending — the agent loop integration will start execution.
-    // TODO: Wire into agent loop's stream() to actually spawn child agent execution.
-    // The integration point is in routes/agent.ts where child agents should be
-    // launched via a parallel invocation of the agent loop with their own
-    // conversation context, iteration budget, and tool access.
+    // Synchronous delegation: run the child to completion here (dynamic
+    // import keeps tools/sub-agents.ts out of the runner's eval-time
+    // dependency graph — the runner imports the Agent loop, which imports
+    // the tool registry, which imports this file).
+    const { runChildAgent } = await import("../lib/sub-agent-runner.js");
+    const outcome = await runChildAgent(context, undefined, handle);
 
     return {
-      success: true,
+      success: outcome.status !== "failed",
+      output: outcome.report,
+      error: outcome.status === "failed" ? outcome.report : undefined,
       data: {
         agentId: handle.id,
         status: handle.status,
         task: handle.task,
         maxIterations: handle.maxIterations,
+        iterationsRun: outcome.iterationCount,
+        toolCallsRun: outcome.toolCallCount,
         createdAt: handle.createdAt.toISOString(),
-        message: `Child agent "${handle.id}" has been spawned. Use get_agent_status to check progress, send_message_to_agent for follow-up instructions, or cancel_agent to terminate.`
+        completedAt: handle.completedAt?.toISOString(),
+        report: outcome.report
       }
     };
   }
@@ -232,7 +237,7 @@ export class SpawnAgentTool extends Tool {
 export class SendMessageToAgentTool extends Tool {
   definition: ToolDefinition = {
     name: "send_message_to_agent",
-    description: "Send a follow-up message or instruction to a running child agent. The child will see this message and can adjust its behavior accordingly.",
+    description: "Reserved for async child agents. With synchronous spawn_agent children this is a no-op — include everything the child needs in the spawn_agent task instead.",
     category: "code",
     riskLevel: "read",
     parameters: {

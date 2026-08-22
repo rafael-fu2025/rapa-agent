@@ -1,12 +1,13 @@
 // Tests for the P2-D tool result truncation logic in ToolOrchestrator.
 
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Tool, type ToolDefinition, type ToolExecutionContext, type ToolResult } from "../../tools.js";
 import { ToolOrchestrator } from "../tool-orchestrator.js";
 import { toolRegistry } from "../../../tools/index.js";
+import { ReadFileTool, WriteFileTool } from "../../../tools/filesystem.js";
 
 let workspaceRoot = "";
 
@@ -54,6 +55,111 @@ afterEach(() => {
   toolRegistry.unregister("noop");
   toolRegistry.unregister("long_output");
   vi.unstubAllEnvs();
+});
+
+describe("ToolOrchestrator read dedup (context economy)", () => {
+  const makeConfig = (overrides: Record<string, unknown> = {}) => ({
+    maxIterations: 5,
+    autoApproveTools: ["write_file"],
+    provider: "p",
+    model: "m",
+    baseUrl: "b",
+    apiKey: "k",
+    ...overrides
+  });
+
+  const readCall = (path: string, params: Record<string, unknown> = {}) =>
+    ({ id: `read-${path}-${JSON.stringify(params)}`, name: "read_file", parameters: { path, ...params } });
+
+  beforeEach(() => {
+    toolRegistry.register(new ReadFileTool());
+    toolRegistry.register(new WriteFileTool());
+  });
+
+  afterEach(() => {
+    toolRegistry.unregister("read_file");
+    toolRegistry.unregister("write_file");
+  });
+
+  it("stubs an identical re-read of an unchanged file", async () => {
+    await writeFile(join(workspaceRoot, "a.txt"), "hello world", "utf-8");
+    const orch = new ToolOrchestrator({
+      context: { workspaceRoot, userId: "u", conversationId: "c" },
+      config: makeConfig()
+    });
+
+    const [first] = await orch.executeToolCallsInBatches([readCall("a.txt")]);
+    expect((first!.data as Record<string, unknown>).content).toBe("hello world");
+    expect((first!.data as Record<string, unknown>).deduped).toBeUndefined();
+
+    const [second] = await orch.executeToolCallsInBatches([readCall("a.txt")]);
+    const data = second!.data as Record<string, unknown>;
+    expect(data.deduped).toBe(true);
+    expect(String(data.content)).toMatch(/UNCHANGED/i);
+    // Metadata survives so the model still knows what it has seen.
+    expect(data.path).toBe("a.txt");
+    expect(data.totalLines).toBeDefined();
+  });
+
+  it("returns full content again once the file changed on disk", async () => {
+    await writeFile(join(workspaceRoot, "b.txt"), "version 1", "utf-8");
+    const orch = new ToolOrchestrator({
+      context: { workspaceRoot, userId: "u", conversationId: "c" },
+      config: makeConfig()
+    });
+
+    await orch.executeToolCallsInBatches([readCall("b.txt")]);
+    await writeFile(join(workspaceRoot, "b.txt"), "version 2 with different bytes", "utf-8");
+    const [reread] = await orch.executeToolCallsInBatches([readCall("b.txt")]);
+    expect((reread!.data as Record<string, unknown>).content).toBe("version 2 with different bytes");
+    expect((reread!.data as Record<string, unknown>).deduped).toBeUndefined();
+  });
+
+  it("does not dedup a different range of the same file", async () => {
+    await writeFile(join(workspaceRoot, "c.txt"), "one\ntwo\nthree\nfour", "utf-8");
+    const orch = new ToolOrchestrator({
+      context: { workspaceRoot, userId: "u", conversationId: "c" },
+      config: makeConfig()
+    });
+
+    await orch.executeToolCallsInBatches([readCall("c.txt")]);
+    const [partial] = await orch.executeToolCallsInBatches([readCall("c.txt", { offset: 2, limit: 2 })]);
+    expect((partial!.data as Record<string, unknown>).content).toBe("two\nthree");
+    expect((partial!.data as Record<string, unknown>).deduped).toBeUndefined();
+  });
+
+  it("invalidates the snapshot after a write to the same file", async () => {
+    await writeFile(join(workspaceRoot, "d.txt"), "initial", "utf-8");
+    const orch = new ToolOrchestrator({
+      context: { workspaceRoot, userId: "u", conversationId: "c" },
+      config: makeConfig()
+    });
+
+    await orch.executeToolCallsInBatches([readCall("d.txt")]);
+    const [, writeResult] = await orch.executeToolCallsInBatches([
+      readCall("d.txt"),
+      { id: "w1", name: "write_file", parameters: { path: "d.txt", content: "rewritten" } }
+    ]);
+    expect(writeResult!.success).toBe(true);
+
+    // The write invalidated the snapshot: the next read returns the new
+    // content in full (not a stub keyed on the pre-write content).
+    const [reread] = await orch.executeToolCallsInBatches([readCall("d.txt")]);
+    expect((reread!.data as Record<string, unknown>).content).toBe("rewritten");
+  });
+
+  it("respects memoryBudget.readDedup === false", async () => {
+    await writeFile(join(workspaceRoot, "e.txt"), "stable content", "utf-8");
+    const orch = new ToolOrchestrator({
+      context: { workspaceRoot, userId: "u", conversationId: "c" },
+      config: makeConfig({ memoryBudget: { readDedup: false } })
+    });
+
+    await orch.executeToolCallsInBatches([readCall("e.txt")]);
+    const [reread] = await orch.executeToolCallsInBatches([readCall("e.txt")]);
+    expect((reread!.data as Record<string, unknown>).content).toBe("stable content");
+    expect((reread!.data as Record<string, unknown>).deduped).toBeUndefined();
+  });
 });
 
 describe("ToolOrchestrator tool-result truncation (P2-D)", () => {

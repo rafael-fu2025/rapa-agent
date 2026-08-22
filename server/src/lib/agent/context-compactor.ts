@@ -10,7 +10,9 @@
  * and survives all compaction levels.
  */
 
+import { readFile, stat } from "node:fs/promises";
 import { PROVIDER_HISTORY_CHAR_BUDGET, type AgentMessage } from "./types.js";
+import { resolveWorkspacePathSafe } from "../../tools/filesystem.js";
 
 export const COMPACTION_WARN_THRESHOLD = 0.55;
 export const COMPACTION_THRESHOLD = 0.65;
@@ -100,7 +102,7 @@ export async function compactHistory(
   budget: number,
   llmCall: (messages: Array<{ role: string; content: string }>) => Promise<string>,
   existingSummary?: string
-): Promise<{ compactedHistory: AgentMessage[]; summary: string }> {
+): Promise<{ compactedHistory: AgentMessage[]; summary: string; dropped: AgentMessage[] }> {
   const keepBudget = budget * COMPACTION_KEEP_RECENT_RATIO;
 
   // Walk newest-first to find the split point
@@ -118,7 +120,7 @@ export async function compactHistory(
 
   // Don't compact if there's nothing old enough to compact
   if (splitIndex >= history.length - 1) {
-    return { compactedHistory: history, summary: existingSummary ?? "" };
+    return { compactedHistory: history, summary: existingSummary ?? "", dropped: [] };
   }
 
   const toCompact = history.slice(0, splitIndex);
@@ -150,7 +152,7 @@ export async function compactHistory(
     }
   } catch {
     // If summarization fails, keep the original history
-    return { compactedHistory: history, summary: existingSummary ?? "" };
+    return { compactedHistory: history, summary: existingSummary ?? "", dropped: [] };
   }
 
   // Build the compacted history: summary system message + recent turns
@@ -161,6 +163,117 @@ export async function compactHistory(
 
   return {
     compactedHistory: [summaryMessage, ...toKeep],
-    summary
+    summary,
+    dropped: toCompact
   };
+}
+
+// ─── Post-compaction file restoration ────────────────────────────────────────
+//
+// Naive compaction is "where coding agents go to die": the summary mentions
+// file paths but the actual file state the model was working from is gone,
+// so the first post-compaction action is usually a redundant re-read — or
+// worse, editing against remembered-but-wrong content. Re-attaching the
+// most recently read files verbatim (freshest on-disk state) bridges that
+// gap cheaply.
+
+/** Files worth re-attaching after compaction. */
+export const RESTORATION_MAX_FILES = 5;
+/** Per-file cap on restored content. */
+export const RESTORATION_MAX_FILE_CHARS = 8_000;
+/** Skip restoring implausibly large files entirely. */
+export const RESTORATION_MAX_FILE_BYTES = 100 * 1024;
+/** Below this remaining budget a restoration stub would be useless — stop. */
+export const RESTORATION_MIN_USEFUL_CHARS = 200;
+
+/**
+ * Collect the distinct `read_file` paths from the messages dropped by
+ * compaction, newest-first. Tool results don't carry the tool name — they
+ * are positionally aligned with the `toolCalls` of the preceding assistant
+ * message — so we walk forward pairing each tool message against its caller,
+ * then reverse for newest-first ordering. Paths present in `prioritize`
+ * (files written this run — the agent is likely still editing them) sort
+ * first. Duplicate reads collapse to one entry.
+ */
+export function collectRecentlyReadFiles(
+  dropped: AgentMessage[],
+  prioritize: Set<string> = new Set(),
+  maxFiles: number = RESTORATION_MAX_FILES
+): string[] {
+  const normalize = (p: string) => p.replace(/^\.\//, "").replace(/\\/g, "/").toLowerCase();
+  const prioritySet = new Set([...prioritize].map(normalize));
+
+  const oldestFirst: string[] = [];
+  const seen = new Set<string>();
+  let callerToolCalls: Array<{ name?: unknown }> = [];
+  for (const msg of dropped) {
+    if (msg.role === "assistant") {
+      callerToolCalls = Array.isArray(msg.toolCalls) ? msg.toolCalls : [];
+      continue;
+    }
+    if (msg.role !== "tool" || !Array.isArray(msg.toolResults)) continue;
+    const results = msg.toolResults;
+    for (let j = 0; j < results.length; j += 1) {
+      if (callerToolCalls[j]?.name !== "read_file") continue;
+      const data = results[j]?.data;
+      if (!data || typeof data !== "object") continue;
+      const path = (data as { path?: unknown }).path;
+      if (typeof path !== "string" || path.length === 0) continue;
+      const key = normalize(path);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      oldestFirst.push(path);
+    }
+  }
+
+  // Newest-first, then stable partition: prioritized (written this run)
+  // first, preserving order within each partition.
+  const ordered = oldestFirst.reverse();
+  const prioritized = ordered.filter((p) => prioritySet.has(normalize(p)));
+  const rest = ordered.filter((p) => !prioritySet.has(normalize(p)));
+  return [...prioritized, ...rest].slice(0, maxFiles);
+}
+
+/**
+ * Re-read the given workspace-relative paths from disk and render each as a
+ * system message carrying the current on-disk state. `charBudget` bounds the
+ * TOTAL restored content so restoration cannot immediately re-trip the
+ * compaction threshold. Files that are missing, oversized, or outside the
+ * workspace are skipped silently. Always returns `system`-role messages — a
+ * synthetic `role:"tool"` message has no `tool_call_id` and would break
+ * provider tool-linking rules.
+ */
+export async function buildFileRestorationMessages(
+  paths: string[],
+  workspaceRoot: string,
+  charBudget: number
+): Promise<AgentMessage[]> {
+  if (!workspaceRoot || paths.length === 0 || charBudget <= 0) return [];
+
+  const messages: AgentMessage[] = [];
+  let remaining = charBudget;
+  for (const path of paths) {
+    if (remaining < RESTORATION_MIN_USEFUL_CHARS) break;
+    try {
+      const fullPath = await resolveWorkspacePathSafe(path, workspaceRoot);
+      const stats = await stat(fullPath);
+      if (!stats.isFile() || stats.size > RESTORATION_MAX_FILE_BYTES) continue;
+
+      const content = await readFile(fullPath, "utf-8");
+      const lineCount = content.split(/\r?\n/).length;
+      const cap = Math.min(RESTORATION_MAX_FILE_CHARS, remaining);
+      const body = content.length > cap
+        ? `${content.slice(0, cap)}\n…[restored content truncated at ${cap} chars — use read_file with offset for the rest]`
+        : content;
+
+      messages.push({
+        role: "system",
+        content: `[File restored after context compaction — current on-disk state]\npath: ${path}\nlines: ${lineCount}\n\n${body}`
+      });
+      remaining -= body.length;
+    } catch {
+      // Missing/unreadable/escaping path — skip this file.
+    }
+  }
+  return messages;
 }

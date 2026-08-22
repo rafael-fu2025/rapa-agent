@@ -305,6 +305,94 @@ export function resolveSpecialistDefinitions(storedSkills: StoredAgentSkill[] = 
   return Array.from(specialistMap.values()).sort((left, right) => left.name.localeCompare(right.name));
 }
 
+/**
+ * Regex-based specialist classifier. Weighted scoring over primary /
+ * secondary / exclude pattern groups; ties prefer debug_specialist.
+ * Used by the route's Zero-Turn Auto-Router and by the sub-agent runner
+ * (to pick a child agent's instructions + tool allowlist).
+ */
+export function classifySpecialistMode(prompt: string, specialists: SpecialistDefinition[]): SpecialistDefinition | null {
+  const lower = prompt.toLowerCase();
+
+  type PatternGroup = {
+    name: SpecialistType;
+    primary: RegExp;
+    secondary: RegExp;
+    exclude?: RegExp;
+    weight: number;
+  };
+
+  const patterns: PatternGroup[] = [
+    {
+      name: "debug_specialist",
+      primary: /\b(debug|error|exception|fail|broken|crash|bug|why does|fix the error|vitest|jest|eslint|syntax error|type error|reference error|null pointer|undefined|cannot read|is not a function|segmentation fault|timeout|deadlock|regression)\b/i,
+      secondary: /\b(not working|doesn't work|won't work|stopped working|used to work|broke after|regression|unexpected|incorrect|wrong|misbehav|glitch|artifact|corrupt|stale|inconsist)\b/i,
+      exclude: /\b(debug.*feature|debug.*tool|debug.*mode|debug.*log|enable.*debug)\b/i,
+      weight: 1.0
+    },
+    {
+      name: "planning_specialist",
+      primary: /\b(plan|sequence|checklist|steps|tasks|roadmap|architect|design plan|implementation plan|sprint|milestone|phase|break down|decompose|scaffold|blueprint)\b/i,
+      secondary: /\b(should i|how should|what's the best way|approach|strategy|order of operations|dependency|prerequisite|before (doing|starting|implementing))\b/i,
+      exclude: /\b(plan file|plan mode|planned parenthood)\b/i,
+      weight: 1.0
+    },
+    {
+      name: "codebase_specialist",
+      primary: /\b(where is|how does|architecture|structure|find the file|trace|flow|dependencies|files|locate|codebase|code base|module|component|service|repository layout)\b/i,
+      secondary: /\b(who (owns|created|modified)|what (calls|uses|depends on|imports)|call chain|data flow|execution path|entry point|export|import)\b/i,
+      exclude: /\b(find the file manager|file explorer|file manager)\b/i,
+      weight: 1.0
+    },
+    {
+      name: "research_specialist",
+      primary: /\b(research|web|search|documentation|latest version|compare|gather evidence|browse|lookup|look up|find out|investigate|study|read about)\b/i,
+      secondary: /\b(what is|what are|how do|how does|difference between|vs|versus|alternative|option|library|framework|package|npm|dependency|version|changelog|release)\b/i,
+      exclude: /\b(search files|search content|search in)\b/i,
+      weight: 1.0
+    },
+    {
+      name: "design_specialist",
+      primary: /\b(design|ui|ux|interface|visual|layout|style|styling|css|tailwind|components?|accessible|accessibility|color|typography|font|spacing|animation|transition|responsive|mobile|desktop|mockup|wireframe|prototype|landing page|dashboard|portfolio|website|webpage|form|card|modal|dialog|sidebar|header|footer|navbar|navigation|hero section|redesign|restyle|make.*look|make.*beautiful|make.*pretty|polish|aesthetic|theme)\b/i,
+      secondary: /\b(look and feel|user experience|usability|heuristic|wcag|aria|contrast|alignment|hierarchy|whitespace|breathing room|pixel|grid|flexbox|flex|centering|gradient|border-radius|box-shadow|dark mode|light mode|color palette|font family|line height|letter spacing)\b/i,
+      exclude: /\b(design pattern|architecture design|system design|database design|api design)\b/i,
+      weight: 1.0
+    }
+  ];
+
+  const scored: Array<{ name: SpecialistType; score: number }> = [];
+
+  for (const group of patterns) {
+    const primaryMatch = group.primary.test(lower);
+    const secondaryMatch = group.secondary.test(lower);
+    const excluded = group.exclude?.test(lower) ?? false;
+
+    if (excluded) continue;
+
+    let score = 0;
+    if (primaryMatch) score += group.weight;
+    if (secondaryMatch) score += group.weight * 0.5;
+
+    if (primaryMatch && secondaryMatch) score += 0.2;
+
+    if (score > 0) {
+      scored.push({ name: group.name, score });
+    }
+  }
+
+  if (scored.length === 0) return null;
+
+  scored.sort((a, b) => b.score - a.score);
+
+  if (scored.length >= 2 && scored[0].score === scored[1].score) {
+    const debugFirst = scored[0].name === "debug_specialist" || scored[1].name === "debug_specialist";
+    if (debugFirst) return specialists.find((s) => s.name === "debug_specialist") ?? null;
+    return specialists.find((s) => s.name === scored[0].name) ?? null;
+  }
+
+  return specialists.find((s) => s.name === scored[0].name) ?? null;
+}
+
 export function buildSpecialistCatalogMessage(skills: Array<Pick<SpecialistDefinition, "name" | "description" | "whenToUse" | "suggestedTools">>): string {
   if (skills.length === 0) {
     return "No specialist modes are currently available.";
@@ -313,9 +401,10 @@ export function buildSpecialistCatalogMessage(skills: Array<Pick<SpecialistDefin
   const lines = [
     "## SPECIALIST MODES",
     "",
-    "Specialists are focused analytical modes that inject domain-specific methodology into the current agent loop. They do NOT spawn child agents or transfer control — they enhance your existing capabilities with structured approaches for specific problem types.",
+    "Specialists are focused analytical modes with domain-specific methodology. Two ways to use them:",
     "",
-    "Activate a specialist by calling `delegate_task` with the specialist name and a bounded task description. The specialist guidance applies until the subtask is resolved, then normal operation resumes.",
+    "1. `delegate_task` — inject the specialist's methodology into YOUR current loop (same-agent guidance, no context isolation). Best for short, focused analysis.",
+    "2. `spawn_agent` — run the specialist as an ISOLATED child agent with a fresh context and a read-only toolset. The child investigates independently and returns a self-contained report; its token usage never touches your context. Best for broad investigations (codebase traces, evidence gathering, multi-file research).",
     "",
     "---",
     ""
@@ -343,7 +432,7 @@ export function buildSpecialistCatalogMessage(skills: Array<Pick<SpecialistDefin
     lines.push("");
   }
 
-  lines.push("**Usage pattern:** Call `delegate_task` → receive specialist methodology → apply it using your available tools → produce the final answer in the same conversation turn.");
+  lines.push("**Usage pattern:** `delegate_task` for same-loop specialist guidance, or `spawn_agent` to delegate the whole investigation to an isolated read-only child agent that reports back.");
   lines.push("**Scope:** Specialist guidance is temporary and task-scoped. It does not persist beyond the current subtask.");
 
   return lines.join("\n");
@@ -353,7 +442,7 @@ export function buildActivatedSpecialistMessage(skill: SpecialistDefinition, par
   const sections = [
     `## SPECIALIST ACTIVATED: ${skill.name}`,
     "",
-    "**Mode:** Same-agent specialist guidance (no child agent spawned)",
+    "**Mode:** Same-agent specialist guidance (for an isolated child agent, use spawn_agent instead)",
     "**Scope:** Temporary — applies until this subtask is resolved",
     "",
     "---",

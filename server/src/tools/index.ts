@@ -29,7 +29,7 @@ import { AddTaskTool, ListTasksTool, UpdateTaskTool } from "./tasks.js";
 import { PlanTasksTool } from "./plan-tasks.js";
 import { FetchUrlTool, WebSearchTool } from "./web.js";
 import { ThinkTool, AskUserTool, SummarizeProgressTool, SummarizeConversationTool } from "./agent-tools.js";
-import { ReadLintsTool, RunTestsTool } from "./diagnostics.js";
+import { ReadLintsTool, RunTestsTool, RunTypecheckTool } from "./diagnostics.js";
 import {
   GitBranchTool,
   GitCommitTool,
@@ -108,6 +108,7 @@ export function registerAllTools(): void {
   // Diagnostics tools (§4.3: configurable + sanitized env)
   toolRegistry.register(new ReadLintsTool());
   toolRegistry.register(new RunTestsTool());
+  toolRegistry.register(new RunTypecheckTool());
 
   // Git tools (§4.4: added list_changed_files)
   toolRegistry.register(new GitStatusTool());

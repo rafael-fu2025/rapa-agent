@@ -61,9 +61,16 @@ import {
 import {
   createWorkingMemory,
   persistWorkingMemory,
+  updateWorkingMemory,
   type WorkingMemory
 } from "./agent/working-memory.js";
-import { getCompactionAction, compactHistory } from "./agent/context-compactor.js";
+import {
+  getCompactionAction,
+  compactHistory,
+  collectRecentlyReadFiles,
+  buildFileRestorationMessages,
+  COMPACTION_KEEP_RECENT_RATIO
+} from "./agent/context-compactor.js";
 import { AgentEventBus } from "./agent/event-bus.js";
 import { PlanModeState } from "./agent/plan-mode-state.js";
 import { LoopDetector } from "./agent/loop-detector.js";
@@ -207,6 +214,18 @@ export class Agent {
    */
   private fileEditCounts: Map<string, number> = new Map();
   /**
+   * The user prompt for the current run — used by the pre-compaction
+   * working-memory flush to persist the active task.
+   */
+  private currentRunPrompt: string | Array<Record<string, unknown>> | undefined;
+  /**
+   * Verify-before-done: how many times a failing verification suite has
+   * bounced a "declared complete" answer back for fixes (budget: 1).
+   */
+  private verificationRetriesUsed = 0;
+  /** Last verification outcome — surfaced on the done event and AgentRun row. */
+  private verificationStatus: { testsPassed: boolean; typecheckPassed: boolean } | null = null;
+  /**
    * True on the iteration immediately after a force-answer injection. The
    * tool-free round is forced by skipping tool execution and discarding
    * any tool calls the model emits. Reset to false after the round.
@@ -328,6 +347,7 @@ export class Agent {
   ): AsyncGenerator<AgentExecutionEvent> {
     this.runStartTime = Date.now();
     this.apiKeySwitch = undefined;
+    this.currentRunPrompt = userPrompt;
     this.history = [...(this.config.seedHistory ?? [])];
     this.history.push({
       role: "user",
@@ -371,14 +391,22 @@ export class Agent {
     this.fileEditCounts = new Map();
     this.compactionSummary = undefined;
     this.lastCompactionBand = "none";
+    this.verificationRetriesUsed = 0;
+    this.verificationStatus = null;
 
     // Initialize working memory and persist to disk as .rapa/working-memory.md.
     // The model can read/update this file with read_file/edit_file.
     // It survives context compaction and process restarts.
+    // Child agents (agentDepth > 0) share the workspaceRoot — they must NOT
+    // touch the memory file or they would clobber the parent's state.
     const goalText = typeof userPrompt === "string" ? userPrompt : JSON.stringify(userPrompt);
-    this.workingMemory = createWorkingMemory(goalText.slice(0, 500));
-    if (this.context.workspaceRoot) {
-      await persistWorkingMemory(this.context.workspaceRoot, this.workingMemory);
+    if ((this.context.agentDepth ?? 0) === 0) {
+      this.workingMemory = createWorkingMemory(goalText.slice(0, 500));
+      if (this.context.workspaceRoot) {
+        await persistWorkingMemory(this.context.workspaceRoot, this.workingMemory);
+      }
+    } else {
+      this.workingMemory = createWorkingMemory(goalText.slice(0, 500));
     }
 
     // Stale task guard: if the task store is empty but the conversation
@@ -593,7 +621,7 @@ export class Agent {
             const result = await this.llm.callNonStreaming(messages, "compaction");
             return result;
           };
-          const { compactedHistory, summary } = await compactHistory(
+          const { compactedHistory, summary, dropped } = await compactHistory(
             this.history,
             budget,
             llmCall,
@@ -601,6 +629,20 @@ export class Agent {
           );
           this.history = compactedHistory;
           this.compactionSummary = summary;
+
+          // Pre-compaction flush: make sure the persisted working memory
+          // carries the current task before any history detail is lost.
+          // (Depth > 0 agents are children — they never write the file.)
+          if (this.workingMemory && !this.workingMemory.currentTask && this.context.workspaceRoot
+            && (this.context.agentDepth ?? 0) === 0) {
+            const goalText = typeof this.currentRunPrompt === "string"
+              ? this.currentRunPrompt.slice(0, 300)
+              : "";
+            if (goalText) {
+              this.workingMemory = updateWorkingMemory(this.workingMemory, { currentTask: goalText });
+              await persistWorkingMemory(this.context.workspaceRoot, this.workingMemory);
+            }
+          }
 
           // Inject task plan reminder after compaction — the plan_tasks result
           // was likely truncated, so we re-inject the current task state.
@@ -610,6 +652,23 @@ export class Agent {
               role: "system",
               content: `[TASK PLAN — restored after context compaction]\n${postCompactionTasks}\n\nContinue executing tasks in order. Mark each as completed via update_task before moving to the next.`
             });
+          }
+
+          // Post-compaction file restoration: re-attach the most recently
+          // read files (current on-disk state) so the model doesn't have to
+          // re-read — or worse, edit against remembered-but-wrong content.
+          // Budget-aware: at most 25% of the keep-budget so restoration
+          // cannot immediately re-trip the 65% threshold.
+          if (this.context.workspaceRoot && dropped.length > 0) {
+            const restorationPaths = collectRecentlyReadFiles(dropped, this.fileEditCounts ? new Set(this.fileEditCounts.keys()) : new Set());
+            const restorationMessages = await buildFileRestorationMessages(
+              restorationPaths,
+              this.context.workspaceRoot,
+              Math.floor(budget * COMPACTION_KEEP_RECENT_RATIO * 0.25)
+            );
+            if (restorationMessages.length > 0) {
+              this.history.push(...restorationMessages);
+            }
           }
 
           yield {
@@ -1076,6 +1135,56 @@ export class Agent {
           continue;
         }
 
+        // ── Failure-gated completion (verify-before-done) ────────────────
+        // "The verification loop is what separates agentic coding from
+        // generate and hope." If source files were modified this run and
+        // the workspace has a verification suite, run it before accepting
+        // the done-declaration. On failure, bounce the answer back with
+        // the errors — once. The second attempt proceeds regardless, and
+        // the outcome rides on the done event. Skipped entirely when the
+        // context is exhausted (force-answer band) — verification output
+        // would only accelerate the collapse.
+        if (
+          this.fileEditCounts.size > 0
+          && this.verificationRetriesUsed < 1
+          && this.lastCompactionBand !== "force_answer"
+        ) {
+          const verificationResults = await this.tools.runVerificationSuite();
+          const verificationSummary = this.tools.summarizeVerification(verificationResults);
+          if (verificationSummary) {
+            this.verificationStatus = verificationSummary;
+            const failed = !verificationSummary.testsPassed || !verificationSummary.typecheckPassed;
+            if (failed) {
+              this.verificationRetriesUsed += 1;
+              const failureNames = [
+                !verificationSummary.testsPassed ? "tests" : null,
+                !verificationSummary.typecheckPassed ? "typecheck" : null
+              ].filter(Boolean).join(" and ");
+              const failureExcerpt = verificationResults
+                .filter((r) => !r.success)
+                .map((r) => (r.output ?? r.error ?? "").slice(0, 1500))
+                .join("\n---\n")
+                .slice(0, 4000);
+              const verificationStep: AgentStep = {
+                iteration,
+                reasoning: `Verify-before-done: ${failureNames} failed — the declared-complete answer was bounced back for fixes (retry 1/1).`,
+                toolCalls: [],
+                toolResults: verificationResults,
+                timestamp: new Date()
+              };
+              this.steps.push(verificationStep);
+              this.history.push({ role: "assistant", content: finalResponse });
+              this.history.push({
+                role: "user",
+                content: `You declared the work complete, but verification FAILED (${failureNames}). Fix the failures, re-run the failing check, and only then give your final answer. First errors:\n\n${failureExcerpt}`
+              });
+              yield { type: "thinking", iteration, reasoning: verificationStep.reasoning };
+              yield { type: "step", step: verificationStep };
+              continue;
+            }
+          }
+        }
+
         this.history.push({ role: "assistant", content: finalResponse });
 
         const step: AgentStep = {
@@ -1097,7 +1206,8 @@ export class Agent {
           steps: [...this.steps],
           iterations: this.steps.length,
           tokenUsage: this.getTokenUsage(),
-          apiKeySwitch: this.apiKeySwitch
+          apiKeySwitch: this.apiKeySwitch,
+          verification: this.verificationStatus ?? undefined
         });
         return;
       }

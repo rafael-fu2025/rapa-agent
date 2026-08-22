@@ -267,6 +267,12 @@ export type AgentConfig = {
     messageCharLimit?: number;
     /** Total budget for the history passed to the LLM. */
     historyCharBudget?: number;
+    /**
+     * When false, re-reading an unchanged file returns full content every
+     * time. Default (unset/true): identical re-reads of the same range are
+     * replaced with a short stub to conserve context.
+     */
+    readDedup?: boolean;
   };
   /**
    * Per-call upper bound on tokens the LLM may generate. Forwarded as
@@ -381,6 +387,15 @@ export type AgentExecutionEvent =
           message: string;
         }>;
         passed: boolean;
+      };
+      /**
+       * Verify-before-done result: whether the workspace's test suite and
+       * typecheck were green when the run finished. Undefined when no
+       * verification ran (no files modified, or no infrastructure).
+       */
+      verification?: {
+        testsPassed: boolean;
+        typecheckPassed: boolean;
       };
     }
   | {
