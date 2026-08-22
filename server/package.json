@@ -17,7 +17,9 @@
     "db:migrate-from-mysql:apply": "tsx src/scripts/migrate-from-mysql.ts --apply",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "node scripts/check-coverage.mjs"
+    "test:coverage": "node scripts/check-coverage.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/ --max-warnings 0"
   },
   "dependencies": {
     "@fastify/compress": "^8.3.1",
@@ -42,6 +44,7 @@
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^22.15.3",
     "@types/pdf-parse": "^1.1.5",
+    "@vitest/coverage-v8": "^2.1.9",
     "prisma": "^6.7.0",
     "tsx": "^4.19.3",
     "typescript": "^5.8.3",

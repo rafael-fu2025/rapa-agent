@@ -30,8 +30,10 @@ RUN cd server && npm ci --omit=dev
 COPY server/prisma ./server/prisma/
 RUN cd server && npx prisma generate
 
-# Copy built frontend
-COPY --from=frontend-builder /app/dist ./dist
+# Copy built frontend.
+# NOTE: vite.config.ts sets `outDir: web-dist`, and the server resolves the
+# static root as `<repo root>/web-dist` (see src/index.ts). Copy to match.
+COPY --from=frontend-builder /app/web-dist ./web-dist
 
 # Copy built backend
 COPY --from=backend-builder /app/server/dist ./server/dist
@@ -39,10 +41,16 @@ COPY --from=backend-builder /app/server/dist ./server/dist
 # Ensure the app runs in production mode
 ENV NODE_ENV=production
 ENV PORT=8787
+# SQLite database, persisted via a volume mounted at /app/server/prisma/data.
+# (schema.prisma uses provider = "sqlite"; switch the provider to mysql or
+# postgresql in a build stage if you need a hosted multi-user database.)
+ENV DATABASE_URL=file:./data/production.db
 
 # Create a startup script to run migrations and start the server
 RUN echo '#!/bin/sh' > /app/start.sh && \
+    echo 'set -e' >> /app/start.sh && \
     echo 'cd /app/server' >> /app/start.sh && \
+    echo 'mkdir -p prisma/data' >> /app/start.sh && \
     echo 'npx prisma migrate deploy' >> /app/start.sh && \
     echo 'node dist/index.js' >> /app/start.sh && \
     chmod +x /app/start.sh

@@ -41,7 +41,9 @@ export default tseslint.config(
       "@typescript-eslint/no-non-null-assertion": "off",
 
       // General quality
-      "no-console": "warn",
+      // console.error/warn are allowed (error boundaries, expected
+      // failures); bare console.log/debug stays flagged.
+      "no-console": ["warn", { allow: ["error", "warn"] }],
       "no-debugger": "warn",
       "no-duplicate-imports": "error",
       "prefer-const": "warn",
@@ -69,6 +71,43 @@ export default tseslint.config(
       "@typescript-eslint/no-require-imports": "off",
       // Server code legitimately uses any for request shapes, etc.
       "@typescript-eslint/no-explicit-any": "warn",
+      // The server logs operational events to stdout/stderr by design —
+      // request lifecycle, tool execution, startup. Not debug leftovers.
+      "no-console": "off",
+    },
+  },
+
+  // ── Test files (last so it wins over the app blocks above) ────────
+  // Test fixtures legitimately use loose types and console output for
+  // debugging; production strictness doesn't apply.
+  {
+    files: [
+      "**/*.test.ts",
+      "**/*.test.tsx",
+      "server/src/**/_test/**/*.ts",
+      "src/**/__tests__/**/*.ts",
+    ],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+      "no-console": "off",
+    },
+  },
+
+  // ── Ambient declarations (last so it wins over the app blocks above) ──
+  {
+    files: ["**/*.d.ts"],
+    rules: {
+      // Module augmentation frequently widens library types to any.
+      "@typescript-eslint/no-explicit-any": "off",
+    },
+  },
+
+  // ── One-off server maintenance scripts (not product code) ─────────
+  {
+    files: ["server/src/scripts/**/*.ts"],
+    rules: {
+      // Migration / verification scripts parse untyped DB rows and JSON.
+      "@typescript-eslint/no-explicit-any": "off",
     },
   },
 );

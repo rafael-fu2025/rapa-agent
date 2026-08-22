@@ -64,9 +64,10 @@ prisma/dev.db.bak-*
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
-# Trae / Cursor / Antigravity / Qoder scratch — local agent / IDE storage.
+# Trae / Cursor / Antigravity / Qoder / ZCode scratch — local agent / IDE storage.
 .vscode-test/
 .qoder/
+.zcode/
 .antigravitycli/
 .trae/
 .cursor/

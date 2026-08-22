@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 // Coverage gate runner.
 //
-// Tries to run `vitest run --coverage`. If `@vitest/coverage-v8` is
-// not installed, prints the install command and exits 0 (no gate
-// failure — the threshold config in vitest.config.ts is dormant
-// until the provider is installed).
-//
-// See `.agents/notes/implemented/testing/2026-08-15-coverage-gate.md`.
+// Runs `vitest run --coverage`. @vitest/coverage-v8 is a committed
+// devDependency, so a missing provider means the install is broken — the
+// gate FAILS LOUDLY rather than silently passing. Thresholds live in
+// vitest.config.ts.
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -18,12 +16,12 @@ const coverageV8 = resolve(here, "..", "node_modules", "@vitest", "coverage-v8")
 
 if (!existsSync(coverageV8)) {
   // eslint-disable-next-line no-console
-  console.log(
-    "[coverage-gate] @vitest/coverage-v8 is not installed.\n" +
-    "              Run: npm install --save-dev @vitest/coverage-v8\n" +
-    "              Until installed, the threshold gate in vitest.config.ts is dormant."
+  console.error(
+    "[coverage-gate] @vitest/coverage-v8 is not installed — the gate will not run.\n" +
+    "                Fix your install: npm install\n" +
+    "                (it is a committed devDependency of this package.)"
   );
-  process.exit(0);
+  process.exit(1);
 }
 
 const result = spawnSync("npx", ["vitest", "run", "--coverage"], {

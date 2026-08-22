@@ -1,0 +1,64 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Rapa / Recreate UI — .dockerignore
+#
+# `COPY . .` in the Dockerfile must never bake secrets, local databases, or
+# rebuildable artifacts into image layers. Everything here is either
+# regenerable from source (node_modules, dist outputs), per-machine state
+# (dev.db, .env), or local-only scratch (agent dirs, logs, docs).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Version control and CI
+.git/
+.gitignore
+.github/
+
+# Secrets — NEVER bake into an image. Inject via environment at runtime.
+.env
+.env.*
+!.env.example
+server/.env
+server/.env.*
+
+# Local databases and backups (SQLite is file-based; per-deployment state)
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.db.bak*
+server/prisma/dev.db*
+
+# Dependencies — rebuilt inside the image by `npm ci`
+node_modules/
+server/node_modules/
+
+# Build outputs — rebuilt inside the image
+web-dist/
+server/dist/
+dist/
+*.tsbuildinfo
+
+# Logs and runtime diagnostics
+logs/
+*.log
+server/build.out
+server/tsc.log
+
+# Local agent / IDE scratch directories
+.zcode/
+.qoder/
+.trae/
+.cursor/
+.aider*
+.continue/
+.agent-*/
+.rapa/
+.agents/
+
+# Personal docs and scratch that don't belong in a public image
+docs/
+deck-minimax-code/
+react-vite-login/
+.dbg/
+coverage/
+test-results/
+CODEBASE_ANALYSIS.md

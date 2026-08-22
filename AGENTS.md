@@ -11,9 +11,9 @@ Rapa is a **full-stack AI agent platform** with a React frontend and a Fastify/N
 - **Frontend**: React 18 · Vite 6 · TypeScript · Tailwind CSS 4 · Radix UI · React Router 7
 - **Backend**: Fastify 5 · TypeScript · Prisma 6 · Zod
 - **Agent Tools**: 30+ registered tools across 6 categories (filesystem, shell, web, git, system, diagnostics)
-- **Database**: Prisma ORM with 12 models. Default for personal-machine use is **SQLite** (`file:./dev.db`, no daemon). The same schema also supports MySQL / PostgreSQL by switching the `provider` in `server/prisma/schema.prisma` — see [docs/PERSONAL_DEPLOY.md](docs/PERSONAL_DEPLOY.md) §6.
-- **Deployment**: Personal-machine default (Node.js + Vite, two terminals). Docker (Dockerfile + docker-compose.yml) and MySQL are still supported for users who want a hosted / multi-user setup.
-- **Testing**: 266 tests (40 frontend + 226 server) via Vitest
+- **Database**: Prisma ORM with 22 models. Default for personal-machine use is **SQLite** (`file:./dev.db`, no daemon). The same schema also supports MySQL / PostgreSQL by switching the `provider` in `server/prisma/schema.prisma` — see [docs/PERSONAL_DEPLOY.md](docs/PERSONAL_DEPLOY.md) §6.
+- **Deployment**: Personal-machine default (Node.js + Vite, two terminals). Docker (Dockerfile + docker-compose.yml) ships SQLite on a volume by default; MySQL is an opt-in for hosted / multi-user setups (see the comment block in `docker-compose.yml`).
+- **Testing**: 513 tests (56 frontend + 457 server) via Vitest; type-check (`tsc --noEmit`), lint (`eslint --max-warnings 0`), and coverage gates all enforced in both packages
 
 ---
 
@@ -111,13 +111,14 @@ Recreate UI/
 │   │       ├── server.ts        # MCP server implementation
 │   │       └── client.ts        # MCP client integration
 │   └── prisma/
-│       ├── schema.prisma        # 12 models (see §7 Database Schema)
+│       ├── schema.prisma        # 22 models (see §7 Database Schema)
 │       └── migrations/          # Timestamped migration directories
 ├── web-dist/                    # Vite production build output
 ├── index.html                   # Vite HTML entry point
 ├── vite.config.ts               # Vite config: React plugin, Tailwind plugin, outDir: web-dist
-├── Dockerfile                   # Container build (frontend + backend)
-├── docker-compose.yml           # Docker Compose stack (app + MySQL)
+├── Dockerfile                   # Container build (frontend + backend, SQLite)
+├── docker-compose.yml           # Docker Compose stack (app + SQLite volume; MySQL opt-in)
+├── .dockerignore                # Keeps secrets, dev.db, node_modules out of image layers
 ├── package.json                 # Frontend dependencies + scripts
 └── AGENTS.md                    # This file
 ```
@@ -128,24 +129,34 @@ The agent loop is decomposed into focused modules:
 
 | Module | Purpose |
 |--------|---------|
-| `prompt-builder.ts` | System prompt construction, tool docs injection, broad-analysis detection |
-| `response-parser.ts` | Extract JSON tool calls from LLM response, correction nudges |
-| `llm-client.ts` | LLM API call with timeout, retry, and circuit breaker |
-| `tool-orchestrator.ts` | Batch tool execution (read-only parallel, write sequential), approval flow |
-| `tool-docs.ts` | Tool documentation strings injected into the system prompt |
-| `supervisor.ts` | Sub-agent delegation and result aggregation |
+| `prompt-builder.ts` | Provider-message assembly (wire format, budget-aware truncation), ask-user parsing, injected system messages |
+| `response-parser.ts` | Extract JSON tool calls from LLM response, correction nudges, `<think>` stream stripping |
+| `llm-client.ts` | LLM API call with timeout, key failover, idle-read timeout, and abort support |
+| `tool-orchestrator.ts` | Batch tool execution (read-only parallel, write sequential), approval flow, truncation |
 | `reasoning-budget.ts` | Token budget allocation for reasoning vs. response |
-| `tracing.ts` | Execution tracing and observability |
-| `langfuse-exporter.ts` | Export traces to Langfuse (optional) |
+| `reasoning-translator.ts` | Translates reasoning-effort requests to provider-native fields |
+| `context-compactor.ts` | Mid-run history compaction (warn → compact → force-answer) |
+| `working-memory.ts` | Persisted `.rapa/working-memory.md` state |
+| `loop-detector.ts` | Repeated tool-call signature detection |
+| `complexity.ts` | Task complexity scoring; scales stall thresholds |
 | `qa-rules.ts` | Response quality validation (API key detection, content checks) |
 | `code-validators.ts` | Syntax validation for generated code |
 | `schema-correction.ts` | Auto-correction when LLM produces malformed tool call JSON |
-| `resilience.ts` | Circuit breaker, retry, and timeout patterns |
-| `circuit-breaker.ts` | Circuit breaker implementation for LLM calls |
-| `retry.ts` | Exponential backoff retry logic |
-| `timeout.ts` | Configurable timeout wrapper |
-| `checkpoint.ts` | File checkpointing for rollback |
-| `types.ts` | Shared TypeScript types for agent modules |
+| `resilience.ts` / `circuit-breaker.ts` / `retry.ts` / `timeout.ts` | Circuit breaker, retry, and timeout patterns for tool execution |
+| `tracing.ts` | Execution tracing and observability |
+| `langfuse-exporter.ts` | Export traces to Langfuse (optional) |
+| `output-eviction.ts` | Evicts stale tool output from disk-backed cache |
+| `plan-mode-state.ts` | Plan-mode tool allowlist state |
+| `plugin.ts` | Plugin context/loader (DI containers, disposers) |
+| `capability.ts` | Capability registry types (service definitions, providers, policy) |
+| `context-retrieval.ts` | Semantic RAG over past conversations |
+| `snapshot/` | Snapshot test harness (fixtures replayed through the Agent loop) |
+| `event-bus.ts` | Typed agent event bus |
+| `lifecycle-observer.ts` | Run lifecycle observation hooks |
+| `json-rpc-sdk.ts` | Shared JSON-RPC plumbing |
+| `types.ts` | Shared TypeScript types and constants for agent modules |
+
+Related modules outside `lib/agent/`: `lib/exit-hatch.ts` (graceful abort of live runs), `lib/run-limits.ts` (token/cost/duration caps, enforced each iteration), `lib/sub-agents.ts` (specialist orchestration).
 
 ### 2.2 Safety Modules (`server/src/lib/safety/`)
 
@@ -162,7 +173,7 @@ The agent loop is decomposed into focused modules:
 | **Tool execution** | `server/src/lib/agent/tool-orchestrator.ts` | Batch runs tools (read-only parallel, write sequential) |
 | **SSE streaming out** | `server/src/routes/agent.ts` | Writes `data: {...}\n\n` to response |
 | **SSE streaming in** | `src/lib/api.ts` → `consumeSseStream()` | Parses SSE from fetch Response |
-| **Agent prompt** | `server/src/lib/agent/prompt-builder.ts` | System prompt with tool docs, rules, and context |
+| **Agent prompt assembly** | `server/src/lib/agent/prompt-builder.ts` | Provider-message wire format, ask-user parsing, injected system messages. Note: `buildSystemPrompt()` here is currently only used by `scripts/measure-prompt.ts` — the live agent path relies on native function calling plus the seed-history system messages (rules, memory, specialists), not a monolithic system prompt. |
 | **Response parsing** | `server/src/lib/agent/response-parser.ts` | Extracts JSON toolCalls from LLM response |
 | **Conversation memory** | `server/src/lib/conversation-memory.ts` | Sliding window + LLM summarization |
 
@@ -239,8 +250,11 @@ The agent operates on a workspace directory:
 | Command | Purpose |
 |---------|---------|
 | `npm run dev` | Start Vite dev server (HMR on :5173) |
-| `npm run build` | Production build → `web-dist/` |
-| `npm test` | Run frontend tests (Vitest, 40 tests) |
+| `npm run build` | Type-check (`tsc --noEmit`) then production build → `web-dist/` |
+| `npm run typecheck` | TypeScript check only |
+| `npm test` | Run frontend tests (Vitest, 56 tests) |
+| `npm run lint` | ESLint frontend (`src/`, zero warnings allowed) |
+| `npm run lint:server` | ESLint backend (`server/src/`, zero warnings allowed) |
 
 #### Backend (`server/package.json`)
 | Command | Purpose |
@@ -248,22 +262,26 @@ The agent operates on a workspace directory:
 | `npm run dev` | Start Fastify with tsx watch (auto-reload) |
 | `npm run build` | Compile TypeScript → `server/dist/` |
 | `npm start` | Run compiled production server |
-| `npm test` | Run backend tests (Vitest, 226 tests) |
+| `npm test` | Run backend tests (Vitest, 457 tests) |
+| `npm run typecheck` | TypeScript check (`tsc --noEmit`) |
+| `npm run lint` | ESLint backend (`src/`, zero warnings allowed) |
+| `npm run test:coverage` | Coverage gate (per-area thresholds in `vitest.config.ts`) |
 | `npm run prisma:generate` | Regenerate Prisma client from schema |
 | `npm run prisma:migrate` | Create and apply migration |
 
 ### 3.5 Build Commands (Run Before Committing)
 
 ```bash
-# Check backend compiles
-cd server && npx tsc --noEmit
+# Type-check both packages (the root build also runs tsc via vite build)
+cd server && npm run typecheck
+npm run typecheck               # from repo root
 
-# Check frontend compiles
-npm run build
+# Lint both packages (zero warnings allowed)
+npm run lint && npm run lint:server
 
 # Run all tests
-npm test                  # Frontend (40 tests)
-cd server && npm test     # Backend (226 tests)
+npm test                  # Frontend (56 tests)
+cd server && npm test     # Backend (457 tests)
 
 # All must pass before committing
 ```
@@ -288,7 +306,7 @@ cd server && npm test     # Backend (226 tests)
 | Files | kebab-case | `agent-steps-viewer.tsx` |
 | React components | PascalCase | `AgentStepsViewer` |
 | Hooks | `use` prefix + camelCase | `useAutoScroll` |
-| Functions | camelCase | `buildSystemPrompt()` |
+| Functions | camelCase | `buildProviderMessages()` |
 | Types/interfaces | PascalCase | `AgentExecutionEvent` |
 | Constants | UPPER_SNAKE_CASE | `DEFAULT_LLM_TIMEOUT_MS` |
 | Tools | PascalCase + "Tool" suffix | `GitStatusTool` |
@@ -416,16 +434,24 @@ User prompt
   │
   ▼
 prepareAgentRequest()         ── DB lookups, workspace resolution, seed history
+  │                             (conversation memory, agent rules, specialist catalog)
+  ▼
+new Agent(context, config)    ── Initialize with memory + config
   │
   ▼
-new Agent(context, config)    ── Initialize with system prompt + memory
-  │
+agent.stream(userPrompt, { signal, runId })
+  │                           ── AbortSignal from the HTTP request ("close");
+  │                             runId wires the exit-hatch for live-run abort
   ▼
-agent.stream(userPrompt)      ── AsyncGenerator<AgentExecutionEvent>
-  │
-  └── Iteration loop (1..maxIterations)
+SSE route startAgentRun()     ── Persists AgentRun row; status can end as
+  │                             completed | failed | aborted
+  ▼
+Iteration loop (1..maxIterations)
       │
-      ├── callLLM()           ── POST /chat/completions (with timeout + retry)
+      ├── Top-of-loop checks   ── exit-hatch abort, client disconnect,
+      │                         RunLimitTracker (token/cost/duration caps)
+      ├── callLLM()           ── POST /chat/completions (timeout, key failover,
+      │                         idle-read timeout, external abort)
       │
       ├── parseAssistantResponse()   ── Extract JSON toolCalls
       │   ├── parseError → correction message, continue
@@ -510,14 +536,23 @@ Promise resolved → tool executes (or rejected result returned)
 | `AgentCheckpoint` | `agent_checkpoint` | `-> AgentRun`, `-> AgentRunStep?`, `-> AgentToolCall?` | File snapshots for rollback |
 | `AgentProcessSession` | `agent_process_session` | `-> AgentRun`, `-> Workspace?` | Long-running shell process tracking |
 
-### 7.3 Extensibility Models
+### 7.3 Extensibility & Operations Models
 
 | Model | Purpose |
 |-------|---------|
 | `AgentRule` | User-defined rules at global/workspace/conversation scope |
 | `AgentSkill` | Installable agent skill definitions |
-| `AgentIntegration` | External service integrions (deploy, database) |
+| `AgentIntegration` | External service integrations (deploy, database) |
 | `AgentMcpServer` | MCP (Model Context Protocol) server connections |
+| `UsageRecord` | Per-run token/cost usage accounting |
+| `ServiceApiKey` | Service-level API keys |
+| `AutoApprovePattern` | Saved auto-approve patterns (checked after the severity gate) |
+| `AgentTask` | Agent task-plan tracking |
+| `NotificationChannel` | Webhook notification channels |
+| `ScheduledTask` | Cron-style scheduled agent tasks |
+| `IntegrationCredential` | Encrypted credentials for integrations |
+
+The authoritative list is always [`server/prisma/schema.prisma`](server/prisma/schema.prisma) — 22 models as of 2026-08-22.
 
 ### 7.4 Migration Guidelines
 
@@ -533,14 +568,19 @@ Promise resolved → tool executes (or rejected result returned)
 
 ### 8.1 Current State
 
-**266 tests across 21 test files, all passing.**
+**513 tests across 49 test files, all passing.**
 
 | Suite | Files | Tests | Runner |
 |-------|-------|-------|--------|
-| Frontend | 2 | 40 | Vitest + jsdom |
-| Backend | 19 | 226 | Vitest |
+| Frontend | 8 | 56 | Vitest + jsdom |
+| Backend | 41 | 457 | Vitest |
 
-Frontend tests cover chat types and utility functions. Backend tests cover the agent loop modules (envelope, response parser, tool docs, tool orchestrator, tracing, supervisor, LLM client, resilience), safety modules (prompt injection, dangerous patterns), and infrastructure (crypto, env, tool scopes, run limits, exit hatch, MCP server).
+Frontend tests cover chat types, utility functions, and sidebar rendering. Backend tests cover the agent loop (envelope, response parser, tool orchestrator, tracing, LLM client, resilience, plugin/system, snapshot harness), safety modules (prompt injection, dangerous patterns), tools (filesystem traversal, edit-file symlink safety, git injection), route helper logic (workspaces search/mutations), and infrastructure (crypto, env, tool scopes, run limits, exit hatch, MCP server, scheduler).
+
+**Gates** (all must be green before committing):
+- `tsc --noEmit` in both packages — the root `build` script runs it before Vite; the server has `npm run typecheck`.
+- `eslint --max-warnings 0` — `npm run lint` (frontend) and `npm run lint:server` (backend). Server logging via `console` is allowed in `server/src`; test files may use `any`.
+- Coverage gate — `cd server && npm run test:coverage` runs per-area thresholds from `vitest.config.ts` (honest floors just below current measurements; ratchet upward as coverage grows).
 
 ### 8.2 Running Tests
 
@@ -565,9 +605,14 @@ open `http://localhost:5173`.
 
 ### 9.1 Docker
 
+The container ships **SQLite on a named volume** (matching `schema.prisma`'s `provider = "sqlite"`), so it works with no external database. `APP_SECRET` is **required** — compose refuses to start without it:
+
 ```bash
-docker-compose up --build
+export APP_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+docker compose up --build
 ```
+
+For a hosted MySQL deployment, follow the opt-in instructions in the comment block at the bottom of `docker-compose.yml` (switch the Prisma provider, uncomment the `db` service, point `DATABASE_URL` at it). A `.dockerignore` keeps `.env`, `dev.db`, and `node_modules` out of image layers — never delete it.
 
 ### 9.2 Production Build (Standalone)
 
@@ -665,4 +710,4 @@ test: add unit tests for response-parser
 
 ---
 
-*Last updated: 2026-06-14. This file should be reviewed and updated whenever significant architectural changes are made.*
+*Last updated: 2026-08-22. This file should be reviewed and updated whenever significant architectural changes are made.*
