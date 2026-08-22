@@ -13,7 +13,7 @@ Rapa is a **full-stack AI agent platform** with a React frontend and a Fastify/N
 - **Agent Tools**: 30+ registered tools across 6 categories (filesystem, shell, web, git, system, diagnostics)
 - **Database**: Prisma ORM with 22 models. Default for personal-machine use is **SQLite** (`file:./dev.db`, no daemon). The same schema also supports MySQL / PostgreSQL by switching the `provider` in `server/prisma/schema.prisma` — see [docs/PERSONAL_DEPLOY.md](docs/PERSONAL_DEPLOY.md) §6.
 - **Deployment**: Personal-machine default (Node.js + Vite, two terminals). Docker (Dockerfile + docker-compose.yml) ships SQLite on a volume by default; MySQL is an opt-in for hosted / multi-user setups (see the comment block in `docker-compose.yml`).
-- **Testing**: 513 tests (56 frontend + 457 server) via Vitest; type-check (`tsc --noEmit`), lint (`eslint --max-warnings 0`), and coverage gates all enforced in both packages
+- **Testing**: 562 tests (56 frontend + 506 server) via Vitest; type-check (`tsc --noEmit`), lint (`eslint --max-warnings 0`), and coverage gates all enforced in both packages
 
 ---
 
@@ -135,8 +135,8 @@ The agent loop is decomposed into focused modules:
 | `tool-orchestrator.ts` | Batch tool execution (read-only parallel, write sequential), approval flow, truncation |
 | `reasoning-budget.ts` | Token budget allocation for reasoning vs. response |
 | `reasoning-translator.ts` | Translates reasoning-effort requests to provider-native fields |
-| `context-compactor.ts` | Mid-run history compaction (warn → compact → force-answer) |
-| `working-memory.ts` | Persisted `.rapa/working-memory.md` state |
+| `context-compactor.ts` | Mid-run history compaction (warn → compact → force-answer) + post-compaction file restoration |
+| `working-memory.ts` | Persisted `.rapa/working-memory.md` state (skipped for child agents) |
 | `loop-detector.ts` | Repeated tool-call signature detection |
 | `complexity.ts` | Task complexity scoring; scales stall thresholds |
 | `qa-rules.ts` | Response quality validation (API key detection, content checks) |
@@ -156,7 +156,7 @@ The agent loop is decomposed into focused modules:
 | `json-rpc-sdk.ts` | Shared JSON-RPC plumbing |
 | `types.ts` | Shared TypeScript types and constants for agent modules |
 
-Related modules outside `lib/agent/`: `lib/exit-hatch.ts` (graceful abort of live runs), `lib/run-limits.ts` (token/cost/duration caps, enforced each iteration), `lib/sub-agents.ts` (specialist orchestration).
+Related modules outside `lib/agent/`: `lib/exit-hatch.ts` (graceful abort of live runs), `lib/run-limits.ts` (token/cost/duration caps, enforced each iteration), `lib/sub-agents.ts` (specialist catalog + classifier), `lib/sub-agent-runner.ts` (isolated read-only child agents for `spawn_agent`), `lib/workspace-instructions.ts` (AGENTS.md/CLAUDE.md/.cursorrules loading with injection-safe wrapping).
 
 ### 2.2 Safety Modules (`server/src/lib/safety/`)
 
@@ -262,7 +262,7 @@ The agent operates on a workspace directory:
 | `npm run dev` | Start Fastify with tsx watch (auto-reload) |
 | `npm run build` | Compile TypeScript → `server/dist/` |
 | `npm start` | Run compiled production server |
-| `npm test` | Run backend tests (Vitest, 457 tests) |
+| `npm test` | Run backend tests (Vitest, 506 tests) |
 | `npm run typecheck` | TypeScript check (`tsc --noEmit`) |
 | `npm run lint` | ESLint backend (`src/`, zero warnings allowed) |
 | `npm run test:coverage` | Coverage gate (per-area thresholds in `vitest.config.ts`) |
@@ -281,7 +281,7 @@ npm run lint && npm run lint:server
 
 # Run all tests
 npm test                  # Frontend (56 tests)
-cd server && npm test     # Backend (457 tests)
+cd server && npm test     # Backend (506 tests)
 
 # All must pass before committing
 ```
@@ -462,15 +462,32 @@ Iteration loop (1..maxIterations)
       │
       ├── executeToolCallsInBatches()
       │   ├── resolveToolApproval()   ── Parallel approval checks
-      │   ├── Read-only tools         ── Promise.all (parallel)
+      │   ├── Read-only tools         ── Promise.all (parallel); identical
+      │   │                           re-reads of unchanged ranges are
+      │   │                           stubbed (read dedup)
       │   └── Write/shell tools       ── Sequential + retry on transient errors
+      │                               + checkpoint validation (lint, and
+      │                               throttled tests/typecheck when the
+      │                               workspace has infrastructure)
       │
       ├── ask_user? → return question to user, end stream
+      │
+      ├── Tool-free round → verify-before-done gate: if files were edited,
+      │   run tests+typecheck once; failing → bounce back for one fix round;
+      │   outcome rides on the done event (`verification`)
       │
       ├── Stall detection → diversity nudge or force-answer injection
       │
       └── yield events: thinking, tool_call, step
 ```
+
+Notable sub-mechanisms: **spawn_agent** runs isolated read-only child agents
+(`lib/sub-agent-runner.ts`, nesting capped at depth 2, fresh context,
+structured report back as the tool result); **context compaction** re-attaches
+the most recently read files after summarizing (`context-compactor.ts`); and
+**workspace instruction files** (AGENTS.md / CLAUDE.md / .cursorrules) are
+injected at run start with prompt-injection-safe wrapping
+(`lib/workspace-instructions.ts`).
 
 ### 6.2 Event Types (Frontend Consumption)
 
@@ -568,12 +585,12 @@ The authoritative list is always [`server/prisma/schema.prisma`](server/prisma/s
 
 ### 8.1 Current State
 
-**513 tests across 49 test files, all passing.**
+**562 tests across 53 test files, all passing.**
 
 | Suite | Files | Tests | Runner |
 |-------|-------|-------|--------|
 | Frontend | 8 | 56 | Vitest + jsdom |
-| Backend | 41 | 457 | Vitest |
+| Backend | 45 | 506 | Vitest |
 
 Frontend tests cover chat types, utility functions, and sidebar rendering. Backend tests cover the agent loop (envelope, response parser, tool orchestrator, tracing, LLM client, resilience, plugin/system, snapshot harness), safety modules (prompt injection, dangerous patterns), tools (filesystem traversal, edit-file symlink safety, git injection), route helper logic (workspaces search/mutations), and infrastructure (crypto, env, tool scopes, run limits, exit hatch, MCP server, scheduler).
 
