@@ -894,7 +894,7 @@ export class SearchContentTool extends Tool {
       },
       maxResults: {
         type: "number",
-        description: "Maximum number of matches to return (default: 50, max: 500)",
+        description: "Ceiling on total matches for the search (default: 50, max: 500). Prefer offset+limit-style pagination via headLimit.",
         required: false
       },
       regex: {
@@ -914,7 +914,7 @@ export class SearchContentTool extends Tool {
       },
       headLimit: {
         type: "number",
-        description: "Return at most this many matches (applied after offset). Use with offset for pagination.",
+        description: "Pagination page size (applied after offset) — use offset+headLimit to page through results. Defaults to maxResults when omitted.",
         required: false
       },
       offset: {

@@ -11,7 +11,7 @@ export class SearchMemoryTool extends Tool {
   definition: ToolDefinition = {
     name: "search_memory",
     description: "Search past conversations and tool outputs for relevant context. Use when you need to recall previous work, decisions, or solutions from earlier sessions. Returns relevant snippets from conversation summaries and tool outputs.",
-    category: "web",
+    category: "system",
     riskLevel: "none",
     requiresApproval: false,
     parameters: {

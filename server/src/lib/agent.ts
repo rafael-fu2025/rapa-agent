@@ -218,6 +218,8 @@ export class Agent {
    * working-memory flush to persist the active task.
    */
   private currentRunPrompt: string | Array<Record<string, unknown>> | undefined;
+  /** Calls that started executing during the current batch (drained into the event stream post-batch). */
+  private runningToolEventBuffer: ToolCall[] = [];
   /**
    * Verify-before-done: how many times a failing verification suite has
    * bounced a "declared complete" answer back for fixes (budget: 1).
@@ -225,6 +227,8 @@ export class Agent {
   private verificationRetriesUsed = 0;
   /** Last verification outcome — surfaced on the done event and AgentRun row. */
   private verificationStatus: { testsPassed: boolean; typecheckPassed: boolean } | null = null;
+  /** Whether the incomplete-plan bounce has been used this run (budget: 1). */
+  private taskBounceUsed = false;
   /**
    * True on the iteration immediately after a force-answer injection. The
    * tool-free round is forced by skipping tool execution and discarding
@@ -298,7 +302,16 @@ export class Agent {
         });
       }
     });
-    this.tools = new ToolOrchestrator({ context, config });
+    this.tools = new ToolOrchestrator({
+      context,
+      config,
+      // Buffer "running" transitions during a batch; the stream loop drains
+      // the buffer at its next yield point so the event log is honest even
+      // though mid-batch yields aren't possible through the await boundary.
+      onToolStart: (call) => {
+        this.runningToolEventBuffer.push(call);
+      }
+    });
   }
 
   async run(userPrompt: string): Promise<{ response: string; steps: AgentStep[]; status: "completed" | "max_iterations" | "failed" | "interrupted" | "aborted" }> {
@@ -393,6 +406,7 @@ export class Agent {
     this.lastCompactionBand = "none";
     this.verificationRetriesUsed = 0;
     this.verificationStatus = null;
+    this.taskBounceUsed = false;
 
     // Initialize working memory and persist to disk as .rapa/working-memory.md.
     // The model can read/update this file with read_file/edit_file.
@@ -407,18 +421,6 @@ export class Agent {
       }
     } else {
       this.workingMemory = createWorkingMemory(goalText.slice(0, 500));
-    }
-
-    // Stale task guard: if the task store is empty but the conversation
-    // history may contain references to tasks from a previous session,
-    // inject a system message so the agent knows to create a fresh plan.
-    // This prevents the agent from assuming planning is already done
-    // when it sees old task references in the replayed history.
-    if (!(await buildTaskSummary(this.context.conversationId))) {
-      this.history.push({
-        role: "system",
-        content: "No task plan exists for this run. The conversation history may reference tasks from a previous session, but those are stale. If this task requires multiple steps, call plan_tasks NOW to create a fresh plan before doing any other work."
-      });
     }
 
     // Apply per-mode defaults (L3).
@@ -440,6 +442,17 @@ export class Agent {
       noProgress: scaleThreshold(NO_PROGRESS_THRESHOLD, mult),
       runaway: scaleThreshold(STUCK_RUNAWAY_THRESHOLD, mult)
     };
+
+    // Stale task guard — only meaningful when there is a real task to plan.
+    // For trivial prompts (greetings, quick questions) the "call plan_tasks
+    // NOW" instruction is noise that pushes the model toward busywork and
+    // primes the intent detectors, so it is skipped entirely.
+    if (this.complexity.label !== "trivial" && !(await buildTaskSummary(this.context.conversationId))) {
+      this.history.push({
+        role: "system",
+        content: "No task plan exists for this run. The conversation history may reference tasks from a previous session, but those are stale. If this task requires multiple steps, call plan_tasks NOW to create a fresh plan before doing any other work."
+      });
+    }
 
     // Open a root trace span (O2) for the entire agent run.
     const traceRoot = startTrace("agent.run", {
@@ -961,7 +974,13 @@ export class Agent {
         // This handles the case where the model emitted tool call JSON as content
         // (the parser extracts tool calls but leaves responseText empty).
         let finalResponse = parsedResponse.responseText?.trim() || "";
+        // True when the visible answer was reconstructed from the private
+        // reasoning channel (model emitted no visible text). Deliberation
+        // text must NOT be treated as a public promise of action — see the
+        // intent-without-action check below.
+        let finalResponseFromReasoning = false;
         if (!finalResponse && parsedResponse.reasoning) {
+          finalResponseFromReasoning = true;
           // Strip tool-call-related noise from reasoning, use the rest
           finalResponse = parsedResponse.reasoning
             .replace(/I('ll| will) (now )?(call|use|invoke|emit|run)\s.*/gi, "")
@@ -991,7 +1010,21 @@ export class Agent {
         // short acknowledgment or empty.
         const looksUnfinished = looksLikeContinuationResponse(finalResponse, parsedResponse.reasoning);
 
-        if (missingToolCalls || parsedResponse.needsContinuation || looksUnfinished) {
+        // When the model returned reasoning-only and we successfully
+        // reconstructed a substantive answer from it, treat the
+        // reconstruction AS the answer. `needsContinuation` is set for
+        // empty-content responses by definition — letting it trigger a
+        // correction here just burns rounds asking the model for text it
+        // effectively already wrote (seen live: a greeting took 5 rounds
+        // and ended at max_iterations). Real tool-use intent
+        // (missingToolCalls) still corrects regardless.
+        const hasReconstructedAnswer = finalResponseFromReasoning && finalResponse.length >= 40;
+
+        if (
+          missingToolCalls
+          || (parsedResponse.needsContinuation && !hasReconstructedAnswer)
+          || (looksUnfinished && !hasReconstructedAnswer)
+        ) {
           correctionCount += 1;
 
           if (correctionCount > 5) {
@@ -1028,11 +1061,16 @@ export class Agent {
           }
 
           // Intent-without-action supervisor (Odysseus). Catches "Let me read X" /
-          // "I'll do Y" / "I should tail the output" — short text that promises an
-          // action but emits no tool call. Inject ONE sharp nudge, then continue.
-          // Cap the nudges so a model that genuinely cannot emit a tool doesn't
-          // pin us in a forever loop.
-          const intentMatch = missingToolCalls || parsedResponse.needsContinuation
+          // "I'll do Y" — short text that PROMISES an action but emits no tool
+          // call. Two deliberate exclusions:
+          //   - deliberation verbs ("I should…") never match (commitment
+          //     language only: let me / I'll / I'm going to);
+          //   - answers reconstructed from the private reasoning channel are
+          //     skipped — the model never "announced" anything publicly, so
+          //     nudging "you wrote X but didn't do it" manufactures a
+          //     confused second round (seen live: greeting → reasoning-only
+          //     reply → "I should just acknowledge" matched → bogus nudge).
+          const intentMatch = missingToolCalls || parsedResponse.needsContinuation || finalResponseFromReasoning
             ? null
             : detectIntentWithoutAction(finalResponse);
           if (intentMatch && this.intentNudgeCount < MAX_INTENT_NUDGES) {
@@ -1135,6 +1173,35 @@ export class Agent {
           continue;
         }
 
+        // ── Incomplete-plan bounce ────────────────────────────────────────
+        // If a task plan exists and tasks remain open (pending/in_progress),
+        // a "declared complete" answer is bounced back once — finish or
+        // explicitly cancel the remaining tasks. Skipped under force-answer
+        // (context exhausted) and when the plan is already complete.
+        if (!this.taskBounceUsed && this.lastCompactionBand !== "force_answer") {
+          const taskSummary = await buildTaskSummary(this.context.conversationId);
+          const openTasks = taskSummary?.match(/\[(?:pending|in_progress)\]/g)?.length ?? 0;
+          if (openTasks > 0) {
+            this.taskBounceUsed = true;
+            const planBounceStep: AgentStep = {
+              iteration,
+              reasoning: `Plan incomplete — ${openTasks} task(s) still open. The declared-complete answer was bounced back (bounce 1/1).`,
+              toolCalls: [],
+              toolResults: [],
+              timestamp: new Date()
+            };
+            this.steps.push(planBounceStep);
+            this.history.push({ role: "assistant", content: finalResponse });
+            this.history.push({
+              role: "user",
+              content: `You declared the work complete, but the task plan still has ${openTasks} open task(s):\n\n${taskSummary}\n\nFinish the remaining tasks, or cancel the ones that no longer apply (update_task with status "cancelled"), then give your final answer.`
+            });
+            yield { type: "thinking", iteration, reasoning: planBounceStep.reasoning };
+            yield { type: "step", step: planBounceStep };
+            continue;
+          }
+        }
+
         // ── Failure-gated completion (verify-before-done) ────────────────
         // "The verification loop is what separates agentic coding from
         // generate and hope." If source files were modified this run and
@@ -1207,7 +1274,8 @@ export class Agent {
           iterations: this.steps.length,
           tokenUsage: this.getTokenUsage(),
           apiKeySwitch: this.apiKeySwitch,
-          verification: this.verificationStatus ?? undefined
+          verification: this.verificationStatus ?? undefined,
+          taskPlan: await this.buildTaskPlanSummary()
         });
         return;
       }
@@ -1232,9 +1300,16 @@ export class Agent {
         yield { type: "tool_call", iteration, status: "pending", call };
       }
 
+      // Pre-execution approval events. Two independent triggers:
+      //   1. the tool itself requires approval (and isn't auto-approved)
+      //   2. the dangerous-command overlay forces a dialog — even when the
+      //      tool/category is auto-approved, risky commands must surface an
+      //      Approve/Reject card (previously they hung "pending" with no
+      //      approvalId and silently rejected after 10 minutes).
       for (const call of parsedResponse.toolCalls) {
         const toolDef = toolRegistry.get(call.name);
-        if (!toolDef || !this.tools.needsToolApproval(toolDef.definition)) continue;
+        const riskForced = this.tools.needsCommandRiskApproval(call);
+        if ((!toolDef || !this.tools.needsToolApproval(toolDef.definition)) && !riskForced) continue;
         yield {
           type: "tool_call",
           iteration,
@@ -1396,7 +1471,7 @@ export class Agent {
       // polishing in a loop rather than making genuine progress.
       // IMPORTANT: test files get a higher threshold (12) because fixing
       // test failures legitimately requires many edits (one per bug).
-      const EDIT_TOOLS = new Set(["write_file", "edit_file", "replace_in_file", "append_file"]);
+      const EDIT_TOOLS = new Set(["write_file", "edit_file", "append_file"]);
       for (const c of dedupedToolCalls.calls) {
         if (EDIT_TOOLS.has(c.name)) {
           const filePath = (c.parameters as Record<string, unknown>)?.path as string
@@ -1449,8 +1524,63 @@ export class Agent {
         continue;
       }
 
-      const toolResults = await this.tools.executeToolCallsInBatches(dedupedToolCalls.calls);
+      // ── ask_user gates the turn ────────────────────────────────────────
+      // When the model asks the user a question AND bundles other tool calls
+      // in the same turn, executing the other calls first would mean acting
+      // before the clarification arrives. Run ONLY the ask_user call; every
+      // other call is deferred with an explicit instruction to re-issue it
+      // after the answer.
+      const askUserIndex = dedupedToolCalls.calls.findIndex((call) => call.name === "ask_user");
+      const effectiveCalls = dedupedToolCalls.calls;
+      let toolResults: ToolResultShape[];
+
+      if (askUserIndex >= 0 && effectiveCalls.length > 1) {
+        toolResults = await this.tools.executeToolCallsInBatches([effectiveCalls[askUserIndex]]);
+        // Preserve positional alignment with the ORIGINAL call list: the
+        // deferred slots get a synthetic "come back later" result.
+        toolResults = effectiveCalls.map((call, i) =>
+          i === askUserIndex
+            ? toolResults[0]
+            : {
+                success: true,
+                output: `Deferred: this call was held back because the agent asked the user a question this turn. Re-issue it on the next turn after the answer.`,
+                data: { deferred: true, tool: call.name }
+              }
+        );
+      } else {
+        // Forward the run's abort signal so long-running tools (shell pipe
+        // mode) can kill their children when the run is cancelled.
+        this.tools.updateContext({ signal: this.runAbortController?.signal });
+        toolResults = await this.tools.executeToolCallsInBatches(effectiveCalls);
+      }
       correctionCount = 0;
+
+      // Drain the "running" transitions buffered during the batch — emitted
+      // before the completed results so the event log preserves the
+      // pending → running → completed sequence.
+      for (const startedCall of this.runningToolEventBuffer.splice(0)) {
+        yield { type: "tool_call", iteration, status: "running", call: startedCall };
+      }
+
+      // Surface harness-initiated injections from this batch (e.g. the
+      // auto update_working_memory after file writes) as synthetic events.
+      for (const injection of this.tools.lastAutoInjections.splice(0)) {
+        yield {
+          type: "tool_call",
+          iteration,
+          status: "completed",
+          call: {
+            id: `auto-${injection.tool}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            name: injection.tool,
+            parameters: injection.parameters
+          },
+          result: {
+            success: true,
+            output: "Auto-injected by the harness after a successful file write.",
+            data: { autoInjected: true }
+          }
+        };
+      }
 
       // toolResults are positionally aligned with dedupedToolCalls.calls — never
       // index them through parsedResponse.toolCalls (dedup may have removed
@@ -1542,9 +1672,14 @@ export class Agent {
       // Checkpoint validation: run lint (always) and tests (when source files modified)
       const validationResults = await this.tools.runCheckpointValidation(dedupedToolCalls.calls, toolResults);
       for (const result of validationResults) {
-        const toolName = result.data && typeof result.data === "object" && "testResults" in (result.data as object)
-          ? "run_tests"
-          : "read_lints";
+        // The orchestrator tags each validation result with the tool that
+        // produced it (data.toolName) — no more mislabeled typecheck runs.
+        const toolName = result.data && typeof result.data === "object"
+          && typeof (result.data as { toolName?: unknown }).toolName === "string"
+          ? (result.data as { toolName: string }).toolName
+          : result.data && typeof result.data === "object" && "testResults" in (result.data as object)
+            ? "run_tests"
+            : "read_lints";
 
         this.history.push({
           role: "tool",
@@ -1794,6 +1929,17 @@ export class Agent {
   }
 
   /**
+   * Task-plan completion snapshot for the done event. Parses the counts
+   * from buildTaskSummary's "(n/m completed)" header; null when no plan.
+   */
+  private async buildTaskPlanSummary(): Promise<{ completed: number; total: number } | undefined> {
+    const summary = await buildTaskSummary(this.context.conversationId);
+    const match = summary?.match(/\((\d+)\/(\d+) completed\)/);
+    if (!match) return undefined;
+    return { completed: Number(match[1]), total: Number(match[2]) };
+  }
+
+  /**
    * Detect when the model is making the same tool calls it tried before, and
    * return a nudge to push it toward a different approach. The nudge is empty
    * on the first occurrence, escalating in strength each time the same turn
@@ -1981,7 +2127,6 @@ const READ_ONLY_TOOLS: Set<string> = new Set([
 const PROGRESS_TOOLS: Set<string> = new Set([
   "write_file",
   "edit_file",
-  "replace_in_file",
   "append_file",
   "delete_file",
   "rename_file",
@@ -1990,7 +2135,6 @@ const PROGRESS_TOOLS: Set<string> = new Set([
   "start_process",
   "ask_user",
   "summarize_progress",
-  "summarize_conversation",
   "plan_tasks",
   "update_task",
   "update_working_memory",
@@ -2023,7 +2167,10 @@ const PROGRESS_TOOLS: Set<string> = new Set([
  *
  * Long answers that happen to contain "let me know" are not stalls.
  */
-const INTENT_PHRASE_RE = /\b(let me|let'?s|i'?ll|i will|i should|i'?m going to|i am going to|next,?\s+i'?ll|now,?\s+i'?ll)\b[^.!?\n]{0,80}/i;
+// Commitment language only — "let me", "I'll", "I'm going to". Deliberation
+// verbs ("I should", "I could", "I might") are intentionally excluded: they
+// describe internal weighing, not a promise the user can see broken.
+const INTENT_PHRASE_RE = /\b(let me|let'?s|i'?ll|i will|i'?m going to|i am going to|next,?\s+i'?ll|now,?\s+i'?ll)\b[^.!?\n]{0,80}/i;
 
 function detectIntentWithoutAction(text: string): string | null {
   const trimmed = text.trim();

@@ -6,7 +6,7 @@
 // subset via `listForMode()`.
 
 import { toolRegistry } from "../lib/tools.js";
-import { AppendFileTool, EditFileTool, ReplaceInFileTool } from "./edit-file.js";
+import { AppendFileTool, EditFileTool } from "./edit-file.js";
 import {
   DeleteFileTool,
   ListDirectoryTool,
@@ -28,7 +28,7 @@ import {
 import { AddTaskTool, ListTasksTool, UpdateTaskTool } from "./tasks.js";
 import { PlanTasksTool } from "./plan-tasks.js";
 import { FetchUrlTool, WebSearchTool } from "./web.js";
-import { ThinkTool, AskUserTool, SummarizeProgressTool, SummarizeConversationTool } from "./agent-tools.js";
+import { ThinkTool, AskUserTool, SummarizeProgressTool } from "./agent-tools.js";
 import { ReadLintsTool, RunTestsTool, RunTypecheckTool } from "./diagnostics.js";
 import {
   GitBranchTool,
@@ -38,7 +38,7 @@ import {
   GitStatusTool,
   ListChangedFilesTool
 } from "./git.js";
-import { DelegateTaskTool, SpawnAgentTool, SendMessageToAgentTool, CancelAgentTool, GetAgentStatusTool } from "./sub-agents.js";
+import { DelegateTaskTool, SpawnAgentTool, CancelAgentTool, GetAgentStatusTool } from "./sub-agents.js";
 import { UpdateWorkingMemoryTool } from "./working-memory.js";
 import { SearchMemoryTool } from "./context-search.js";
 import { PresentFileTool } from "./present-file.js";
@@ -73,7 +73,6 @@ export function registerAllTools(): void {
   toolRegistry.register(new RenameFileTool());
   toolRegistry.register(new MkdirTool());
   toolRegistry.register(new EditFileTool());
-  toolRegistry.register(new ReplaceInFileTool());
   toolRegistry.register(new AppendFileTool());
   toolRegistry.register(new PresentFileTool());
 
@@ -98,10 +97,8 @@ export function registerAllTools(): void {
   toolRegistry.register(new ThinkTool());
   toolRegistry.register(new AskUserTool());
   toolRegistry.register(new SummarizeProgressTool());
-  toolRegistry.register(new SummarizeConversationTool());
   toolRegistry.register(new DelegateTaskTool());
   toolRegistry.register(new SpawnAgentTool());
-  toolRegistry.register(new SendMessageToAgentTool());
   toolRegistry.register(new CancelAgentTool());
   toolRegistry.register(new GetAgentStatusTool());
 

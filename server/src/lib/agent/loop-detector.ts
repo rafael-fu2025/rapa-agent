@@ -64,7 +64,7 @@ export class LoopDetector {
     }
 
     const isMutation = toolCalls.some(tc =>
-      ['write_file', 'edit_file', 'replace_in_file', 'append_file', 'delete_file'].includes(tc.name)
+      ['write_file', 'edit_file', 'append_file', 'delete_file'].includes(tc.name)
     );
 
     if (isMutation) {

@@ -253,7 +253,9 @@ export class CreateDocumentTool extends Tool {
     const format = (typeof params.format === "string" && VALID_FORMATS.has(params.format as DocFormat)
       ? params.format
       : "html") as DocFormat;
-    const explicitPath = typeof params.outputPath === "string" ? params.outputPath.trim() : undefined;
+    const explicitPath = typeof params.outputPath === "string" && params.outputPath.trim()
+      ? params.outputPath.trim()
+      : (typeof params.path === "string" ? params.path.trim() : undefined);
 
     if (!title) return { success: false, error: "title is required" };
     if (!content) return { success: false, error: "content is required" };
@@ -315,7 +317,7 @@ export class CreateDocumentTool extends Tool {
 export class ReadDocumentTool extends Tool {
   definition: ToolDefinition = {
     name: "read_document",
-    description: "Read the text content of a workspace file. Supports .txt, .md, .json, and most code files. For binary files (.pdf, .docx), returns an error explaining how to handle them.",
+    description: "Read a text file up to maxChars in one shot, with binary-file guidance (.pdf/.docx return an error explaining how to handle them). Prefer read_file for source code — it adds line offsets/limits and smarter recovery hints; use this for prose documents where a character cap is enough.",
     category: "document",
     riskLevel: "read",
     parameters: {

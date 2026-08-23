@@ -12,7 +12,7 @@ import { stat } from "node:fs/promises";
 import { basename, extname } from "node:path";
 
 import { Tool, type ToolDefinition, type ToolExecutionContext, type ToolResult } from "../lib/tools.js";
-import { containsPathTraversal, isWithinWorkspace, resolveWorkspacePath, toWorkspaceRelativePath } from "./filesystem.js";
+import { containsPathTraversal, isWithinWorkspace, isWithinWorkspaceSymlinkSafe, resolveWorkspacePath, toWorkspaceRelativePath } from "./filesystem.js";
 
 export type PresentedFile = {
   /** Workspace-relative path. */
@@ -144,7 +144,10 @@ export class PresentFileTool extends Tool {
         };
       }
       const fullPath = resolveWorkspacePath(input.path, context.workspaceRoot);
-      if (!isWithinWorkspace(fullPath, context.workspaceRoot)) {
+      // Symlink-safe: a link inside the workspace pointing outside must not
+      // leak the target's metadata/path into the chat.
+      if (!isWithinWorkspace(fullPath, context.workspaceRoot)
+        || !(await isWithinWorkspaceSymlinkSafe(fullPath, context.workspaceRoot))) {
         return {
           success: false,
           error: `Access denied: path "${input.path}" is outside the workspace`

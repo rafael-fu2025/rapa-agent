@@ -238,6 +238,9 @@ export class BrowserReadTool extends Tool {
       }
 
       const truncated = content.length > maxChars;
+      // Capture the true length BEFORE slicing — the old code computed it
+      // after, reporting the truncated length instead of the real total.
+      const totalChars = content.length;
       if (truncated) content = content.slice(0, maxChars);
 
       return {
@@ -247,7 +250,7 @@ export class BrowserReadTool extends Tool {
           url: page.url(),
           title: await page.title(),
           content,
-          ...(truncated ? { truncated: true, totalChars: content.length + (truncated ? 1 : 0) } : {})
+          ...(truncated ? { truncated: true, totalChars } : {})
         }
       };
     } catch (err) {

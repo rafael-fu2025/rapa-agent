@@ -1,12 +1,8 @@
 /**
- * Shared task store — single source of truth for task management.
- *
- * Both `plan_tasks` (plan-tasks.ts) and `add_task` / `update_task` (tasks.ts)
- * MUST import from this module so they share the same in-memory Map.
- *
- * Without this shared store, plan_tasks writes tasks into one Map while
- * update_task reads from a different Map, so update_task never finds the
- * tasks that plan_tasks created.
+ * Task store — Prisma is the source of truth (`AgentTask` table, written by
+ * plan_tasks / add_task / update_task); the in-memory Map below is a
+ * DB-unavailable fallback so task flows keep working when Prisma is down.
+ * `buildTaskSummary` merges both surfaces for context injection.
  */
 
 export type TaskStatus = "pending" | "in_progress" | "completed" | "cancelled";
@@ -19,8 +15,9 @@ export type AgentTask = {
 };
 
 /**
- * The single shared store. Keyed by conversationId → Map<taskId, AgentTask>.
- * Every task tool (plan_tasks, add_task, update_task) imports this exact Map.
+ * The in-memory fallback store. Keyed by conversationId → Map<taskId, AgentTask>.
+ * Used when the database is unavailable; buildTaskSummary merges it with
+ * the persistent rows.
  */
 const tasksByConversation = new Map<string, Map<string, AgentTask>>();
 

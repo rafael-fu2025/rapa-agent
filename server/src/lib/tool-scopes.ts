@@ -32,6 +32,7 @@ export const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
   "list_directory",
   "search_files",
   "search_content",
+  "search_memory",
   "fetch_url",
   "web_search",
   "think",
@@ -47,7 +48,8 @@ export const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
   "git_log",
   "git_branch",
   "list_changed_files",
-  "read_lints"
+  "read_lints",
+  "run_typecheck"
 ]);
 
 export type CapabilityTokenPayload = {

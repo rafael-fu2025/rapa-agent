@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { Tool, type ToolDefinition, type ToolExecutionContext, type ToolResult } from "../lib/tools.js";
+import { getSanitizedEnv } from "./shell.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,7 +17,9 @@ async function runGit(args: string[], cwd: string, timeout = 30000): Promise<Too
       timeout,
       maxBuffer: 1024 * 1024 * 8,
       windowsHide: true,
-      env: { ...process.env, LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" }
+      // Same secret-stripped environment as the shell tools, plus UTF-8
+      // so git output renders consistently.
+      env: { ...getSanitizedEnv(), LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" }
     });
 
     const output = [stdout, stderr].filter(Boolean).join("\n").trim();
@@ -206,7 +209,7 @@ export class GitBranchTool extends Tool {
 export class GitCommitTool extends Tool {
   definition: ToolDefinition = {
     name: "git_commit",
-    description: "Create a new commit with staged changes. The commit will include a summary of what was done and which files changed.",
+    description: "Create a git commit. Pass `files` to stage a specific list, or omit it to stage EVERYTHING (git add -A) — when omitted, all changes in the working tree are committed. Always run git_status first.",
     category: "shell",
     riskLevel: "write",
     requiresApproval: true,

@@ -1,16 +1,15 @@
 // §4.1 — Persistent agent task list (add_task / update_task / list_tasks).
 //
-// Replaces the previous in-memory `task-store.ts`-based implementation.
-// Tasks now live in the `AgentTask` Prisma model, so they survive server
-// restarts and resume with the conversation.
-//
-// `plan-tasks.ts` continues to use the in-memory store (different semantics —
-// the plan-mode task picker writes a full plan to it). The two are
-// intentionally separate surfaces.
+// Tasks live in the `AgentTask` Prisma model, so they survive server
+// restarts and resume with the conversation. `plan_tasks` writes to the
+// same table (replace-all semantics), making it the single task store.
+// When the database is unavailable, tools fall back to the in-memory
+// mirror in `task-store.ts` so task flows keep working.
 
 import { Tool, type ToolDefinition, type ToolExecutionContext, type ToolResult } from "../lib/tools.js";
 import { prisma, getLocalUser } from "../lib/db.js";
 import { Suggest } from "../lib/suggestions.js";
+import { getTaskStore, listTasks as listInMemoryTasks } from "./task-store.js";
 
 export type TaskStatus = "pending" | "in_progress" | "completed" | "cancelled";
 
@@ -51,6 +50,28 @@ async function listTasksForConversation(conversationId: string) {
     orderBy: [{ order: "asc" }, { createdAt: "asc" }]
   });
   return rows.map(rowToAgentTask);
+}
+
+/**
+ * In-memory fallback read (DB-unavailable environments). Returns plain
+ * AgentTask objects shaped like the Prisma rows so result shapes match.
+ */
+function listTasksInMemory(conversationId: string) {
+  return listInMemoryTasks(getTaskStore(conversationId)).map((t) => ({
+    id: t.id,
+    content: t.content,
+    status: t.status,
+    order: 0,
+    createdAt: t.updatedAt,
+    updatedAt: t.updatedAt
+  }));
+}
+
+function isDbUnavailableError(error: unknown): boolean {
+  // Prisma throws when the DB is down/uninitialized; a plain "not found"
+  // never throws, so this distinguishes infrastructure failure from a
+  // missing row.
+  return error instanceof Error && /prisma|database|can't reach|connection|P1\d{3}/i.test(error.message);
 }
 
 abstract class BaseTaskTool extends Tool {
@@ -200,6 +221,56 @@ export class UpdateTaskTool extends BaseTaskTool {
 
     const taskId = normalizeTaskId(rawId);
 
+    // ── DB-unavailable fallback: operate on the in-memory mirror ──────────
+    // plan_tasks writes there when Prisma is down; keep the round-trip
+    // working in the same environment.
+    const tryInMemoryUpdate = (): ToolResult | null => {
+      const store = getTaskStore(context.conversationId);
+      const task = store.get(taskId);
+      if (!task) return null;
+      if (status !== undefined) {
+        const lifecycleError = checkTaskLifecycle(taskId, task.status, status, listInMemoryTasks(store));
+        if (lifecycleError) return lifecycleError;
+        task.status = status;
+      }
+      if (content !== undefined) task.content = content;
+      task.updatedAt = new Date().toISOString();
+      const asRow = (t: { id: string; content: string; status: TaskStatus; updatedAt: string }) => ({
+        id: t.id,
+        content: t.content,
+        status: t.status,
+        order: 0,
+        createdAt: t.updatedAt,
+        updatedAt: t.updatedAt
+      });
+      const all = listInMemoryTasks(store).map(asRow);
+      return this.buildTaskResult(asRow(task), all);
+    };
+
+    /**
+     * Task lifecycle discipline: a task must pass through in_progress
+     * before being marked completed, so "completed" reflects real work
+     * rather than optimism. Relaxed when no OTHER task is still open —
+     * models legitimately batch-complete the last task at wrap-up.
+     */
+    const checkTaskLifecycle = (
+      currentId: string,
+      currentStatus: string,
+      next: TaskStatus,
+      siblings: Array<{ id: string; status: string }>
+    ): ToolResult | null => {
+      if (currentStatus === "pending" && next === "completed") {
+        const others = siblings.filter((t) => t.id !== currentId && t.status !== "completed" && t.status !== "cancelled");
+        if (others.length > 0) {
+          return Suggest.generic(
+            { success: false, error: `Task ${taskId} is still pending — mark it in_progress before completing it.` },
+            "Call update_task({ id, status: \"in_progress\" }) when you start the task, then \"completed\" when it's done."
+          );
+        }
+      }
+      return null;
+    };
+
     try {
       const existing = await prisma.agentTask.findUnique({
         where: { conversationId_taskId: { conversationId: context.conversationId, taskId } }
@@ -215,6 +286,12 @@ export class UpdateTaskTool extends BaseTaskTool {
         );
       }
 
+      if (status !== undefined) {
+        const siblings = await listTasksForConversation(context.conversationId);
+        const lifecycleError = checkTaskLifecycle(existing.taskId, existing.status, status, siblings);
+        if (lifecycleError) return lifecycleError;
+      }
+
       const row = await prisma.agentTask.update({
         where: { conversationId_taskId: { conversationId: context.conversationId, taskId } },
         data: {
@@ -226,6 +303,10 @@ export class UpdateTaskTool extends BaseTaskTool {
       const all = await listTasksForConversation(context.conversationId);
       return this.buildTaskResult(rowToAgentTask(row), all);
     } catch (error) {
+      if (isDbUnavailableError(error)) {
+        const fallback = tryInMemoryUpdate();
+        if (fallback) return fallback;
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : "Failed to update task"
@@ -259,27 +340,37 @@ export class ListTasksTool extends BaseTaskTool {
     const filter = (params.status as TaskStatus | "all" | undefined) ?? "all";
     try {
       const all = await listTasksForConversation(context.conversationId);
-      const filtered = filter === "all" ? all : all.filter((t) => t.status === filter);
-      const summary = {
-        total: all.length,
-        completed: all.filter((t) => t.status === "completed").length,
-        inProgress: all.filter((t) => t.status === "in_progress").length,
-        pending: all.filter((t) => t.status === "pending").length,
-        cancelled: all.filter((t) => t.status === "cancelled").length
-      };
-      return {
-        success: true,
-        data: {
-          tasks: filtered,
-          summary,
-          filter
-        }
-      };
+      return this.renderList(all, filter);
     } catch (error) {
+      if (isDbUnavailableError(error)) {
+        const inMemory = listTasksInMemory(context.conversationId);
+        if (inMemory.length > 0 || getTaskStore(context.conversationId).size > 0) {
+          return this.renderList(inMemory, filter);
+        }
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : "Failed to list tasks"
       };
     }
+  }
+
+  private renderList(all: Array<{ id: string; content: string; status: string }>, filter: TaskStatus | "all"): ToolResult {
+    const filtered = filter === "all" ? all : all.filter((t) => t.status === filter);
+    const summary = {
+      total: all.length,
+      completed: all.filter((t) => t.status === "completed").length,
+      inProgress: all.filter((t) => t.status === "in_progress").length,
+      pending: all.filter((t) => t.status === "pending").length,
+      cancelled: all.filter((t) => t.status === "cancelled").length
+    };
+    return {
+      success: true,
+      data: {
+        tasks: filtered,
+        summary,
+        filter
+      }
+    };
   }
 }

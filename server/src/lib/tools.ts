@@ -113,6 +113,13 @@ export type ToolExecutionContext = {
   allowOutsideWorkspace?: boolean;
   agentDepth?: number;
   llm?: ToolLlmContext;
+  /**
+   * Aborted when the run is cancelled (client disconnect, exit hatch).
+   * Long-running tools (execute_command pipe mode) forward it to their
+   * child process so an aborted run doesn't leave orphans running to
+   * their own timeout.
+   */
+  signal?: AbortSignal;
 };
 
 function getValueType(value: unknown): ToolParameter["type"] | "null" | "undefined" | "function" | "symbol" | "bigint" {

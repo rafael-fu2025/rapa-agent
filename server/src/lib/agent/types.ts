@@ -397,6 +397,14 @@ export type AgentExecutionEvent =
         testsPassed: boolean;
         typecheckPassed: boolean;
       };
+      /**
+       * Task-plan completion state at the end of the run. Undefined when
+       * no plan existed.
+       */
+      taskPlan?: {
+        completed: number;
+        total: number;
+      };
     }
   | {
       type: "error";

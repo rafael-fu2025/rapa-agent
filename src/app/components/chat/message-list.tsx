@@ -176,6 +176,7 @@ function MessageListComponent({
             editDraft={editDraft}
             canRegenerate={canRegenerate}
             isAgentActive={isAgentActive}
+            isLatestAssistant={index === messages.length - 1}
             approvalBusyIds={approvalBusyIds}
             showThinking={showThinking}
             onSaveEdit={onSaveEdit}
@@ -365,6 +366,8 @@ type AssistantBlockProps = {
   onSubmit: (prompt: string) => void;
   onSetMode: (mode: ChatMode) => void;
   fallbackModeSwitchPrompt: string | undefined;
+  /** True only for the newest assistant message — gates the plan handoff button. */
+  isLatestAssistant: boolean;
 };
 
 function AssistantMessageBlock({
@@ -388,6 +391,7 @@ function AssistantMessageBlock({
   onSubmit,
   onSetMode,
   fallbackModeSwitchPrompt,
+  isLatestAssistant,
 }: AssistantBlockProps) {
   return (
     <article aria-label="Assistant response" data-message-id={message.id} className="w-full min-w-0 overflow-hidden">
@@ -422,6 +426,24 @@ function AssistantMessageBlock({
               content={message.content}
               hideThoughtBlock={message.mode === "agent" || message.mode === "plan" || !showThinking}
             />
+            {/* Plan→Agent handoff: the newest completed plan offers one-click execution. */}
+            {message.mode === "plan" && isLatestAssistant && !isAgentActive && message.content.trim().length > 0 && (
+              <div className="mt-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSetMode("agent");
+                    onSubmit(`Execute the following plan from the previous Plan-mode run:\n\n${message.content}`);
+                  }}
+                  className="inline-flex items-center gap-2 rounded border border-accent-blue/40 bg-accent-blue/10 px-3 py-1.5 font-mono text-[9px] font-semibold uppercase tracking-[0.16em] text-accent-blue transition-colors hover:bg-accent-blue/20"
+                >
+                  <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+                    <path d="M2.5 1.5l7 4.5-7 4.5z" />
+                  </svg>
+                  execute plan in agent mode
+                </button>
+              </div>
+            )}
             {message.interactive?.type === "ask_user" && message.interactive.questions.length > 0 && (
               <InteractiveOptions
                 questions={message.interactive.questions}

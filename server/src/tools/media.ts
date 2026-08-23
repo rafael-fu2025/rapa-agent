@@ -68,16 +68,6 @@ export class GenerateImageTool extends Tool {
         type: "string",
         description: "Workspace-relative path to write the image to. Defaults to generated-<timestamp>.png in the workspace root.",
         required: false
-      },
-      apiKey: {
-        type: "string",
-        description: "Override the IMAGE_API_KEY env var (use only if the user has supplied a key out-of-band).",
-        required: false
-      },
-      baseUrl: {
-        type: "string",
-        description: "Override the IMAGE_API_BASE_URL env var. Default: https://api.openai.com/v1",
-        required: false
       }
     }
   };
@@ -93,11 +83,11 @@ export class GenerateImageTool extends Tool {
 
     const n = typeof params.n === "number" ? Math.min(Math.max(1, Math.floor(params.n)), 4) : 1;
 
-    const apiKey = (typeof params.apiKey === "string" && params.apiKey.trim())
-      || process.env.IMAGE_API_KEY
+    // SECURITY: the API endpoint is env-config only — the model must not be
+    // able to redirect the request (or a key) to an arbitrary host.
+    const apiKey = process.env.IMAGE_API_KEY
       || process.env.OPENAI_API_KEY;
-    const baseUrl = (typeof params.baseUrl === "string" && params.baseUrl.trim())
-      || process.env.IMAGE_API_BASE_URL
+    const baseUrl = process.env.IMAGE_API_BASE_URL
       || "https://api.openai.com/v1";
 
     if (!apiKey) {

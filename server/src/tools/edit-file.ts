@@ -431,13 +431,6 @@ export class EditFileTool extends BaseEditFileTool {
     super("edit_file", "Perform a surgical text replacement in a workspace file");
   }
 }
-
-export class ReplaceInFileTool extends BaseEditFileTool {
-  constructor() {
-    super("replace_in_file", "Alias for edit_file that performs a surgical text replacement in a workspace file");
-  }
-}
-
 export class AppendFileTool extends Tool {
   definition: ToolDefinition = {
     name: "append_file",
@@ -524,4 +517,5 @@ export class AppendFileTool extends Tool {
     }
   }
 }
+
 

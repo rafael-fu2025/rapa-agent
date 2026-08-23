@@ -62,7 +62,7 @@ function sanitizeHtml(html: string): { cleaned: string; removed: string[] } {
 export class RenderWidgetTool extends Tool {
   definition: ToolDefinition = {
     name: "render_widget",
-    description: "Render an interactive HTML/SVG widget inline in the chat. The `html` parameter is sanitized for safety (scripts and event handlers are stripped) and embedded in a sandboxed iframe. The optional `data` map is serialized to JSON and made available to the widget's JavaScript via `window.__WIDGET_DATA__`.",
+    description: "Render a static HTML/SVG visualization inline in the chat (charts, diagrams, layouts). The html is sanitized — scripts and event handlers are stripped — and embedded in a sandboxed iframe, so it must be self-contained CSS/SVG with no JavaScript. Use this to SHOW the user a visual, not to build interactivity.",
     category: "media",
     riskLevel: "read",
     parameters: {
@@ -73,12 +73,12 @@ export class RenderWidgetTool extends Tool {
       },
       html: {
         type: "string",
-        description: "HTML fragment. SVG is allowed. Inline styles work; external stylesheets need the host page to load them. Interactive elements should rely on inline event handlers...wait, those are stripped. Use CSS-only interaction or pre-rendered SVG.",
+        description: "Self-contained HTML/SVG fragment. Inline styles work; scripts and on* handlers are stripped by the sanitizer, so all visuals must be pure CSS/SVG.",
         required: true
       },
       data: {
         type: "object",
-        description: "Optional data map (max 32 keys). Serialized to JSON and exposed to the widget's JavaScript as window.__WIDGET_DATA__.",
+        description: "Optional data map (max 32 keys), serialized into the html for reference. (Scripts are stripped, so JS access is not available.)",
         required: false
       }
     }

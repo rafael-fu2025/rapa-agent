@@ -48,7 +48,6 @@ const ENV_CHECK_PATTERNS = [
 const FILE_MUTATING_TOOLS = new Set([
   "write_file",
   "edit_file",
-  "replace_in_file",
   "append_file"
 ]);
 
@@ -75,7 +74,6 @@ const REJECTION_PHRASES = [
 const WRITE_TOOLS = new Set([
   "write_file",
   "edit_file",
-  "replace_in_file",
   "append_file",
   "delete_file",
   "mkdir",
@@ -125,6 +123,12 @@ function extractWriteTargetPath(call: ToolCall, workspaceRoot: string): string |
 export type ToolOrchestratorOptions = {
   context: ToolExecutionContext;
   config: AgentConfig;
+  /**
+   * Fired when an individual tool call begins executing (both the parallel
+   * read-only path and the sequential write path). The Agent uses it to
+   * buffer "running" tool_call events for the event stream.
+   */
+  onToolStart?: (call: ToolCall) => void;
 };
 
 /**
@@ -135,6 +139,19 @@ export type ToolOrchestratorOptions = {
 export class ToolOrchestrator {
   private context: ToolExecutionContext;
   private config: AgentConfig;
+  private onToolStart?: (call: ToolCall) => void;
+  /**
+   * Tools the user explicitly DENIED this run (approval rejections). The
+   * harness's internal validation (checkpoint lint/tests/typecheck) skips
+   * them — a human "no" outranks best-effort verification.
+   */
+  private userDeniedTools = new Set<string>();
+  /**
+   * Harness-initiated tool executions from the most recent batch (e.g. the
+   * auto-injected update_working_memory after file writes). The agent loop
+   * surfaces these as synthetic tool_call events so the trace is honest.
+   */
+  readonly lastAutoInjections: Array<{ tool: string; parameters: Record<string, unknown> }> = [];
   /** Files written during this agent run — used to skip eviction on re-reads. */
   private writtenFiles: Set<string> = new Set();
   /**
@@ -160,6 +177,7 @@ export class ToolOrchestrator {
   constructor(options: ToolOrchestratorOptions) {
     this.context = options.context;
     this.config = options.config;
+    this.onToolStart = options.onToolStart;
   }
 
   getContext(): ToolExecutionContext {
@@ -284,9 +302,17 @@ export class ToolOrchestrator {
 
     const decision = await this.requestToolApproval(call, tool.definition);
     if (!decision.approved) {
+      // A human denial this run also suppresses the harness's internal use
+      // of the same tool (checkpoint validation, verify-before-done).
+      this.userDeniedTools.add(call.name);
       return { approved: false, message: decision.message || `Tool ${call.name} was rejected by the user.`, riskAssessment };
     }
     return { approved: true, riskAssessment };
+  }
+
+  /** Tools the user explicitly denied this run (read-only view). */
+  getUserDeniedTools(): ReadonlySet<string> {
+    return this.userDeniedTools;
   }
 
   getModeToolRestrictionError(
@@ -651,6 +677,8 @@ export class ToolOrchestrator {
    */
   async executeToolCallsInBatches(calls: ToolCall[]): Promise<ToolResult[]> {
     const results: (ToolResult | null)[] = new Array(calls.length).fill(null);
+    // Per-batch buffer — the agent loop drains it after this call returns.
+    this.lastAutoInjections.length = 0;
 
     const readOnlyIndices: number[] = [];
     const writeIndices: number[] = [];
@@ -697,6 +725,7 @@ export class ToolOrchestrator {
             };
             return;
           }
+          this.onToolStart?.(calls[i]);
           results[i] = await this.executeToolCall(calls[i], { approved: approval.approved });
           // P2-D: bound the size of every tool result before it lands in the
           // history. Truncation is non-destructive — the full result stays in the
@@ -731,6 +760,7 @@ export class ToolOrchestrator {
           continue;
         }
 
+        this.onToolStart?.(calls[i]);
         let result = await this.executeToolCall(calls[i], { approved: approval.approved });
         result = this.truncateToolResult(result, calls[i]);
         result = await this.evictIfNeeded(result, calls[i]);
@@ -755,6 +785,10 @@ export class ToolOrchestrator {
                   { addFile: writtenPath },
                   { workspaceRoot: this.context.workspaceRoot, userId: this.context.userId, conversationId: this.context.conversationId }
                 );
+                // Surface the injection in the event stream (via the agent
+                // loop draining lastAutoInjections) so the trace is honest
+                // about what the harness did on the model's behalf.
+                this.lastAutoInjections.push({ tool: "update_working_memory", parameters: { addFile: writtenPath } });
               } catch {
                 // Non-fatal — working memory update failure shouldn't block execution
               }
@@ -824,13 +858,14 @@ export class ToolOrchestrator {
     });
 
     // Only run lint when actual source code was written — skip for config/doc files
-    // (package.json, SPEC.md, .gitignore, etc.) to avoid premature failures
-    if (hasSourceWrites) {
+    // (package.json, SPEC.md, .gitignore, etc.) to avoid premature failures.
+    // Tools the user explicitly denied this run are never auto-run.
+    if (hasSourceWrites && !this.userDeniedTools.has("read_lints")) {
       const lintTool = toolRegistry.get("read_lints");
       if (lintTool) {
         try {
           const lintResult = await lintTool.execute({}, this.context);
-          if (lintResult) validationResults.push(lintResult);
+          if (lintResult) validationResults.push(this.tagValidationResult(lintResult, "read_lints"));
         } catch {
           // Lint failure is non-fatal
         }
@@ -847,12 +882,12 @@ export class ToolOrchestrator {
 
     if (hasSourceWrites && throttleOpen) {
       const workspaceHasTests = hasTestWrites || hasTestInfrastructure(this.context.workspaceRoot);
-      if (workspaceHasTests) {
+      if (workspaceHasTests && !this.userDeniedTools.has("run_tests")) {
         const testTool = toolRegistry.get("run_tests");
         if (testTool) {
           try {
             const testResult = await testTool.execute({}, this.context);
-            if (testResult) validationResults.push(testResult);
+            if (testResult) validationResults.push(this.tagValidationResult(testResult, "run_tests"));
             this.lastHeavyValidationAt = Date.now();
           } catch {
             // Test failure is non-fatal
@@ -861,12 +896,12 @@ export class ToolOrchestrator {
       }
 
       const typecheckCommand = resolveTypecheckCommand(this.context.workspaceRoot);
-      if (typecheckCommand) {
+      if (typecheckCommand && !this.userDeniedTools.has("run_typecheck")) {
         const typecheckTool = toolRegistry.get("run_typecheck");
         if (typecheckTool) {
           try {
             const typecheckResult = await typecheckTool.execute({}, this.context);
-            if (typecheckResult) validationResults.push(typecheckResult);
+            if (typecheckResult) validationResults.push(this.tagValidationResult(typecheckResult, "run_typecheck"));
             this.lastHeavyValidationAt = Date.now();
           } catch {
             // Typecheck failure is non-fatal
@@ -879,6 +914,18 @@ export class ToolOrchestrator {
   }
 
   /**
+   * Tag a harness-initiated validation result with the tool that produced
+   * it, so the agent loop's synthetic tool_call events carry the real name
+   * (previously typecheck results were mislabeled as read_lints).
+   */
+  private tagValidationResult(result: ToolResult, toolName: string): ToolResult {
+    if (!result.data || typeof result.data !== "object") {
+      return { ...result, data: { toolName } };
+    }
+    return { ...result, data: { ...(result.data as object), toolName } };
+  }
+
+  /**
    * Run the full verification suite (tests + typecheck) for the
    * failure-gated completion check — bypasses the write-batch throttle
    * because it runs at most once per run (the agent loop budgets retries).
@@ -886,23 +933,23 @@ export class ToolOrchestrator {
    */
   async runVerificationSuite(): Promise<ToolResult[]> {
     const results: ToolResult[] = [];
-    if (hasTestInfrastructure(this.context.workspaceRoot)) {
+    if (hasTestInfrastructure(this.context.workspaceRoot) && !this.userDeniedTools.has("run_tests")) {
       const testTool = toolRegistry.get("run_tests");
       if (testTool) {
         try {
           const testResult = await testTool.execute({}, this.context);
-          if (testResult) results.push(testResult);
+          if (testResult) results.push(this.tagValidationResult(testResult, "run_tests"));
         } catch {
           // Treated as "could not verify" by the caller
         }
       }
     }
-    if (resolveTypecheckCommand(this.context.workspaceRoot)) {
+    if (resolveTypecheckCommand(this.context.workspaceRoot) && !this.userDeniedTools.has("run_typecheck")) {
       const typecheckTool = toolRegistry.get("run_typecheck");
       if (typecheckTool) {
         try {
           const typecheckResult = await typecheckTool.execute({}, this.context);
-          if (typecheckResult) results.push(typecheckResult);
+          if (typecheckResult) results.push(this.tagValidationResult(typecheckResult, "run_typecheck"));
         } catch {
           // Treated as "could not verify" by the caller
         }

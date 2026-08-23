@@ -237,7 +237,7 @@ const builtinSpecialists: Record<SpecialistType, Omit<SpecialistDefinition, "nam
       "Implementing animations, transitions, or micro-interactions",
       "Aligning new UI work with the project's existing design system"
     ],
-    suggestedTools: ["read_file", "search_content", "think", "edit_file", "replace_in_file", "execute_command"]
+    suggestedTools: ["read_file", "search_content", "think", "edit_file", "execute_command"]
   }
 };
 

@@ -149,9 +149,9 @@ async function smtpSend(config: SmtpConfig, to: string[], subject: string, body:
       ? `${config.fromName} <${config.fromAddress}>`
       : config.fromAddress;
     const headers = [
-      `From: ${fromHeader}`,
-      `To: ${to.join(", ")}`,
-      `Subject: ${subject}`,
+      `From: ${sanitizeHeaderValue(fromHeader)}`,
+      `To: ${to.map(sanitizeHeaderValue).join(", ")}`,
+      `Subject: ${sanitizeHeaderValue(subject)}`,
       `MIME-Version: 1.0`,
       `Content-Type: ${isHtml ? "text/html" : "text/plain"}; charset=utf-8`,
       `Date: ${new Date().toUTCString()}`
@@ -183,6 +183,15 @@ function parseAddressList(value: string): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter((s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s));
+}
+
+/**
+ * SECURITY: CR/LF in header values would let a crafted subject inject
+ * arbitrary SMTP headers (Bcc, additional recipients). Strip them —
+ * per RFC 5322 header values are single-line.
+ */
+function sanitizeHeaderValue(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").trim();
 }
 
 export class SendEmailTool extends Tool {

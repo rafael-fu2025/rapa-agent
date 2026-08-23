@@ -416,7 +416,7 @@ export class ReadLintsTool extends Tool {
     name: "read_lints",
     description: "Run lint diagnostics for the current workspace. Auto-detects project type (Node.js, Python, Ruby, Rust, Go) and runs the appropriate lint command. Supports `command` and `framework` overrides. Returns a structured `parsed` summary (error/warning counts, first errors) alongside the raw output.",
     category: "system",
-    riskLevel: "network",
+    riskLevel: "write",
     requiresApproval: true,
     parameters: {
       workdir: {
@@ -474,7 +474,7 @@ export class RunTestsTool extends Tool {
     name: "run_tests",
     description: "Run tests for the current workspace. Auto-detects project type (Node.js, Python, Ruby, Rust, Go) and runs the appropriate test command. Supports `command` and `framework` overrides. Returns a structured `parsed` summary (pass/fail counts, first errors) alongside the raw output.",
     category: "system",
-    riskLevel: "network",
+    riskLevel: "write",
     requiresApproval: true,
     parameters: {
       workdir: {
@@ -532,7 +532,7 @@ export class RunTypecheckTool extends Tool {
     name: "run_typecheck",
     description: "Run the workspace's type checker (`npm run typecheck`, `tsc --noEmit`, `cargo check`, `go vet`). Use after editing source files to catch type errors before declaring work complete. Returns structured pass/fail with the first errors.",
     category: "system",
-    riskLevel: "network",
+    riskLevel: "write",
     requiresApproval: true,
     parameters: {
       workdir: {

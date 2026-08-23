@@ -25,6 +25,7 @@ import { getDefaultBaseUrl, getDefaultModels } from "../lib/constants.js";
 
 import { decryptText } from "../lib/crypto.js";
 import { prisma, getLocalUser } from "../lib/db.js";
+import { buildAgentIdentityMessage } from "../lib/agent/prompt-builder.js";
 import { loadWorkspaceInstructions, buildWorkspaceInstructionsMessage } from "../lib/workspace-instructions.js";
 import { persistAgentRun, startAgentRun } from "../lib/agent-run-store.js";
 import { resolveSseAllowOrigin } from "../lib/cors-origins.js";
@@ -349,6 +350,14 @@ async function prepareAgentRequest(payload: AgentRequestPayload): Promise<Prepar
       });
     }
   }
+
+  // Agent identity — unshifted LAST so it lands FIRST in the final seed
+  // order and becomes the hoisted system message in the provider payload.
+  // Without this the model's only guidance is each tool's description.
+  seedHistory.unshift({
+    role: "system",
+    content: buildAgentIdentityMessage(payload.mode ?? "agent")
+  });
 
   return {
 

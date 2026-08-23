@@ -361,7 +361,7 @@ export class AskUserTool extends Tool {
 export class SummarizeProgressTool extends Tool {
   definition: ToolDefinition = {
     name: "summarize_progress",
-    description: "Summarize the progress made so far on the current task. Use this to consolidate completed work, provide a checkpoint, or give the user a clear picture of what has been accomplished and what remains.",
+    description: "Record a progress checkpoint: pass a 1-3 sentence summary of completed work and what remains. It is echoed into the run trace as a milestone (the model writes the summary — this tool just records it). Use at natural checkpoints or before switching subtasks.",
     category: "system",
     riskLevel: "none",
     parameters: {
@@ -389,58 +389,6 @@ export class SummarizeProgressTool extends Tool {
         summary,
         timestamp: new Date().toISOString(),
         message: "Progress summary recorded."
-      }
-    };
-  }
-}
-
-export class SummarizeConversationTool extends Tool {
-  definition: ToolDefinition = {
-    name: "summarize_conversation",
-    description: "Generate a structured summary of the entire conversation so far, including: user requests, key decisions, completed tasks, files modified, errors encountered, and remaining work. Use this when the user asks for a recap, when you need to provide context to another agent, or before ending a long session.",
-    category: "system",
-    riskLevel: "none",
-    parameters: {
-      format: {
-        type: "string",
-        description: "The output format for the summary. Use 'structured' for a detailed breakdown with sections, or 'concise' for a brief overview. Defaults to 'structured'.",
-        required: false,
-        enum: ["structured", "concise"]
-      }
-    }
-  };
-
-  async execute(params: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
-    const format = (params.format as string) ?? "structured";
-
-    if (format === "concise") {
-      return {
-        success: true,
-        data: {
-          format: "concise",
-          timestamp: new Date().toISOString(),
-          message: "Concise conversation summary requested. Provide a brief overview covering: what the user asked for, what was accomplished, any issues encountered, and what remains."
-        }
-      };
-    }
-
-    return {
-      success: true,
-      data: {
-        format: "structured",
-        timestamp: new Date().toISOString(),
-        sections: [
-          "Primary Request and Intent",
-          "Key Technical Concepts",
-          "Files and Code Sections: list each file touched, why, what changed, and relevant code snippets",
-          "Errors and fixes: each error encountered, root cause, and resolution",
-          "Problem Solving: notable debugging or refactoring approaches",
-          "All User Messages: chronological list of every user message in this conversation",
-          "Pending Tasks: any work requested but not yet completed",
-          "Current State: summary of where the conversation stands right now",
-          "Optional Next Steps: if there are natural follow-up tasks, list them"
-        ],
-        message: "Structured conversation summary requested. Please provide a detailed summary using the sections provided, paying special attention to files modified, code changes, and error resolutions."
       }
     };
   }

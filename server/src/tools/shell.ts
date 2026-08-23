@@ -805,7 +805,7 @@ export async function startBackgroundCommand(options: {
 export class ExecuteCommandTool extends Tool {
   definition: ToolDefinition = {
     name: "execute_command",
-    description: "Execute a shell command in a persistent terminal session in the workspace directory (PTY when available)",
+    description: "Run a shell command in the workspace directory and return stdout+stderr. Runs in pipe mode (no terminal echo); pass a sessionId for a persistent PTY session. Non-interactive: use --yes/-y flags for package managers, and the input parameter to answer prompts.",
     category: "shell",
     requiresApproval: true,
     parameters: {
@@ -816,7 +816,7 @@ export class ExecuteCommandTool extends Tool {
       },
       timeout: {
         type: "number",
-        description: "Timeout in milliseconds (default: 3600000 = 1 hour). Generous timeout allows package installs, builds, and long-running scripts to complete without interruption.",
+        description: "Timeout in milliseconds (default: 3600000, clamped to a hard max of 300000 = 5 minutes). Raise toward the max for builds and installs; for anything longer use start_process + get_process_output.",
         required: false
       },
       cwd: {
@@ -923,7 +923,9 @@ export class ExecuteCommandTool extends Tool {
           cwd: cwdInfo.cwd,
           timeout,
           maxBuffer: 1024 * 1024 * 10, // 10MB
-          env: getSanitizedEnv()
+          env: getSanitizedEnv(),
+          // Run-abort kills the child instead of orphaning it to `timeout`.
+          signal: context.signal
         });
 
         let output = [stdout, stderr].filter(Boolean).join("\n").trim();
@@ -1154,6 +1156,8 @@ export class ListProcessesTool extends Tool {
     name: "list_processes",
     description: "List active terminal sessions and background processes for the current user",
     category: "shell",
+    // Read-only introspection — must not land in the sequential write bucket.
+    riskLevel: "read",
     parameters: {}
   };
 
@@ -1172,6 +1176,7 @@ export class GetProcessOutputTool extends Tool {
     name: "get_process_output",
     description: "Read recent output from a persistent terminal session. Supports regex filtering to return only matching lines, and non-blocking mode for quick status checks.",
     category: "shell",
+    riskLevel: "read",
     parameters: {
       sessionId: {
         type: "string",

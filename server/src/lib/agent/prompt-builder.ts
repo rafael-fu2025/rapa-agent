@@ -155,7 +155,7 @@ ${maxIterations} iterations. Small tasks: 2-6. Medium: 6-14. Large: use the full
  * All other tool documentation is conveyed through native function-calling schemas
  * (which the provider renders in its own format). This keeps the system prompt lean.
  */
-function renderEssentialToolRules(tools: ToolDefinition[]): string {
+export function renderEssentialToolRules(tools: ToolDefinition[]): string {
   const rules: string[] = [];
   const toolNames = new Set(tools.map((t) => t.name));
 
@@ -166,7 +166,7 @@ function renderEssentialToolRules(tools: ToolDefinition[]): string {
     rules.push("**write_file**: For new files or full overwrites only. Prefer edit_file for surgical changes.");
   }
   if (toolNames.has("execute_command")) {
-    rules.push("**execute_command**: Pass --yes/-y to package managers. Do NOT use shell to create/modify files. Raise timeoutMs for builds (180000+).");
+    rules.push("**execute_command**: Pass --yes/-y to package managers. Do NOT use shell to create/modify files. Raise `timeout` for builds (180000+).");
   }
   if (toolNames.has("ask_user")) {
     rules.push("**ask_user**: True blockers only. 1-4 questions, 2-4 options each. If the answer lives in the workspace, find it with a tool — don't ask.");
@@ -180,6 +180,76 @@ function renderEssentialToolRules(tools: ToolDefinition[]): string {
 
   if (rules.length === 0) return "";
   return "## KEY RULES\n\n" + rules.join("\n");
+}
+
+/**
+ * The LIVE agent identity message — injected as the first seed system
+ * message (it becomes the hoisted system message in the provider payload).
+ *
+ * This is the compact revival of what `buildSystemPrompt` carried when the
+ * agent still had a monolithic system prompt: mode identity, the working
+ * discipline, per-tool key rules, the tool-calling protocol, and the
+ * failure-recovery playbook. Without it the model's only guidance is each
+ * tool's `description` string.
+ */
+export function buildAgentIdentityMessage(mode: AgentExecutionMode): string {
+  const currentDate = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const modeLine = mode === "plan"
+    ? "PLAN MODE — inspect and analyze only. Do NOT edit files or execute commands."
+    : mode === "chat"
+      ? "CHAT MODE — conversation with a small tool surface. No file or shell changes."
+      : "AGENT MODE — full tool access. Read, write, run commands. Complete the task end-to-end.";
+
+  const workflow = mode === "plan"
+    ? `## PLAN MODE WORKFLOW
+
+You are producing a technical implementation plan — not performing the work.
+
+1. **Explore**: read-only inspection (read_file, list_directory, search_content, git_*). Batch parallel reads.
+2. **Formulate**: once you have enough context, write a structured plan in Markdown with these sections:
+   1. Objective & Scope — what needs to be accomplished, key constraints
+   2. Architecture & Design Decisions — approach, trade-offs, rationale
+   3. Proposed File Changes — exact paths to create/modify/delete, with the change for each
+   4. Step-by-Step Execution Plan — logical sequence of implementation tasks
+   5. Verification & Testing Plan — test commands, build checks, manual steps
+   6. Open Questions / Assumptions — remaining ambiguities for the user
+
+Constraints: never call write_file/edit_file/append_file or mutating shell commands. The plan itself is your final answer.`
+    : `## HOW TO WORK
+
+**Phase 1 — PLAN (1 turn).** Call \`plan_tasks\` with every step, including a final verification task. Do not re-plan mid-execution.
+**Phase 2 — ACT (1 turn per task).** Mark the task \`in_progress\` via \`update_task\`, execute its tool calls (batch parallel reads; write surgically with \`edit_file\`), then mark it \`completed\` BEFORE starting the next task.
+**Phase 3 — VERIFY (final task).** Run tests and the build. Check every requirement against what was built. Fix failures and re-verify. Never declare done without checking.
+**Phase 4 — REPORT (1 turn, no tool calls).** Summarize: files created/modified, test results, how to run. A turn with no tool calls ends the run.
+
+Discipline: no environment checks (node --version, pwd, ls -la) — go directly to building. Never repeat an identical tool call. Check \`.rapa/working-memory.md\` if you lose track of your own files. Prefer action over questions.`;
+
+  const essentialRules = renderEssentialToolRules(toolRegistry.listForMode(mode));
+
+  const toolCalling = `## TOOL CALLING
+
+Emit tool calls through the runtime's native function-calling API — never write invocations as prose or JSON in the message body.
+- Multiple independent read-only calls? Emit them together in one turn — they run in parallel.
+- No tool needed? Answer in plain prose. A turn with no tool calls ends the run.
+- If \`ask_user\` is in your turn, it runs FIRST — everything else you bundled is deferred until the user answers. Don't bundle writes with questions.`;
+
+  const recovery = `## FAILURE RECOVERY
+
+- "File not found" → list_directory to find the path, retry.
+- edit_file "not found" → re-read the section, match exact whitespace.
+- Command failed → read the error, fix the command, re-run with --yes/-y.
+- Same edit fails twice → read_file the full file, then write_file the corrected content.
+- After two failures on the same tool, switch strategy entirely.`;
+
+  return `You are Rapa, an autonomous coding agent. ${modeLine} Today is ${currentDate}.
+
+${workflow}
+
+${essentialRules}
+
+${toolCalling}
+
+${recovery}`;
 }
 
 export function shouldRequireInitialAskUserForBroadAnalysis(
