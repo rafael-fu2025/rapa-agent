@@ -21,7 +21,7 @@ runs hosted with MySQL/PostgreSQL by switching the Prisma provider.
 
 - **Three modes, one UI** — Chat, Agent, and a read-only Plan mode with a
   hard tool allowlist.
-- **60+ tools, 11 categories** — filesystem, code editing, shell, web,
+- **58 tools, 11 categories** — filesystem, code editing, shell, web,
   browser automation (Playwright), Git, image generation, document
   generation, scheduling, notifications/email, and MCP passthrough.
 - **Workspace-scoped by design** — every file and shell action is bounded to
@@ -116,13 +116,13 @@ Full architecture, module map, and conventions: [AGENTS.md](AGENTS.md).
 
 ## Tools at a glance
 
-61 tools across 11 categories:
+58 tools across 11 categories:
 
 | Category | Count | Examples |
 |---|---|---|
 | Filesystem | 15 | `read_file`, `write_file`, `edit_file`, `search_content` |
-| System & tasks | 15 | `think`, `ask_user`, `plan_tasks`, `run_tests`, `run_typecheck` |
-| Code & sub-agents | 7 | `delegate_task`, `spawn_agent`, `get_agent_status` |
+| System & tasks | 14 | `think`, `ask_user`, `plan_tasks`, `run_tests`, `run_typecheck` |
+| Code & sub-agents | 4 | `edit_file`, `append_file`, `delegate_task`, `spawn_agent`, `cancel_agent`, `get_agent_status` |
 | Shell | 6 | `execute_command`, `start_process`, `get_process_output` |
 | Git | 6 | `git_status`, `git_diff`, `git_commit` |
 | Browser (Playwright) | 5 | `browser_navigate`, `browser_click`, `browser_evaluate` |
@@ -135,15 +135,15 @@ Full architecture, module map, and conventions: [AGENTS.md](AGENTS.md).
 ## Development
 
 ```bash
-npm test                    # frontend (56 tests)
-cd server && npm test       # backend (506 tests)
+npm test                    # frontend (60 tests)
+cd server && npm test       # backend (542 tests)
 
 npm run typecheck && cd server && npm run typecheck
 npm run lint && npm run lint:server     # zero warnings allowed
 cd server && npm run test:coverage      # per-area coverage gate
 ```
 
-562 tests total, all passing. All four gates (type-check, lint, tests,
+602 tests total, all passing. All four gates (type-check, lint, tests,
 coverage) run green before every commit. See [CONTRIBUTING.md](CONTRIBUTING.md)
 for the full workflow.
 
