@@ -178,7 +178,10 @@ export const AddCustomProvider = ({ onSuccess }: AddCustomProviderProps) => {
           </div>
           <div className="panel-card rounded p-3 space-y-1.5">
             {[
-              { name: "OpenRouter", slug: "openrouter", url: "https://openrouter.ai/api/v1", models: "anthropic/claude-sonnet-5\nopenai/gpt-5.5\ngoogle/gemini-3.1-pro-preview\nminimax/minimax-m3\nminimax/minimax-m2.7" },
+              // The OpenRouter preset deliberately does NOT use the slug
+              // "openrouter" — that id collides with the built-in provider
+              // and the create call 400s once a row exists (audit M3).
+              { name: "OpenRouter", slug: "openrouter-cloud", url: "https://openrouter.ai/api/v1", models: "anthropic/claude-sonnet-5\nopenai/gpt-5.5\ngoogle/gemini-3.1-pro-preview\nminimax/minimax-m3\nminimax/minimax-m2.7" },
               { name: "Together AI", slug: "together-ai", url: "https://api.together.xyz/v1", models: "meta-llama/Llama-3.3-70B-Instruct-Turbo\nQwen/Qwen2.5-72B-Instruct-Turbo" },
               { name: "Groq", slug: "groq-cloud", url: "https://api.groq.com/openai/v1", models: "llama-3.3-70b-versatile\nllama-3.1-8b-instant" },
               { name: "Perplexity", slug: "perplexity", url: "https://api.perplexity.ai", models: "sonar\nsonar-pro" }

@@ -170,7 +170,7 @@ export type ChatResponse = {
 // IPv4, so requests would silently fail. The user can override via
 // the Vite env `VITE_API_URL` (e.g. "http://192.168.1.5:8787" for
 // LAN access).
-import { API_BASE } from "./http";
+import { API_BASE, fetchWithAuth, forceAuthLogout, refreshAuthToken } from "./http";
 
 export { API_BASE };
 
@@ -245,65 +245,19 @@ export async function consumeSseStream<TEvent>(
 }
 
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const maxRetries = 3;
-  let lastError: Error | null = null;
+  // Auth injection, silent token refresh on 401, 429 backoff, and the
+  // friendly network-error message all live in fetchWithAuth (http.ts).
+  const response = await fetchWithAuth(path, init);
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const headers = new Headers(init?.headers ?? {});
-
-    if (init?.body != null && !headers.has("Content-Type")) {
-      headers.set("Content-Type", "application/json");
-    }
-
-    const token = localStorage.getItem("auth_token");
-    if (token) {
-      headers.set("Authorization", `Bearer ${token}`);
-    }
-
-    let response: Response;
-    try {
-      response = await fetch(`${API_BASE}${path}`, {
-        ...init,
-        headers
-      });
-    } catch (err) {
-      // The fetch failed outright (DNS resolution, connection refused,
-      // TLS error, etc.). Surface a clear message so the UI can show
-      // something useful instead of an opaque "TypeError: Failed to
-      // fetch" in the console.
-      const message = err instanceof Error ? err.message : "Unknown network error";
-      throw new Error(
-        `Couldn't reach the API at ${API_BASE}${path}: ${message}. ` +
-          "Is the backend running? Try `cd server && npm run dev` in a terminal.",
-        { cause: err }
-      );
-    }
-
-    // 429 — back off and retry (rate limit hit during polling)
-    if (response.status === 429 && attempt < maxRetries) {
-      const retryAfter = response.headers.get("retry-after");
-      const delayMs = retryAfter
-        ? Math.min(parseInt(retryAfter, 10) * 1000, 30_000)
-        : Math.min(1000 * Math.pow(2, attempt), 10_000);
-      lastError = new Error(`Rate limited (429). Retrying in ${delayMs}ms.`);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      continue;
-    }
-
-    if (!response.ok) {
-      const text = await response.text();
-      if (response.status === 401) {
-        localStorage.removeItem("auth_token");
-        window.location.href = "/login";
-      }
-      throw new Error(text || `Request failed: ${response.status}`);
-    }
-
-    return response.json() as Promise<T>;
+  if (!response.ok) {
+    const text = await response.text();
+    // A 401 here means the refresh already failed (or the path is an
+    // auth path) — forceAuthLogout has run where appropriate. Surface
+    // the error text like any other failure.
+    throw new Error(text || `Request failed: ${response.status}`);
   }
 
-  // Exhausted retries — throw the last error
-  throw lastError ?? new Error("Request failed after retries");
+  return response.json() as Promise<T>;
 }
 
 export function getSettings(provider = "gemini") {
@@ -401,9 +355,17 @@ export function getAgentWorkspace() {
   return apiRequest<AgentWorkspaceResponse>("/agent/workspace");
 }
 
-export function getConversations(cursor?: string) {
-  const url = cursor ? `/conversations?cursor=${encodeURIComponent(cursor)}` : "/conversations";
-  return apiRequest<{ items: ConversationListItem[], nextCursor?: string }>(url);
+export function getConversations(cursor?: string, query?: string) {
+  const params = new URLSearchParams();
+  if (cursor) params.set("cursor", cursor);
+  if (query && query.trim()) params.set("q", query.trim());
+  const qs = params.toString();
+  return apiRequest<{ items: ConversationListItem[], nextCursor?: string }>(qs ? `/conversations?${qs}` : "/conversations");
+}
+
+/** Total conversation count — used by the destructive Delete All confirm. */
+export function getConversationsCount() {
+  return apiRequest<{ count: number }>("/conversations/count");
 }
 
 export function getConversationMessages(id: string) {
@@ -440,6 +402,25 @@ export function forkConversation(conversationId: string, messageId: string) {
   });
 }
 
+/** Delete one message, or every message after `afterMessageId` (edit-resend). */
+export function deleteConversationMessages(
+  conversationId: string,
+  target: { messageId: string } | { afterMessageId: string }
+) {
+  return apiRequest<{ ok: true; count: number }>(
+    `/conversations/${encodeURIComponent(conversationId)}/messages`,
+    { method: "DELETE", body: JSON.stringify(target) }
+  );
+}
+
+/** Persist the answered state of an assistant message's interactive card. */
+export function markInteractiveAnswered(conversationId: string, messageId: string) {
+  return apiRequest<{ ok: true; id: string }>(
+    `/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`,
+    { method: "PATCH", body: JSON.stringify({ interactiveAnswered: true }) }
+  );
+}
+
 export function getProviders() {
   return apiRequest<ProvidersResponse>("/providers");
 }
@@ -462,7 +443,22 @@ export function deleteCustomProvider(provider: string) {
   });
 }
 
-export type ReasoningEffort = "off" | "low" | "medium" | "high" | "max";
+export type ReasoningEffort = "off" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | "on";
+
+/** Per-model reasoning profile — what effort levels a model actually supports. */
+export type ReasoningProfile = {
+  provider: string;
+  model: string;
+  style: "none" | "binary" | "standard" | "extended";
+  levels: ReasoningEffort[];
+  source: "model-pattern" | "provider-default" | "upstream-metadata" | "denylist";
+};
+
+export function getReasoningProfile(provider: string, model: string) {
+  return apiRequest<ReasoningProfile>(
+    `/settings/reasoning-profile?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`
+  );
+}
 
 export function sendChat(payload: {
   prompt: string;
@@ -506,6 +502,7 @@ export async function streamChat(
   const maxAttempts = 10;
   const baseDelay = 1000;
   const maxDelay = 5000;
+  let refreshed401 = false;
 
   // Mutable payload copy — updated with conversationId from start events
   // so that retries don't create duplicate conversations.
@@ -542,8 +539,28 @@ export async function streamChat(
       }
 
       if (response.status === 401) {
-        localStorage.removeItem("auth_token");
-        window.location.href = "/login";
+        // Try one silent refresh before giving up — a token that expired
+        // mid-session shouldn't hard-logout the user (audit M0.2). Only
+        // a provably invalid token redirects to /login.
+        if (!refreshed401) {
+          const outcome = await refreshAuthToken();
+          if (outcome === "refreshed") {
+            refreshed401 = true;
+            continue;
+          }
+          if (outcome === "invalid") forceAuthLogout();
+          return;
+        }
+        forceAuthLogout();
+        return;
+      }
+
+      // Permanent client errors (400/403/404/413/422…) must not be
+      // retried — the same payload will fail identically and the old
+      // loop showed a "Reconnecting…" banner up to 10 times (audit M3).
+      if (response.status >= 400 && response.status < 500 && response.status !== 429 && response.status !== 408) {
+        const errorBody = await response.json().catch(() => null) as { message?: string } | null;
+        handlers.onError?.(errorBody?.message || `Request failed: ${response.status}`);
         return;
       }
 
@@ -644,6 +661,19 @@ export function setActiveServiceKey(service: string, keyId: string) {
 
 export function toggleServiceAutoSwitch(service: string, enabled: boolean) {
   return apiRequest<{ ok: boolean }>("/service-keys/auto-switch", {
+    method: "PATCH",
+    body: JSON.stringify({ service, enabled }),
+  });
+}
+
+export function getServiceStatus(service: string) {
+  return apiRequest<{ service: string; enabled: boolean }>(
+    `/service-keys/status?service=${encodeURIComponent(service)}`
+  );
+}
+
+export function setServiceStatus(service: string, enabled: boolean) {
+  return apiRequest<{ ok: boolean; service: string; enabled: boolean }>("/service-keys/status", {
     method: "PATCH",
     body: JSON.stringify({ service, enabled }),
   });

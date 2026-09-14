@@ -15,11 +15,45 @@ export type PendingToolApproval = {
   userId: string;
   conversationId: string;
   request: ToolApprovalRequest;
+  createdAt: number;
   timeout: NodeJS.Timeout;
   resolve: (decision: ToolApprovalDecision) => void;
 };
 
 export const pendingToolApprovals = new Map<string, PendingToolApproval>();
+
+/** Serializable snapshot of a pending approval for the rehydration API. */
+export type PendingApprovalInfo = {
+  approvalId: string;
+  conversationId: string;
+  toolName: string;
+  command: string;
+  createdAt: number;
+};
+
+/**
+ * List this user's pending (unanswered) approvals, optionally scoped to a
+ * conversation. Powers GET /agent/approvals/pending so a reloaded page can
+ * re-present an approval prompt instead of orphaning a blocked run
+ * (audit M2.2).
+ */
+export function listPendingApprovals(userId: string, conversationId?: string): PendingApprovalInfo[] {
+  const result: PendingApprovalInfo[] = [];
+  for (const [approvalId, pending] of pendingToolApprovals) {
+    if (pending.userId !== userId) continue;
+    if (conversationId && pending.conversationId !== conversationId) continue;
+    result.push({
+      approvalId,
+      conversationId: pending.conversationId,
+      toolName: pending.request.call.name,
+      command: typeof pending.request.call.parameters?.command === "string"
+        ? pending.request.call.parameters.command
+        : "",
+      createdAt: pending.createdAt
+    });
+  }
+  return result;
+}
 
 function getApprovalId(request: ToolApprovalRequest) {
   return `${request.conversationId}:${request.call.id}`;
@@ -53,6 +87,7 @@ export function waitForToolApproval(userId: string, request: ToolApprovalRequest
       userId,
       conversationId: request.conversationId,
       request,
+      createdAt: Date.now(),
       timeout,
       resolve: complete
     });

@@ -500,7 +500,10 @@ export class Agent {
     yield {
       type: "start",
       conversationId: this.context.conversationId,
-      model: this.config.model
+      model: this.config.model,
+      // Lets the frontend address this run on the exit-hatch control
+      // routes (abort/pause/resume) without guessing (audit M2.4).
+      ...(options.runId ? { runId: options.runId } : {})
     };
 
     const requiresInitialAskUser =

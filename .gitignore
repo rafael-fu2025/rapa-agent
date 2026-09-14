@@ -53,6 +53,7 @@ server/tsc.log
 *.db-shm
 *.db-wal
 *.db.bak
+*.db.backup-*
 prisma/dev.db
 prisma/dev.db-journal
 prisma/dev.db-shm

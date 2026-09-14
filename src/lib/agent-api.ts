@@ -1,14 +1,12 @@
 // Agent API client
 
 import {
-  API_BASE,
   consumeSseStream,
   type ApiKeySwitchInfo,
   type AskUserInteractive,
   type TokenUsage
 } from "./api";
-import { authHeaders, fetchWithRateLimitRetry } from "./http";
-
+import { fetchWithAuth } from "./http";
 
 export type ToolDefinition = {
   name: string;
@@ -164,6 +162,8 @@ export type AgentExecutionEvent =
       type: "start";
       conversationId: string;
       model: string;
+      /** Present when the run was persisted — addresses the exit-hatch control routes. */
+      runId?: string;
     }
   | {
       type: "thinking";
@@ -205,7 +205,7 @@ export type AgentExecutionEvent =
     };
 
 export async function listTools(): Promise<{ tools: ToolDefinition[] }> {
-  const response = await fetch(`${API_BASE}/agent/tools`, { headers: authHeaders() });
+  const response = await fetchWithAuth(`/agent/tools`);
   if (!response.ok) {
     throw new Error("Failed to fetch tools");
   }
@@ -213,11 +213,10 @@ export async function listTools(): Promise<{ tools: ToolDefinition[] }> {
 }
 
 export async function submitAgentToolApproval(payload: { approvalId: string; approved: boolean; message?: string }) {
-  const response = await fetch(`${API_BASE}/agent/approvals`, {
+  const response = await fetchWithAuth(`/agent/approvals`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...authHeaders()
     },
     body: JSON.stringify(payload)
   });
@@ -230,13 +229,86 @@ export async function submitAgentToolApproval(payload: { approvalId: string; app
   return response.json() as Promise<{ ok: true; approvalId: string; approved: boolean }>;
 }
 
-export async function getAgentRun(runId: string) {
-  const response = await fetchWithRateLimitRetry(`${API_BASE}/agent/runs/${encodeURIComponent(runId)}`, { headers: authHeaders() });
+export type PendingApprovalInfo = {
+  approvalId: string;
+  conversationId: string;
+  toolName: string;
+  command: string;
+  createdAt: number;
+};
+
+/** Pending (unanswered) approvals — re-presents prompts after a reload. */
+export async function listPendingApprovals(conversationId?: string) {
+  const query = conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : "";
+  const response = await fetchWithAuth(`/agent/approvals/pending${query}`);
   if (!response.ok) {
     const error = await response.json().catch(() => null) as { message?: string } | null;
-    throw new Error(error?.message || "Failed to fetch agent run");
+    throw new Error(error?.message || "Failed to fetch pending approvals");
   }
-  return response.json() as Promise<{ run: AgentRunDetail }>;
+  return response.json() as Promise<{ approvals: PendingApprovalInfo[] }>;
+}
+
+/* ---- Exit-hatch run controls (abort / pause / resume) ---- */
+
+async function runControlRequest(runId: string, action: "abort" | "pause" | "resume"): Promise<{ ok: boolean; status?: string }> {
+  const response = await fetchWithAuth(`/agent/runs/${encodeURIComponent(runId)}/${action}`, { method: "POST" });
+  if (!response.ok) {
+    const error = await response.json().catch(() => null) as { message?: string } | null;
+    throw new Error(error?.message || `Failed to ${action} run`);
+  }
+  return response.json() as Promise<{ ok: boolean; status?: string }>;
+}
+
+export function abortAgentRun(runId: string) {
+  return runControlRequest(runId, "abort");
+}
+
+export function pauseAgentRun(runId: string) {
+  return runControlRequest(runId, "pause");
+}
+
+export function resumeAgentRun(runId: string) {
+  return runControlRequest(runId, "resume");
+}
+
+/* ---- Run fetch cache ----
+   Opening a conversation with N agent messages used to fire N full
+   GET /agent/runs/:id requests just to recover tool display names
+   (audit M3). Cache responses per run id (short TTL, since runs are
+   immutable once finished) and dedupe in-flight requests. */
+
+const agentRunCache = new Map<string, { promise: Promise<{ run: AgentRunDetail }>; expiresAt: number }>();
+const AGENT_RUN_CACHE_TTL_MS = 60_000;
+
+export async function getAgentRun(runId: string) {
+  const cached = agentRunCache.get(runId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.promise;
+  }
+  const promise = (async () => {
+    const response = await fetchWithAuth(`/agent/runs/${encodeURIComponent(runId)}`);
+    if (!response.ok) {
+      const error = await response.json().catch(() => null) as { message?: string } | null;
+      throw new Error(error?.message || "Failed to fetch agent run");
+    }
+    return response.json() as Promise<{ run: AgentRunDetail }>;
+  })();
+  // Never cache failures — a rejected promise must not poison the entry.
+  promise.catch(() => agentRunCache.delete(runId));
+  // Bounded memory: evict expired entries, then oldest beyond 50.
+  if (agentRunCache.size > 50) {
+    const now = Date.now();
+    for (const [key, entry] of agentRunCache) {
+      if (entry.expiresAt <= now) agentRunCache.delete(key);
+    }
+    while (agentRunCache.size > 50) {
+      const oldest = agentRunCache.keys().next().value;
+      if (oldest === undefined) break;
+      agentRunCache.delete(oldest);
+    }
+  }
+  agentRunCache.set(runId, { promise, expiresAt: Date.now() + AGENT_RUN_CACHE_TTL_MS });
+  return promise;
 }
 
 export async function listAgentRuns(params?: { conversationId?: string; workspaceId?: string; limit?: number }) {
@@ -245,7 +317,7 @@ export async function listAgentRuns(params?: { conversationId?: string; workspac
   if (params?.workspaceId) searchParams.set("workspaceId", params.workspaceId);
   if (typeof params?.limit === "number") searchParams.set("limit", String(params.limit));
   const query = searchParams.toString();
-  const response = await fetchWithRateLimitRetry(`${API_BASE}/agent/runs${query ? `?${query}` : ""}`, { headers: authHeaders() });
+  const response = await fetchWithAuth(`/agent/runs${query ? `?${query}` : ""}`);
   if (!response.ok) {
     const error = await response.json().catch(() => null) as { message?: string } | null;
     throw new Error(error?.message || "Failed to fetch agent runs");
@@ -257,9 +329,9 @@ export async function restoreAgentCheckpoint(
   checkpointId: string,
   options: { confirmation?: string } = {}
 ) {
-  const response = await fetch(`${API_BASE}/agent/checkpoints/${encodeURIComponent(checkpointId)}/restore`, {
+  const response = await fetchWithAuth(`/agent/checkpoints/${encodeURIComponent(checkpointId)}/restore`, {
     method: "POST",
-    headers: { ...(options.confirmation ? { "Content-Type": "application/json" } : {}), ...authHeaders() },
+    headers: { ...(options.confirmation ? { "Content-Type": "application/json" } : {}) },
     body: options.confirmation ? JSON.stringify({ confirmation: options.confirmation }) : undefined
   });
   if (!response.ok) {
@@ -284,7 +356,7 @@ export async function restoreAgentCheckpoint(
 }
 
 export async function previewAgentCheckpoint(checkpointId: string) {
-  const response = await fetch(`${API_BASE}/agent/checkpoints/${encodeURIComponent(checkpointId)}/preview`, { headers: authHeaders() });
+  const response = await fetchWithAuth(`/agent/checkpoints/${encodeURIComponent(checkpointId)}/preview`);
   if (!response.ok) {
     const error = await response.json().catch(() => null) as { message?: string } | null;
     throw new Error(error?.message || "Failed to load checkpoint preview");
@@ -317,7 +389,7 @@ export async function listAgentCheckpoints(params: {
   if (typeof params.limit === "number") searchParams.set("limit", String(params.limit));
   if (typeof params.offset === "number") searchParams.set("offset", String(params.offset));
   const query = searchParams.toString();
-  const response = await fetch(`${API_BASE}/agent/checkpoints${query ? `?${query}` : ""}`, { headers: authHeaders() });
+  const response = await fetchWithAuth(`/agent/checkpoints${query ? `?${query}` : ""}`);
   if (!response.ok) {
     const error = await response.json().catch(() => null) as { message?: string } | null;
     throw new Error(error?.message || "Failed to fetch checkpoints");
@@ -348,11 +420,10 @@ export async function validateAgentTool(payload: {
   parameters?: Record<string, unknown>;
   mode?: "chat" | "agent" | "plan";
 }) {
-  const response = await fetch(`${API_BASE}/agent/tools/validate`, {
+  const response = await fetchWithAuth(`/agent/tools/validate`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...authHeaders()
     },
     body: JSON.stringify(payload)
   });
@@ -370,11 +441,10 @@ export async function validateAgentTool(payload: {
 }
 
 export async function runAgentLintDiagnostics(payload?: { workspaceId?: string; workdir?: string; timeout?: number }) {
-  const response = await fetch(`${API_BASE}/agent/diagnostics/lint`, {
+  const response = await fetchWithAuth(`/agent/diagnostics/lint`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...authHeaders()
     },
     body: JSON.stringify(payload ?? {})
   });
@@ -388,11 +458,10 @@ export async function runAgentLintDiagnostics(payload?: { workspaceId?: string; 
 }
 
 export async function runAgentTestDiagnostics(payload?: { workspaceId?: string; workdir?: string; timeout?: number }) {
-  const response = await fetch(`${API_BASE}/agent/diagnostics/test`, {
+  const response = await fetchWithAuth(`/agent/diagnostics/test`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...authHeaders()
     },
     body: JSON.stringify(payload ?? {})
   });
@@ -466,7 +535,7 @@ export type AgentIntegration = {
 };
 
 export async function listAgentRules() {
-  const response = await fetch(`${API_BASE}/agent/rules`, { headers: authHeaders() });
+  const response = await fetchWithAuth(`/agent/rules`);
   if (!response.ok) throw new Error("Failed to load agent rules");
   return response.json() as Promise<{ rules: AgentRule[] }>;
 }
@@ -481,9 +550,9 @@ export async function upsertAgentRule(payload: {
   workspaceId?: string | null;
   conversationId?: string | null;
 }) {
-  const response = await fetch(`${API_BASE}/agent/rules`, {
+  const response = await fetchWithAuth(`/agent/rules`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
   if (!response.ok) throw new Error("Failed to save agent rule");
@@ -491,13 +560,75 @@ export async function upsertAgentRule(payload: {
 }
 
 export async function listAgentSkills() {
-  const response = await fetch(`${API_BASE}/agent/skills`, { headers: authHeaders() });
+  const response = await fetchWithAuth(`/agent/skills`);
   if (!response.ok) throw new Error("Failed to load agent skills");
   return response.json() as Promise<{ skills: AgentSkill[] }>;
 }
 
+/** Remove a stored skill / specialist override entirely. */
+export async function deleteAgentSkill(id: string) {
+  const response = await fetchWithAuth(`/agent/skills/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!response.ok) throw new Error("Failed to delete skill");
+  return response.json() as Promise<{ ok: true }>;
+}
+
+/* ---- Auto-approve patterns (progressive trust) ---- */
+
+export type AutoApprovePattern = {
+  id: string;
+  userId: string;
+  workspaceId?: string | null;
+  conversationId?: string | null;
+  name: string;
+  pattern: string;
+  matchType: "exact" | "prefix" | "wildcard" | "regex";
+  toolName?: string | null;
+  scope: "global" | "workspace" | "conversation";
+  enabled: boolean;
+  useCount: number;
+  lastUsedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export async function listAutoApprovePatterns() {
+  const response = await fetchWithAuth(`/agent/auto-approve-patterns`);
+  if (!response.ok) throw new Error("Failed to load auto-approve patterns");
+  return response.json() as Promise<{ patterns: AutoApprovePattern[] }>;
+}
+
+export async function upsertAutoApprovePattern(payload: {
+  id?: string;
+  name: string;
+  pattern: string;
+  matchType?: "exact" | "prefix" | "wildcard" | "regex";
+  toolName?: string;
+  scope?: "global" | "workspace" | "conversation";
+  enabled?: boolean;
+  workspaceId?: string | null;
+  conversationId?: string | null;
+}) {
+  const response = await fetchWithAuth(`/agent/auto-approve-patterns`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => null) as { message?: string } | null;
+    throw new Error(error?.message || "Failed to save auto-approve pattern");
+  }
+  return response.json() as Promise<{ pattern: AutoApprovePattern }>;
+}
+
+export async function deleteAutoApprovePattern(id: string) {
+  const response = await fetchWithAuth(`/agent/auto-approve-patterns/${encodeURIComponent(id)}`, {
+    method: "DELETE"
+  });
+  if (!response.ok) throw new Error("Failed to delete auto-approve pattern");
+  return response.json() as Promise<{ ok: true }>;
+}
+
 export async function listAgentSpecialists() {
-  const response = await fetch(`${API_BASE}/agent/specialists`, { headers: authHeaders() });
+  const response = await fetchWithAuth(`/agent/specialists`);
   if (!response.ok) throw new Error("Failed to load agent specialists");
   return response.json() as Promise<{ specialists: AgentSpecialist[] }>;
 }
@@ -511,9 +642,9 @@ export async function upsertAgentSkill(payload: {
   enabled?: boolean;
   config?: Record<string, unknown>;
 }) {
-  const response = await fetch(`${API_BASE}/agent/skills`, {
+  const response = await fetchWithAuth(`/agent/skills`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
   if (!response.ok) throw new Error("Failed to save agent skill");
@@ -521,7 +652,7 @@ export async function upsertAgentSkill(payload: {
 }
 
 export async function listAgentMcpServers() {
-  const response = await fetch(`${API_BASE}/agent/mcp/servers`, { headers: authHeaders() });
+  const response = await fetchWithAuth(`/agent/mcp/servers`);
   if (!response.ok) throw new Error("Failed to load MCP servers");
   return response.json() as Promise<{ servers: AgentMcpServer[] }>;
 }
@@ -535,9 +666,9 @@ export async function upsertAgentMcpServer(payload: {
   authType?: "none" | "bearer" | "basic" | "apiKey";
   config?: Record<string, unknown>;
 }) {
-  const response = await fetch(`${API_BASE}/agent/mcp/servers`, {
+  const response = await fetchWithAuth(`/agent/mcp/servers`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
   if (!response.ok) throw new Error("Failed to save MCP server");
@@ -545,7 +676,7 @@ export async function upsertAgentMcpServer(payload: {
 }
 
 export async function listAgentIntegrations() {
-  const response = await fetch(`${API_BASE}/agent/integrations`, { headers: authHeaders() });
+  const response = await fetchWithAuth(`/agent/integrations`);
   if (!response.ok) throw new Error("Failed to load agent integrations");
   return response.json() as Promise<{ integrations: AgentIntegration[] }>;
 }
@@ -559,9 +690,9 @@ export async function upsertAgentIntegration(payload: {
   status?: "disconnected" | "connected" | "error";
   metadata?: Record<string, unknown>;
 }) {
-  const response = await fetch(`${API_BASE}/agent/integrations`, {
+  const response = await fetchWithAuth(`/agent/integrations`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
   if (!response.ok) throw new Error("Failed to save agent integration");
@@ -579,11 +710,10 @@ export async function executeAgent(params: {
   maxIterations?: number;
   autoApproveTools?: string[];
 }): Promise<AgentExecutionResult> {
-  const response = await fetch(`${API_BASE}/agent/execute`, {
+  const response = await fetchWithAuth(`/agent/execute`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...authHeaders()
     },
     body: JSON.stringify(params)
   });
@@ -618,7 +748,7 @@ export async function streamAgent(
      *   max     → maximum effort (DeepSeek, Claude 4.7+ maps to high)
      * Omit to use the provider default.
      */
-    reasoningEffort?: "off" | "low" | "medium" | "high" | "max";
+    reasoningEffort?: "off" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | "on";
   },
   handlers: {
     onStart?: (event: Extract<AgentExecutionEvent, { type: "start" }>) => void;
@@ -655,22 +785,15 @@ export async function streamAgent(
     try {
       if (options?.signal?.aborted) return;
 
-      const headers = new Headers({
-        "Content-Type": "application/json"
-      });
-      const token = localStorage.getItem("auth_token");
-      if (token) headers.set("Authorization", `Bearer ${token}`);
-
-      const response = await fetch(`${API_BASE}/agent/execute/stream`, {
+      const response = await fetchWithAuth(`/agent/execute/stream`, {
         method: "POST",
-        headers,
         body: JSON.stringify(liveParams),
         signal: options?.signal
       });
 
       if (response.status === 401) {
-        localStorage.removeItem("auth_token");
-        window.location.href = "/login";
+        // fetchWithAuth already attempted a silent refresh and, when the
+        // token is provably invalid, redirected to /login. Nothing to do.
         return;
       }
 

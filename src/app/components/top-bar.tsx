@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { MessageSquare, FileEdit, Route, Download, FolderOpen, ChevronDown, Search, SquareTerminal } from "lucide-react";
+import { MessageSquare, FileEdit, Route, Download, FolderOpen, ChevronDown, Search, SquareTerminal, PanelRight } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { Hint } from "./ui/tooltip";
 import { listWorkspaces, getActiveWorkspace, type Workspace } from "../../lib/workspace-api";
 
 type ChatMode = "chat" | "agent" | "plan";
@@ -13,9 +14,14 @@ type TopBarProps = {
   conversationWorkspace?: { id: string; name: string; path: string } | null;
   onSearchOpen?: () => void;
   onOpenTerminal?: () => void;
+  /** Toggles the right panel (files / tools / plan / runs). The only way
+   *  to reopen it after Escape — previously a reload was required. */
+  onToggleRightSidebar?: () => void;
+  /** Whether the right panel is currently open (for the pressed state). */
+  rightSidebarOpen?: boolean;
 };
 
-export const TopBar = ({ hideModelSelector = false, mode = "chat", onModeChange, onExport, conversationWorkspace, onSearchOpen, onOpenTerminal }: TopBarProps) => {
+export const TopBar = ({ hideModelSelector = false, mode = "chat", onModeChange, onExport, conversationWorkspace, onSearchOpen, onOpenTerminal, onToggleRightSidebar, rightSidebarOpen }: TopBarProps) => {
   // Tracks whether at least one workspace exists, so we can gate the Agent /
   // Plan mode toggles behind a "create a workspace first" dialog.
   const [hasWorkspaces, setHasWorkspaces] = useState(false);
@@ -87,34 +93,37 @@ export const TopBar = ({ hideModelSelector = false, mode = "chat", onModeChange,
           <span className="font-mono-tech text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Settings</span>
         ) : null}
         {!hideModelSelector && (conversationWorkspace ?? activeWorkspace) ? (
-          <button
-            onClick={() => window.dispatchEvent(new CustomEvent("workspace:open-modal"))}
-            className="workspace-chip flex items-center gap-1.5 rounded-lg px-2.5 h-7 transition-colors hover:bg-accent"
-            title={(conversationWorkspace ?? activeWorkspace)!.path}
-            type="button"
-          >
-            <FolderOpen size={12} className="shrink-0 text-muted-foreground" />
-            <span className="max-w-[140px] truncate text-foreground">{(conversationWorkspace ?? activeWorkspace)!.name}</span>
-            <ChevronDown size={10} className="shrink-0 text-muted-foreground" />
-          </button>
+          <Hint label={(conversationWorkspace ?? activeWorkspace)!.path}>
+            <button
+              onClick={() => window.dispatchEvent(new CustomEvent("workspace:open-modal"))}
+              className="workspace-chip flex items-center gap-1.5 rounded-lg px-2.5 h-7 transition-colors hover:bg-accent"
+              type="button"
+            >
+              <FolderOpen size={12} className="shrink-0 text-muted-foreground" />
+              <span className="max-w-[140px] truncate text-foreground">{(conversationWorkspace ?? activeWorkspace)!.name}</span>
+              <ChevronDown size={10} className="shrink-0 text-muted-foreground" />
+            </button>
+          </Hint>
         ) : !hideModelSelector ? (
-          <button
-            onClick={() => window.dispatchEvent(new CustomEvent("workspace:open-modal"))}
-            className="workspace-chip flex items-center gap-1.5 rounded-lg px-2.5 h-7 transition-colors hover:bg-accent text-muted-foreground"
-            title="Select a workspace"
-            type="button"
-          >
-            <FolderOpen size={12} className="shrink-0" />
-            <span className="text-foreground/70">Select Workspace</span>
-            <ChevronDown size={10} className="shrink-0" />
-          </button>
+          <Hint label="Select a workspace">
+            <button
+              onClick={() => window.dispatchEvent(new CustomEvent("workspace:open-modal"))}
+              className="workspace-chip flex items-center gap-1.5 rounded-lg px-2.5 h-7 transition-colors hover:bg-accent text-muted-foreground"
+              type="button"
+            >
+              <FolderOpen size={12} className="shrink-0" />
+              <span className="text-foreground/70">Select Workspace</span>
+              <ChevronDown size={10} className="shrink-0" />
+            </button>
+          </Hint>
         ) : null}
       </div>
 
       {!hideModelSelector ? (
-        <div className="mode-toggle-panel absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-0.5 rounded-lg p-0.5">
+        <div className="mode-toggle-panel absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-0.5 rounded-lg p-0.5" role="group" aria-label="Interaction mode">
           <button
             onClick={() => handleModeToggle("chat")}
+            aria-pressed={mode === "chat"}
             className={cn(
               "flex items-center gap-1.5 px-2.5 py-1 rounded-md transition-all",
               mode === "chat"
@@ -127,6 +136,7 @@ export const TopBar = ({ hideModelSelector = false, mode = "chat", onModeChange,
           </button>
           <button
             onClick={() => handleModeToggle("agent")}
+            aria-pressed={mode === "agent"}
             className={cn(
               "flex items-center gap-1.5 px-2.5 py-1 rounded-md transition-all",
               mode === "agent"
@@ -139,6 +149,7 @@ export const TopBar = ({ hideModelSelector = false, mode = "chat", onModeChange,
           </button>
           <button
             onClick={() => handleModeToggle("plan")}
+            aria-pressed={mode === "plan"}
             className={cn(
               "flex items-center gap-1.5 px-2.5 py-1 rounded-md transition-all",
               mode === "plan"
@@ -154,34 +165,49 @@ export const TopBar = ({ hideModelSelector = false, mode = "chat", onModeChange,
 
       <div className="flex items-center gap-1.5 pr-1">
         {!hideModelSelector && onSearchOpen ? (
-          <button
-            onClick={onSearchOpen}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-card hover:text-primary"
-            title="Search conversation (Ctrl+K)"
-            type="button"
-          >
-            <Search size={13} strokeWidth={2} />
-          </button>
+          <Hint label="Search conversation (Ctrl+K)">
+            <button
+              onClick={onSearchOpen}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-card hover:text-primary"
+              type="button"
+            >
+              <Search size={13} strokeWidth={2} />
+            </button>
+          </Hint>
         ) : null}
         {!hideModelSelector && onExport ? (
-          <button
-            onClick={onExport}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-card hover:text-primary"
-            title="Export Conversation"
-            type="button"
-          >
-            <Download size={14} strokeWidth={2} />
-          </button>
+          <Hint label="Export Conversation">
+            <button
+              onClick={onExport}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-card hover:text-primary"
+              type="button"
+            >
+              <Download size={14} strokeWidth={2} />
+            </button>
+          </Hint>
         ) : null}
         {!hideModelSelector && onOpenTerminal ? (
-          <button
-            onClick={onOpenTerminal}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-card hover:text-primary"
-            title="Open Terminal"
-            type="button"
-          >
-            <SquareTerminal size={14} strokeWidth={2} />
-          </button>
+          <Hint label="Open Terminal">
+            <button
+              onClick={onOpenTerminal}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-card hover:text-primary"
+              type="button"
+            >
+              <SquareTerminal size={14} strokeWidth={2} />
+            </button>
+          </Hint>
+        ) : null}
+        {!hideModelSelector && onToggleRightSidebar ? (
+          <Hint label={rightSidebarOpen ? "Hide right panel" : "Show right panel"}>
+            <button
+              onClick={onToggleRightSidebar}
+              aria-pressed={rightSidebarOpen}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-card hover:text-primary"
+              type="button"
+            >
+              <PanelRight size={14} strokeWidth={2} />
+            </button>
+          </Hint>
         ) : null}
       </div>
     </div>

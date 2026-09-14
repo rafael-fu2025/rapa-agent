@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, BarChart3, Database, PieChart, TrendingUp } from "lucide-react";
+import { Activity, BarChart3, Database, PieChart, TrendingUp, RefreshCw } from "lucide-react";
 import {
   AreaChart,
   Area,
@@ -15,6 +15,7 @@ import {
   CartesianGrid,
 } from "recharts";
 import { getUsageAnalytics, type UsageAnalyticsResponse } from "../../lib/api";
+import { Hint } from "./ui/tooltip";
 
 const PROVIDER_LABEL: Record<string, string> = {
   gemini: "Gemini",
@@ -22,7 +23,9 @@ const PROVIDER_LABEL: Record<string, string> = {
   ollama: "Ollama",
   nvidia: "NVIDIA",
   groq: "Groq",
-  minimax: "Minimax"
+  huggingface: "Hugging Face",
+  minimax: "Minimax",
+  openrouter: "OpenRouter"
 };
 
 const PROVIDER_COLORS: Record<string, string> = {
@@ -31,8 +34,18 @@ const PROVIDER_COLORS: Record<string, string> = {
   ollama: "#A78BFA",
   nvidia: "#94e3b8",
   groq: "#F97316",
-  minimax: "#E11D48"
+  huggingface: "#FBBF24",
+  minimax: "#E11D48",
+  openrouter: "#C084FC"
 };
+
+function providerLabel(provider: string): string {
+  return PROVIDER_LABEL[provider] ?? provider.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function providerColor(provider: string): string {
+  return PROVIDER_COLORS[provider] ?? CHART_COLORS[provider.charCodeAt(0) % CHART_COLORS.length];
+}
 
 const CHART_COLORS = ["#4DA6FF", "#7ED7A2", "#E8C06A", "#F18B8B", "#C084FC", "#60A5FA", "#94e3b8", "#FBBF24"];
 
@@ -159,6 +172,21 @@ export function UsageAnalyticsPage() {
     };
   }, []);
 
+  // Manual refresh — the data previously loaded exactly once on mount
+  // with no way to update it (audit M3).
+  const handleRefresh = async () => {
+    setLoading(true);
+    try {
+      const usage = await getUsageAnalytics();
+      setAnalytics(usage);
+      setMessage("");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to load usage analytics");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center bg-app">
@@ -186,10 +214,10 @@ export function UsageAnalyticsPage() {
   const providers = analytics.providers ?? [];
   const models = analytics.models ?? [];
 
-  const providerPieData = providers.map((item, index) => ({
-    name: PROVIDER_LABEL[item.provider] || item.provider,
+  const providerPieData = providers.map((item) => ({
+    name: providerLabel(item.provider),
     value: item.totalTokens,
-    color: PROVIDER_COLORS[item.provider] ?? CHART_COLORS[index % CHART_COLORS.length],
+    color: providerColor(item.provider),
     requests: item.requests,
     chatRequests: item.chatRequests,
     agentRequests: item.agentRequests,
@@ -199,7 +227,7 @@ export function UsageAnalyticsPage() {
   const modelBarData = models.map((item, index) => ({
     fullName: item.model || "Unknown",
     name: truncateModelName(item.model || "Unknown"),
-    provider: PROVIDER_LABEL[item.provider] || item.provider,
+    provider: providerLabel(item.provider),
     totalTokens: item.totalTokens,
     promptTokens: item.promptTokens,
     completionTokens: item.completionTokens,
@@ -212,7 +240,7 @@ export function UsageAnalyticsPage() {
   }));
 
   const providerStackData = providers.map((item) => ({
-    name: PROVIDER_LABEL[item.provider] || item.provider,
+    name: providerLabel(item.provider),
     prompt: item.promptTokens,
     completion: item.completionTokens,
     chat: item.chatRequests,
@@ -220,8 +248,8 @@ export function UsageAnalyticsPage() {
   }));
 
   const chatAgentPieData = providers.flatMap((item) => [
-    { name: `${PROVIDER_LABEL[item.provider] || item.provider} Chat`, value: item.chatRequests, color: PROVIDER_COLORS[item.provider] ?? CHART_COLORS[0], opacity: 1 },
-    { name: `${PROVIDER_LABEL[item.provider] || item.provider} Agent`, value: item.agentRequests, color: PROVIDER_COLORS[item.provider] ?? CHART_COLORS[0], opacity: 0.55 },
+    { name: `${providerLabel(item.provider)} Chat`, value: item.chatRequests, color: providerColor(item.provider), opacity: 1 },
+    { name: `${providerLabel(item.provider)} Agent`, value: item.agentRequests, color: providerColor(item.provider), opacity: 0.55 },
   ]).filter((d) => d.value > 0);
 
   const hasData = providers.length > 0;
@@ -246,20 +274,32 @@ export function UsageAnalyticsPage() {
       />
       <div className="mx-auto max-w-3xl space-y-6">
         {/* Page Header */}
-        <header className="space-y-2">
-          <div className="inline-flex h-9 w-9 items-center justify-center rounded bg-accent/50 border border-border/40 text-accent-foreground">
-            <BarChart3 size={16} />
+        <header className="flex items-start justify-between gap-4">
+          <div className="space-y-2">
+            <div className="inline-flex h-9 w-9 items-center justify-center rounded bg-accent/50 border border-border/40 text-accent-foreground">
+              <BarChart3 size={16} />
+            </div>
+            <h1 className="font-mono-tech text-[11px] font-semibold uppercase tracking-[0.16em] text-foreground">Usage Analytics</h1>
+            <p className="max-w-[65ch] font-mono-tech text-[10px] text-muted-foreground">
+              Token volume, request mix, and model leaderboards across all providers.
+            </p>
           </div>
-          <h1 className="font-mono-tech text-[11px] font-semibold uppercase tracking-[0.16em] text-foreground">Usage Analytics</h1>
-          <p className="max-w-[65ch] font-mono-tech text-[10px] text-muted-foreground">
-            Token volume, request mix, and model leaderboards across all providers.
-          </p>
+          <Hint label="Refresh analytics">
+            <button
+              type="button"
+              onClick={() => { void handleRefresh(); }}
+              disabled={loading}
+              className="mt-1 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-card hover:text-primary disabled:opacity-50"
+            >
+              <RefreshCw size={13} className={loading ? "animate-spin" : undefined} />
+            </button>
+          </Hint>
         </header>
 
         <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
           {[
             { label: "Responses", value: analytics.totalRequests, icon: Activity },
-            { label: "Total tokens", value: analytics.totalTokens, icon: TrendingUp },
+            { label: "Total tokens (all time)", value: analytics.totalTokens, icon: TrendingUp },
             { label: "Prompt tokens", value: analytics.promptTokens, icon: BarChart3 },
             { label: "Completion tokens", value: analytics.completionTokens, icon: PieChart },
           ].map((stat) => (
@@ -462,15 +502,21 @@ export function UsageAnalyticsPage() {
                           // The tooltip is prefixed with "Today ·" so
                           // a hover still confirms it.
                           const isToday = !!entry && entry.date === todayKey;
-                          return (
+                          const cell = (
                             <div
                               key={di}
                               className="aspect-square w-full rounded-[2px] transition-colors"
                               style={{ backgroundColor: entry ? getIntensity(entry.tokens) : "var(--card-3)" }}
-                              title={entry
-                                ? `${isToday ? "Today · " : ""}${entry.date}: ${formatCompactNumber(entry.tokens)} tokens, ${entry.requests} requests`
-                                : ""}
                             />
+                          );
+                          if (!entry) return cell;
+                          return (
+                            <Hint
+                              key={di}
+                              label={`${isToday ? "Today · " : ""}${entry.date}: ${formatCompactNumber(entry.tokens)} tokens, ${entry.requests} requests`}
+                            >
+                              {cell}
+                            </Hint>
                           );
                         })}
                       </div>
@@ -912,7 +958,7 @@ export function UsageAnalyticsPage() {
                     <div key={item.provider} className="panel-card rounded px-3 py-2">
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0">
-                          <div className="truncate font-mono-tech text-[11px] font-medium text-foreground">{PROVIDER_LABEL[item.provider] || item.provider}</div>
+                          <div className="truncate font-mono-tech text-[11px] font-medium text-foreground">{providerLabel(item.provider)}</div>
                           <div className="mt-0.5 font-mono-tech text-[10px] text-muted-foreground">last active {formatDate(item.lastUsedAt)}</div>
                         </div>
                         <div className="text-right">
@@ -953,7 +999,7 @@ export function UsageAnalyticsPage() {
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0">
                           <code className="block truncate font-mono-tech text-[11px] text-foreground">{item.model}</code>
-                          <div className="mt-0.5 font-mono-tech text-[10px] text-muted-foreground">{PROVIDER_LABEL[item.provider] || item.provider}</div>
+                          <div className="mt-0.5 font-mono-tech text-[10px] text-muted-foreground">{providerLabel(item.provider)}</div>
                         </div>
                         <span className="shrink-0 panel-badge rounded px-2 py-0.5 text-foreground">
                           {formatCompactNumber(item.totalTokens)} tokens

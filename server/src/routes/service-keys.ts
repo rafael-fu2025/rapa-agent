@@ -178,6 +178,41 @@ export async function registerServiceKeyRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // PATCH /service-keys/status — enable/pause a whole integration (e.g.
+  // web search) without touching the stored keys. Backs the settings-page
+  // toggle that previously existed only as local component state
+  // (audit M1.8). A missing row means "enabled" (the default).
+  const statusSchema = z.object({
+    service: z.string().min(1),
+    enabled: z.boolean(),
+  });
+
+  app.patch("/service-keys/status", async (request, reply) => {
+    const parsed = statusSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ message: "Invalid payload", issues: parsed.error.issues });
+
+    const user = await getLocalUser();
+    await prisma.serviceIntegrationSetting.upsert({
+      where: { userId_service: { userId: user.id, service: parsed.data.service } },
+      create: { userId: user.id, service: parsed.data.service, enabled: parsed.data.enabled },
+      update: { enabled: parsed.data.enabled },
+    });
+
+    return { ok: true, service: parsed.data.service, enabled: parsed.data.enabled };
+  });
+
+  // GET /service-keys/status?service=serper — current enabled state
+  app.get("/service-keys/status", async (request, reply) => {
+    const parsed = serviceSchema.safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ message: "service param required" });
+
+    const user = await getLocalUser();
+    const setting = await prisma.serviceIntegrationSetting.findUnique({
+      where: { userId_service: { userId: user.id, service: parsed.data.service } },
+    });
+    return { service: parsed.data.service, enabled: setting?.enabled ?? true };
+  });
+
   // GET /service-keys/:id/decrypt — get decrypted value for view/edit
   app.get("/service-keys/:id/decrypt", async (request, reply) => {
     const { id } = request.params as { id: string };

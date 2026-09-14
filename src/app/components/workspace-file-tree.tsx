@@ -51,11 +51,13 @@ import {
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Button } from "./ui/button";
+import { Hint } from "./ui/tooltip";
 import { cn } from "../../lib/utils";
 import { toast } from "sonner";
 import {
   getWorkspaceTree,
   getWorkspaceFileStat,
+  fetchWorkspaceRawObjectUrl,
   type WorkspaceTreeNode,
   type WorkspaceTreeResponse,
   type WorkspaceFileStat
@@ -204,6 +206,9 @@ type TreeNodeProps = {
   // node just dispatches click events with modifier keys.
   onSelect: (relativePath: string, modifiers: { ctrl: boolean; shift: boolean }) => void;
   isSelected: boolean;
+  // The full selection set, so recursive children resolve their OWN
+  // membership instead of inheriting the parent's flag (audit M3).
+  selectedPaths: Set<string>;
   // Tier 3: inline rename. The parent passes an optional inline-rename
   // target; when this node's path matches, the row renders as an input
   // instead of a button. The parent owns the state and clears it on
@@ -246,6 +251,7 @@ const TreeNode = ({
   onDownload,
   onSelect,
   isSelected,
+  selectedPaths,
   inlineRenameState,
   onInlineRenameChange,
   onInlineRenameCommit,
@@ -621,7 +627,8 @@ const TreeNode = ({
               onDuplicate={onDuplicate}
               onDownload={onDownload}
               onSelect={onSelect}
-              isSelected={isSelected}
+              isSelected={selectedPaths.has(child.relativePath)}
+              selectedPaths={selectedPaths}
               inlineRenameState={inlineRenameState}
               onInlineRenameChange={onInlineRenameChange}
               onInlineRenameCommit={onInlineRenameCommit}
@@ -1670,22 +1677,30 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
     [workspaceId, authedFetch, refreshAfterMutation]
   );
 
-  // Download. We can't fetch() the file and trigger a download
-  // simultaneously with a custom filename, so we use a programmatic
-  // anchor click with a download attribute. Setting href to the
-  // /raw endpoint lets the browser do the heavy lifting (and shows
-  // its own progress UI for large files).
+  // Download. The /raw endpoint is JWT-protected, which a plain anchor
+  // href cannot authenticate — that saved the 401 JSON body as the file
+  // (audit M1.6). Fetch the bytes with the auth header, hand the browser
+  // an object URL, and revoke it after the click.
   const handleDownload = useCallback(
-    (relativePath: string) => {
+    async (relativePath: string) => {
       if (!workspaceId) return;
-      const url = `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/raw?path=${encodeURIComponent(relativePath)}`;
+      let objectUrl: string | null = null;
+      try {
+        objectUrl = await fetchWorkspaceRawObjectUrl(workspaceId, relativePath);
+      } catch {
+        toast.error("Failed to download file", { description: relativePath });
+        return;
+      }
       const a = document.createElement("a");
-      a.href = url;
+      a.href = objectUrl;
       a.download = relativePath.split(/[\\/]+/).pop() ?? "download";
       // Some browsers require the anchor to be in the DOM to click it.
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      // Give the browser a moment to start the navigation before freeing
+      // the blob backing the URL.
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl ?? ""), 10_000);
     },
     [workspaceId]
   );
@@ -1773,33 +1788,36 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
                 </span>
               </div>
               <div className="flex items-center gap-0.5 shrink-0 ml-2">
-                <button
-                  onClick={handleExpandAllRoot}
-                  disabled={!tree || counts.dirs === 0}
-                  className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-                  title="Expand all"
-                  type="button"
-                >
-                  <Maximize2 size={11} />
-                </button>
-                <button
-                  onClick={handleCollapseAll}
-                  disabled={expandedPaths.size === 0}
-                  className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-                  title="Collapse all"
-                  type="button"
-                >
-                  <Minimize2 size={11} />
-                </button>
-                <button
-                  onClick={() => { void loadTree(); }}
-                  disabled={loading}
-                  className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-                  title="Refresh"
-                  type="button"
-                >
-                  <RefreshCw size={11} className={loading ? "animate-spin" : ""} />
-                </button>
+                <Hint label="Expand all">
+                  <button
+                    onClick={handleExpandAllRoot}
+                    disabled={!tree || counts.dirs === 0}
+                    className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                    type="button"
+                  >
+                    <Maximize2 size={11} />
+                  </button>
+                </Hint>
+                <Hint label="Collapse all">
+                  <button
+                    onClick={handleCollapseAll}
+                    disabled={expandedPaths.size === 0}
+                    className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                    type="button"
+                  >
+                    <Minimize2 size={11} />
+                  </button>
+                </Hint>
+                <Hint label="Refresh">
+                  <button
+                    onClick={() => { void loadTree(); }}
+                    disabled={loading}
+                    className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                    type="button"
+                  >
+                    <RefreshCw size={11} className={loading ? "animate-spin" : ""} />
+                  </button>
+                </Hint>
               </div>
             </div>
           </ContextMenuTrigger>
@@ -1878,14 +1896,15 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
             autoComplete="off"
           />
           {filter && (
-            <button
-              onClick={() => setFilter("")}
-              className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
-              title="Clear filter"
-              type="button"
-            >
-              <X size={10} />
-            </button>
+            <Hint label="Clear filter">
+              <button
+                onClick={() => setFilter("")}
+                className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
+                type="button"
+              >
+                <X size={10} />
+              </button>
+            </Hint>
           )}
         </div>
 
@@ -1899,33 +1918,36 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
             <span className="font-mono-tech text-[10px] font-semibold text-foreground/80">
               {selectedPaths.size} selected
             </span>
-            <button
-              type="button"
-              onClick={() => void handleBulkCopyPaths()}
-              className="ml-auto inline-flex h-6 items-center gap-1 rounded px-2 font-mono-tech text-[10px] text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
-              title="Copy all selected paths"
-            >
-              <Copy size={11} />
-              Copy paths
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleBulkDelete()}
-              disabled={mutationBusy}
-              className="inline-flex h-6 items-center gap-1 rounded px-2 font-mono-tech text-[10px] text-accent-red transition-colors hover:bg-accent-red/20 disabled:opacity-50"
-              title="Delete all selected"
-            >
-              <Trash2 size={11} />
-              Delete
-            </button>
-            <button
-              type="button"
-              onClick={clearSelection}
-              className="inline-flex h-6 items-center gap-1 rounded px-1.5 font-mono-tech text-[10px] text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
-              title="Clear selection (Esc)"
-            >
-              <X size={11} />
-            </button>
+            <Hint label="Copy all selected paths">
+              <button
+                type="button"
+                onClick={() => void handleBulkCopyPaths()}
+                className="ml-auto inline-flex h-6 items-center gap-1 rounded px-2 font-mono-tech text-[10px] text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
+              >
+                <Copy size={11} />
+                Copy paths
+              </button>
+            </Hint>
+            <Hint label="Delete all selected">
+              <button
+                type="button"
+                onClick={() => void handleBulkDelete()}
+                disabled={mutationBusy}
+                className="inline-flex h-6 items-center gap-1 rounded px-2 font-mono-tech text-[10px] text-accent-red transition-colors hover:bg-accent-red/20 disabled:opacity-50"
+              >
+                <Trash2 size={11} />
+                Delete
+              </button>
+            </Hint>
+            <Hint label="Clear selection (Esc)">
+              <button
+                type="button"
+                onClick={clearSelection}
+                className="inline-flex h-6 items-center gap-1 rounded px-1.5 font-mono-tech text-[10px] text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
+              >
+                <X size={11} />
+              </button>
+            </Hint>
           </div>
         )}
       </div>
@@ -1945,63 +1967,66 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
               <span className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">
                 Recent
               </span>
-              <button
-                type="button"
-                onClick={() => {
-                  if (!workspaceId) return;
-                  setRecentPaths([]);
-                  try {
-                    const raw = localStorage.getItem(RECENT_FILES_KEY);
-                    const parsed = (raw ? JSON.parse(raw) : {}) as Record<string, string[]>;
-                    delete parsed[workspaceId];
-                    localStorage.setItem(RECENT_FILES_KEY, JSON.stringify(parsed));
-                  } catch {
-                    // ignore
-                  }
-                }}
-                className="ml-auto font-mono-tech text-[9px] text-muted-foreground/60 transition-colors hover:text-foreground"
-                title="Clear all recent files"
-              >
-                clear
-              </button>
+              <Hint label="Clear all recent files">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!workspaceId) return;
+                    setRecentPaths([]);
+                    try {
+                      const raw = localStorage.getItem(RECENT_FILES_KEY);
+                      const parsed = (raw ? JSON.parse(raw) : {}) as Record<string, string[]>;
+                      delete parsed[workspaceId];
+                      localStorage.setItem(RECENT_FILES_KEY, JSON.stringify(parsed));
+                    } catch {
+                      // ignore
+                    }
+                  }}
+                  className="ml-auto font-mono-tech text-[9px] text-muted-foreground/60 transition-colors hover:text-foreground"
+                >
+                  clear
+                </button>
+              </Hint>
             </div>
             <ul className="space-y-0.5">
               {recentPaths.map((recentPath) => {
                 const name = recentPath.split(/[\\/]+/).pop() ?? recentPath;
                 return (
                   <li key={recentPath} className="group flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => handleFileOpen(recentPath)}
-                      className="flex flex-1 min-w-0 items-center gap-1.5 rounded px-1.5 py-0.5 text-left font-mono-tech text-[11px] text-foreground/80 transition-colors hover:bg-accent/20"
-                      title={recentPath}
-                    >
-                      <File size={10} className={cn("shrink-0", getFileColor(name))} />
-                      <span className="truncate">{name}</span>
-                      <span className="truncate text-[10px] text-muted-foreground/60">· {recentPath}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRecentPaths((prev) => prev.filter((p: string) => p !== recentPath));
-                        if (!workspaceId) return;
-                        try {
-                          const raw = localStorage.getItem(RECENT_FILES_KEY);
-                          const parsed = (raw ? JSON.parse(raw) : {}) as Record<string, string[]>;
-                          const list = parsed[workspaceId];
-                          if (list) {
-                            parsed[workspaceId] = list.filter((p: string) => p !== recentPath);
-                            localStorage.setItem(RECENT_FILES_KEY, JSON.stringify(parsed));
+                    <Hint label={recentPath}>
+                      <button
+                        type="button"
+                        onClick={() => handleFileOpen(recentPath)}
+                        className="flex flex-1 min-w-0 items-center gap-1.5 rounded px-1.5 py-0.5 text-left font-mono-tech text-[11px] text-foreground/80 transition-colors hover:bg-accent/20"
+                      >
+                        <File size={10} className={cn("shrink-0", getFileColor(name))} />
+                        <span className="truncate">{name}</span>
+                        <span className="truncate text-[10px] text-muted-foreground/60">· {recentPath}</span>
+                      </button>
+                    </Hint>
+                    <Hint label="Remove from recents">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRecentPaths((prev) => prev.filter((p: string) => p !== recentPath));
+                          if (!workspaceId) return;
+                          try {
+                            const raw = localStorage.getItem(RECENT_FILES_KEY);
+                            const parsed = (raw ? JSON.parse(raw) : {}) as Record<string, string[]>;
+                            const list = parsed[workspaceId];
+                            if (list) {
+                              parsed[workspaceId] = list.filter((p: string) => p !== recentPath);
+                              localStorage.setItem(RECENT_FILES_KEY, JSON.stringify(parsed));
+                            }
+                          } catch {
+                            // ignore
                           }
-                        } catch {
-                          // ignore
-                        }
-                      }}
-                      className="rounded p-0.5 text-muted-foreground/40 opacity-0 transition-all hover:bg-accent/30 hover:text-foreground group-hover:opacity-100"
-                      title="Remove from recents"
-                    >
-                      <X size={10} />
-                    </button>
+                        }}
+                        className="rounded p-0.5 text-muted-foreground/40 opacity-0 transition-all hover:bg-accent/30 hover:text-foreground group-hover:opacity-100"
+                      >
+                        <X size={10} />
+                      </button>
+                    </Hint>
                   </li>
                 );
               })}
@@ -2061,6 +2086,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
             onDownload={handleDownload}
             onSelect={handleTreeSelect}
             isSelected={selectedPaths.has(node.relativePath)}
+            selectedPaths={selectedPaths}
             inlineRenameState={inlineRename}
             onInlineRenameChange={(v) => setInlineRename(inlineRename ? { ...inlineRename, value: v } : null)}
             onInlineRenameCommit={() => void commitInlineRename()}
@@ -2375,10 +2401,12 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
           {bulkDeleteDialog && bulkDeleteDialog.paths.length > 0 && (
             <div className="max-h-[200px] overflow-y-auto rounded border border-border/40 bg-card-3 px-3 py-2 font-mono text-[11px] leading-relaxed">
               {bulkDeleteDialog.paths.slice(0, 50).map((p) => (
-                <div key={p} className="flex items-center gap-1.5 truncate text-foreground/80" title={p}>
-                  <Trash2 size={10} className="shrink-0 text-accent-red/70" />
-                  <span className="truncate">{p}</span>
-                </div>
+                <Hint key={p} label={p}>
+                  <div className="flex items-center gap-1.5 truncate text-foreground/80">
+                    <Trash2 size={10} className="shrink-0 text-accent-red/70" />
+                    <span className="truncate">{p}</span>
+                  </div>
+                </Hint>
               ))}
               {bulkDeleteDialog.paths.length > 50 && (
                 <div className="mt-1 border-t border-border/30 pt-1 text-muted-foreground/70">

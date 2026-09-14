@@ -3,7 +3,8 @@
 import { describe, expect, it } from "vitest";
 import {
   diffModelLists,
-  parseModelsResponse
+  parseModelsResponse,
+  parseReasoningMetadata
 } from "../provider-models.js";
 
 describe("parseModelsResponse", () => {
@@ -222,5 +223,61 @@ describe("diffModelLists", () => {
     const diff = diffModelLists(["zeta", "alpha"], ["mike", "alpha"]);
     expect(diff.added).toEqual(["mike"]);
     expect(diff.removed).toEqual(["zeta"]);
+  });
+});
+// ─── Per-model reasoning metadata extraction ────────────────────────────────
+
+describe("extractReasoningLevels / parseReasoningMetadata", () => {
+  it("reads OpenRouter-style reasoning_config effort_levels", () => {
+    const byModel = parseReasoningMetadata({
+      data: [
+        {
+          id: "openai/gpt-5.1",
+          supported_parameters: ["tools", "reasoning"],
+          reasoning_config: { effort_levels: ["low", "medium", "high", "xhigh"] }
+        },
+        { id: "meta-llama/llama-3-70b", supported_parameters: ["tools"] }
+      ]
+    });
+    expect(byModel.get("openai/gpt-5.1")).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(byModel.has("meta-llama/llama-3-70b")).toBe(false);
+  });
+
+  it("skips level arrays when supported_parameters exists without reasoning", () => {
+    const byModel = parseReasoningMetadata({
+      data: [{
+        id: "some/model",
+        supported_parameters: ["temperature", "tools"],
+        reasoning_config: { effort_levels: ["low"] }
+      }]
+    });
+    expect(byModel.size).toBe(0);
+  });
+
+  it("reads the flat reasoning_effort_levels shape", () => {
+    const byModel = parseReasoningMetadata({
+      data: [{ id: "vendor/model-x", reasoning_effort_levels: ["high", "max"] }]
+    });
+    expect(byModel.get("vendor/model-x")).toEqual(["high", "max"]);
+  });
+
+  it("reads the nested reasoning.effort_levels shape", () => {
+    const byModel = parseReasoningMetadata([
+      { id: "vendor/model-y", reasoning: { effort_levels: ["low", "medium"] } }
+    ]);
+    expect(byModel.get("vendor/model-y")).toEqual(["low", "medium"]);
+  });
+
+  it("returns an empty map for shapes without metadata", () => {
+    expect(parseReasoningMetadata({ data: [{ id: "a" }, { id: "b" }] }).size).toBe(0);
+    expect(parseReasoningMetadata(null).size).toBe(0);
+    expect(parseReasoningMetadata("nope").size).toBe(0);
+  });
+
+  it("also reads the Gemini { models: [...] } container shape", () => {
+    const byModel = parseReasoningMetadata({
+      models: [{ name: "models/vendor-model", reasoning_effort_levels: ["high"] }]
+    });
+    expect(byModel.get("vendor-model")).toEqual(["high"]);
   });
 });

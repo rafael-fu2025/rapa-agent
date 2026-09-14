@@ -1,6 +1,6 @@
 // Workspace API client
 
-import { API_BASE, authHeaders, fetchWithRateLimitRetry as fetchWithRetry } from "./http";
+import { fetchWithAuth } from "./http";
 
 export type Workspace = {
   id: string;
@@ -37,8 +37,7 @@ export type PickWorkspaceFolderResponse = {
 
 export async function listWorkspaces(): Promise<Workspace[]> {
 
-  const response = await fetch(`${API_BASE}/workspaces`, {
-    headers: authHeaders()
+  const response = await fetchWithAuth(`/workspaces`, {
   });
   if (!response.ok) {
     throw new Error("Failed to fetch workspaces");
@@ -78,8 +77,7 @@ export async function getActiveWorkspace(): Promise<Workspace | null> {
   // returns `{ workspace: null }` when the user has never marked one
   // active, instead of 404-ing. We treat every 2xx as "ok" and just
   // read the `workspace` field.
-  const response = await fetch(`${API_BASE}/workspaces/active`, {
-    headers: authHeaders()
+  const response = await fetchWithAuth(`/workspaces/active`, {
   });
   if (!response.ok) {
     return null;
@@ -89,9 +87,7 @@ export async function getActiveWorkspace(): Promise<Workspace | null> {
 }
 
 export async function getWorkspaceRegistry(): Promise<WorkspaceRegistry> {
-  const response = await fetchWithRetry(`${API_BASE}/agent/runs/registry`, {
-    headers: authHeaders()
-  });
+  const response = await fetchWithAuth(`/agent/runs/registry`);
   if (!response.ok) {
     throw new Error("Failed to fetch workspace registry");
   }
@@ -99,9 +95,8 @@ export async function getWorkspaceRegistry(): Promise<WorkspaceRegistry> {
 }
 
 export async function pickWorkspaceFolder(): Promise<PickWorkspaceFolderResponse> {
-  const response = await fetch(`${API_BASE}/workspaces/pick-folder`, {
+  const response = await fetchWithAuth(`/workspaces/pick-folder`, {
     method: "POST",
-    headers: authHeaders()
   });
 
   if (!response.ok) {
@@ -117,11 +112,10 @@ export async function createWorkspace(data: {
   path: string;
 }): Promise<Workspace> {
 
-  const response = await fetch(`${API_BASE}/workspaces`, {
+  const response = await fetchWithAuth(`/workspaces`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...authHeaders()
     },
     body: JSON.stringify(data)
   });
@@ -142,11 +136,10 @@ export async function updateWorkspace(
     isActive?: boolean;
   }
 ): Promise<Workspace> {
-  const response = await fetch(`${API_BASE}/workspaces/${id}`, {
+  const response = await fetchWithAuth(`/workspaces/${id}`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
-      ...authHeaders()
     },
     body: JSON.stringify(data)
   });
@@ -160,9 +153,8 @@ export async function updateWorkspace(
 }
 
 export async function deleteWorkspace(id: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/workspaces/${id}`, {
+  const response = await fetchWithAuth(`/workspaces/${id}`, {
     method: "DELETE",
-    headers: authHeaders()
   });
 
   if (!response.ok) {
@@ -176,8 +168,7 @@ export async function setActiveWorkspace(id: string): Promise<Workspace> {
 }
 
 export async function getWorkspaceTree(id: string): Promise<WorkspaceTreeResponse> {
-  const response = await fetch(`${API_BASE}/workspaces/${id}/tree`, {
-    headers: authHeaders()
+  const response = await fetchWithAuth(`/workspaces/${id}/tree`, {
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: "Failed to fetch workspace tree" }));
@@ -198,15 +189,37 @@ export async function getWorkspaceFileContent(
   filePath: string
 ): Promise<WorkspaceFileContent> {
   const params = new URLSearchParams({ path: filePath });
-  const response = await fetch(
-    `${API_BASE}/workspaces/${workspaceId}/file?${params.toString()}`,
-    { headers: authHeaders() }
+  const response = await fetchWithAuth(
+    `/workspaces/${workspaceId}/file?${params.toString()}`
   );
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: "Failed to read file" }));
     throw new Error(error.message || "Failed to read file");
   }
   return response.json();
+}
+
+/**
+ * Fetch a workspace file as an authenticated blob and wrap it in an
+ * object URL. The /raw endpoint sits behind JWT auth, which plain
+ * `<a href>` / `<img src>` cannot carry — every download and image
+ * preview must go through this (audit M1.6). Callers own the returned
+ * URL and must `URL.revokeObjectURL` it when done.
+ */
+export async function fetchWorkspaceRawObjectUrl(
+  workspaceId: string,
+  filePath: string
+): Promise<string> {
+  const params = new URLSearchParams({ path: filePath });
+  const response = await fetchWithAuth(
+    `/workspaces/${workspaceId}/raw?${params.toString()}`
+  );
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: "Failed to fetch file" }));
+    throw new Error(error.message || "Failed to fetch file");
+  }
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
 }
 
 export type WorkspaceFileStat = {
@@ -222,9 +235,8 @@ export async function getWorkspaceFileStat(
   filePath: string
 ): Promise<WorkspaceFileStat> {
   const params = new URLSearchParams({ path: filePath });
-  const response = await fetch(
-    `${API_BASE}/workspaces/${workspaceId}/stat?${params.toString()}`,
-    { headers: authHeaders() }
+  const response = await fetchWithAuth(
+    `/workspaces/${workspaceId}/stat?${params.toString()}`
   );
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: "Failed to stat path" }));
@@ -248,9 +260,8 @@ export async function matchWorkspaceFiles(
 ): Promise<FileMatch[]> {
   const params = new URLSearchParams({ q: query });
   if (limit) params.set("limit", String(limit));
-  const response = await fetchWithRetry(
-    `${API_BASE}/workspaces/${workspaceId}/files/match?${params.toString()}`,
-    { headers: authHeaders() }
+  const response = await fetchWithAuth(
+    `/workspaces/${workspaceId}/files/match?${params.toString()}`
   );
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: "Failed to search files" }));
@@ -280,9 +291,8 @@ export async function searchWorkspaceContents(
 ): Promise<SearchResult> {
   const params = new URLSearchParams({ q: query });
   if (limit) params.set("limit", String(limit));
-  const response = await fetchWithRetry(
-    `${API_BASE}/workspaces/${workspaceId}/search?${params.toString()}`,
-    { headers: authHeaders() }
+  const response = await fetchWithAuth(
+    `/workspaces/${workspaceId}/search?${params.toString()}`
   );
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: "Failed to search contents" }));

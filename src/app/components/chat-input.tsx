@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent } from
 import { Plus, ArrowUp, Image as ImageIcon, Paperclip, X, AlertCircle, LoaderCircle } from "lucide-react";
 import type { ChatAttachment, ReasoningEffort } from "../../lib/api";
 import { cn } from "../../lib/utils";
+import { Hint } from "./ui/tooltip";
 
 import { ModelSelector } from "./model-selector";
 
@@ -15,6 +16,9 @@ type ChatInputProps = {
   onSelectModel?: (model: string) => void;
   selectedReasoningEffort?: ReasoningEffort;
   onSelectReasoningEffort?: (effort: ReasoningEffort) => void;
+  /** Slash-command mode switcher: typing /agent, /plan or /chat submits the
+   *  mode change instead of a message (audit M4). */
+  onModeCommand?: (mode: "chat" | "agent" | "plan") => void;
 };
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
@@ -74,6 +78,7 @@ export const ChatInput = ({
   onSelectModel,
   selectedReasoningEffort = "off",
   onSelectReasoningEffort,
+  onModeCommand,
 }: ChatInputProps) => {
   const [value, setValue] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -198,12 +203,28 @@ export const ChatInput = ({
   const handleSend = async () => {
     const prompt = value.trim();
     if ((!prompt && attachments.length === 0) || pending || uploadProgress !== null) return;
+
+    // Slash commands: /chat, /agent, /plan switch the interaction mode
+    // instead of sending a message (audit M4).
+    const slashCommand = prompt.match(/^\/(chat|agent|plan)$/i);
+    if (slashCommand && attachments.length === 0 && onModeCommand) {
+      onModeCommand(slashCommand[1].toLowerCase() as "chat" | "agent" | "plan");
+      setValue("");
+      setMenuOpen(false);
+      setUploadError("");
+      return;
+    }
+
     const promptToSend = prompt || "Please analyze the uploaded files and images.";
-    await onSubmit(promptToSend, attachments);
+    // Clear the composer BEFORE awaiting the submit. onSubmit resolves only
+    // when the whole stream finishes, so clearing after it kept the sent
+    // text and attachments visibly stuck in the input for the entire
+    // generation (audit M1.2).
     setValue("");
     setAttachments([]);
     setMenuOpen(false);
     setUploadError("");
+    await onSubmit(promptToSend, attachments);
   };
 
   const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -270,7 +291,6 @@ export const ChatInput = ({
           aria-valuenow={containerHeight}
           aria-valuemin={MIN_HEIGHT}
           aria-valuemax={MAX_HEIGHT}
-          title="Drag to resize"
         >
           <div className={cn(
             "h-1.5 rounded-full transition-all duration-150 ease-out",
@@ -341,12 +361,40 @@ export const ChatInput = ({
           )}
         </div>
 
+        {/* Slash-command hint: visible while the draft starts with "/" */}
+        {onModeCommand && value.startsWith("/") && attachments.length === 0 && (
+          <div className="flex items-center gap-1.5 px-3.5 pb-1 pt-1.5">
+            {(["chat", "agent", "plan"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => {
+                  onModeCommand(mode);
+                  setValue("");
+                }}
+                className={cn(
+                  "rounded border px-1.5 py-0.5 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em] transition-colors",
+                  value.trim().toLowerCase() === `/${mode}`
+                    ? "border-accent-blue/50 bg-accent-blue/10 text-accent-blue"
+                    : "border-border/40 text-muted-foreground/70 hover:border-accent-blue/40 hover:text-accent-blue"
+                )}
+              >
+                /{mode}
+              </button>
+            ))}
+            <span className="font-mono-tech text-[9px] text-muted-foreground/40">switch mode</span>
+          </div>
+        )}
+
         <textarea
           placeholder="Ask me anything, paste files/images, or drop them here..."
           value={value}
           onChange={(event) => setValue(event.target.value)}
           onPaste={handlePaste}
           onKeyDown={(event) => {
+            // IME composition: Enter confirms the composition (CJK input),
+            // it must not submit the message mid-composition.
+            if (event.nativeEvent.isComposing) return;
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
               void handleSend();
@@ -431,36 +479,37 @@ export const ChatInput = ({
             />
           </div>
 
-          <button
-            onClick={() => {
-              if (pending) {
-                onStop?.();
-                return;
-              }
-              void handleSend();
-            }}
-            disabled={pending ? false : (!value.trim() && attachments.length === 0) || uploadProgress !== null}
-            className={cn(
-              "p-1.5 rounded border transition-all duration-200 flex items-center justify-center",
-              pending
-                ? "border-accent-red/40 bg-accent-red/15 text-accent-red hover:bg-accent-red/25"
-                : (value.trim() || attachments.length > 0)
-                  ? "border-accent-orange/40 bg-accent-orange text-white hover:bg-accent-orange/80"
-                  : "border-border/40 bg-card-3/50 text-muted-foreground"
-            )}
-            type="button"
-            title={pending ? "Stop" : "Send"}
-          >
-            {pending ? (
-              /* Stop indicator */
-              <span className="relative flex h-3 w-3 items-center justify-center">
-                <span className="absolute inline-flex h-4 w-4 rounded-sm bg-accent-red/35 animate-ping" />
-                <span className="relative inline-flex h-2.5 w-2.5 rounded-[2px] bg-accent-red" />
-              </span>
-            ) : (
-              <ArrowUp size={14} />
-            )}
-          </button>
+          <Hint label={pending ? "Stop" : "Send"}>
+            <button
+              onClick={() => {
+                if (pending) {
+                  onStop?.();
+                  return;
+                }
+                void handleSend();
+              }}
+              disabled={pending ? false : (!value.trim() && attachments.length === 0) || uploadProgress !== null}
+              className={cn(
+                "p-1.5 rounded border transition-all duration-200 flex items-center justify-center",
+                pending
+                  ? "border-accent-red/40 bg-accent-red/15 text-accent-red hover:bg-accent-red/25"
+                  : (value.trim() || attachments.length > 0)
+                    ? "border-accent-orange/40 bg-accent-orange text-white hover:bg-accent-orange/80"
+                    : "border-border/40 bg-card-3/50 text-muted-foreground"
+              )}
+              type="button"
+            >
+              {pending ? (
+                /* Stop indicator */
+                <span className="relative flex h-3 w-3 items-center justify-center">
+                  <span className="absolute inline-flex h-4 w-4 rounded-sm bg-accent-red/35 animate-ping" />
+                  <span className="relative inline-flex h-2.5 w-2.5 rounded-[2px] bg-accent-red" />
+                </span>
+              ) : (
+                <ArrowUp size={14} />
+              )}
+            </button>
+          </Hint>
         </div>
       </div>
     </div>

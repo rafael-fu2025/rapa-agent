@@ -253,7 +253,7 @@ export type AgentConfig = {
    * `thinking_budget` for Gemini, `think: true` for Ollama, etc.).
    * Undefined = let the provider default.
    */
-  reasoningEffort?: "off" | "low" | "medium" | "high" | "max";
+  reasoningEffort?: "off" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | "on";
   /**
    * P2-C: Per-call memory budget overrides. When set, these values replace
    * the defaults in `prompt-builder.ts`. All four are scaled together — the

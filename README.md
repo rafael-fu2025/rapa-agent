@@ -135,15 +135,15 @@ Full architecture, module map, and conventions: [AGENTS.md](AGENTS.md).
 ## Development
 
 ```bash
-npm test                    # frontend (60 tests)
-cd server && npm test       # backend (542 tests)
+npm test                    # frontend (66 tests)
+cd server && npm test       # backend (571 tests)
 
 npm run typecheck && cd server && npm run typecheck
 npm run lint && npm run lint:server     # zero warnings allowed
 cd server && npm run test:coverage      # per-area coverage gate
 ```
 
-602 tests total, all passing. All four gates (type-check, lint, tests,
+637 tests total, all passing. All four gates (type-check, lint, tests,
 coverage) run green before every commit. See [CONTRIBUTING.md](CONTRIBUTING.md)
 for the full workflow.
 

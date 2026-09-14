@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "../hooks/use-auth";
 import { API_BASE } from "../../lib/api";
-import { Loader2 } from "lucide-react";
+import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -234,10 +234,17 @@ export function LoginPage() {
   const [email, setEmail] = useState("local@localhost.com");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [localLoading, setLocalLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
 
-  const { login } = useAuth();
+  const { login, token } = useAuth();
   const navigate = useNavigate();
+
+  // Already authenticated? /login is pointless — go home (audit R2-1).
+  useEffect(() => {
+    if (token) navigate("/", { replace: true });
+  }, [token, navigate]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -270,6 +277,26 @@ export function LoginPage() {
       );
     } finally {
       setLoading(false);
+    }
+  };
+
+  // One-click local sign-in (loopback-only on the server). The password
+  // flow stays available for hosted / LAN-exposed deployments.
+  const handleLocalLogin = async () => {
+    setError(null);
+    setLocalLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/login-local`, { method: "POST" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(data?.message || "Local sign-in is unavailable — use your password.");
+      }
+      login(data.token, data.user);
+      navigate("/", { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An unknown error occurred");
+    } finally {
+      setLocalLoading(false);
     }
   };
 
@@ -473,22 +500,33 @@ export function LoginPage() {
             >
               Password
             </Label>
-            <Input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter your password"
-              required
-              minLength={6}
-              disabled={loading}
-              className="font-mono-tech"
-              autoComplete="current-password"
-            />
+            <div className="relative">
+              <Input
+                id="password"
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter your password"
+                required
+                minLength={6}
+                disabled={loading}
+                className="font-mono-tech pr-10"
+                autoComplete="current-password"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/70 transition-colors hover:text-foreground"
+                tabIndex={-1}
+              >
+                {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
           </div>
           <Button
             type="submit"
-            disabled={loading}
+            disabled={loading || localLoading}
             variant="accent"
             className="w-full font-mono-tech"
             style={{
@@ -503,6 +541,31 @@ export function LoginPage() {
             ) : (
               "Sign In"
             )}
+          </Button>
+          <div className="flex items-center gap-3" aria-hidden="true">
+            <span className="h-px flex-1 bg-border/60" />
+            <span
+              className="font-mono-tech"
+              style={{ fontSize: "10px", color: "var(--login-muted)", letterSpacing: "0.04em" }}
+            >
+              OR
+            </span>
+            <span className="h-px flex-1 bg-border/60" />
+          </div>
+          <Button
+            type="button"
+            onClick={() => void handleLocalLogin()}
+            disabled={loading || localLoading}
+            variant="outline"
+            className="w-full font-mono-tech"
+            style={{
+              fontSize: "11px",
+              fontWeight: 600,
+              letterSpacing: "0.04em",
+            }}
+            data-component="local-signin-button"
+          >
+            {localLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Continue as local user"}
           </Button>
         </form>
       </section>

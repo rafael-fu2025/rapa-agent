@@ -91,6 +91,12 @@ export function TerminalView({
   const connectingRef = useRef(false);
   const [error, setError] = useState("");
   const [activeSessionId, setActiveSessionId] = useState(sessionId);
+  // True after the server reports the PTY exited. Blocks the auto-reconnect
+  // effect — typing `exit` previously spawned a brand-new shell in the same
+  // tab instead of showing "session ended" (audit M3). Cleared by an
+  // explicit user reconnect.
+  const sessionEndedRef = useRef(false);
+  const [sessionEnded, setSessionEnded] = useState(false);
 
   const socketUrl = useMemo(
     () => buildTerminalSocketUrl({ workspaceId, conversationId, sessionId: activeSessionId ?? sessionId, cwd }),
@@ -268,6 +274,8 @@ export function TerminalView({
         if (payload.type === "closed") {
           terminalInstance.writeln("\r\n\x1b[90m[terminal session closed]\x1b[0m\r\n");
           setConnected(false);
+          sessionEndedRef.current = true;
+          setSessionEnded(true);
           setActiveSessionId(undefined);
           return;
         }
@@ -296,10 +304,16 @@ export function TerminalView({
   }, [workspaceId, socketUrl]);
 
   useEffect(() => {
-    if (autoConnect && active && workspaceId) {
+    if (autoConnect && active && workspaceId && !sessionEndedRef.current) {
       connect();
     }
   }, [active, autoConnect, socketUrl, workspaceId, connect]);
+
+  const handleReconnect = () => {
+    sessionEndedRef.current = false;
+    setSessionEnded(false);
+    connect();
+  };
 
   const handleRunCommand = () => {
     if (!command.trim()) return;
@@ -329,6 +343,23 @@ export function TerminalView({
       <div className={cn("flex h-full w-full flex-col", className)}>
         {/* Terminal fills remaining space */}
         <div ref={terminalContainerRef} className="flex-1 min-h-0 w-full px-1 py-1" />
+
+        {/* Session ended — offer an explicit reconnect instead of silently
+            spawning a fresh shell (audit M3). */}
+        {sessionEnded && !connected && (
+          <div className="flex items-center justify-between gap-2 border-t border-border/30 px-3 py-1.5">
+            <span className="font-mono-tech text-[9px] text-muted-foreground/70">
+              session ended
+            </span>
+            <button
+              type="button"
+              onClick={handleReconnect}
+              className="rounded border border-border/40 px-2 py-0.5 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em] text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
+            >
+              Reconnect
+            </button>
+          </div>
+        )}
 
         {/* Inline error */}
         {error ? (

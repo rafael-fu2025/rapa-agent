@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bot, Eye, EyeOff, Plus, RotateCcw, Save, Sparkles, Loader2 } from "lucide-react";
+import { Bot, Eye, EyeOff, Plus, RotateCcw, Save, Sparkles, Loader2, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { toast } from "sonner";
 
-import { listAgentSkills, listAgentSpecialists, upsertAgentSkill, type AgentSkill, type AgentSpecialist } from "../../lib/agent-api";
+import { listAgentSkills, listAgentSpecialists, upsertAgentSkill, deleteAgentSkill, type AgentSkill, type AgentSpecialist } from "../../lib/agent-api";
 
 const BUILTIN_SPECIALIST_ORDER = [
   "research_specialist",
@@ -56,10 +56,15 @@ function textToLines(value: string): string[] {
 function buildEditors(activeSpecialists: AgentSpecialist[], storedSkills: AgentSkill[]): SpecialistEditor[] {
   const activeByName = new Map(activeSpecialists.map((specialist) => [specialist.name, specialist]));
   const storedByName = new Map(storedSkills.map((skill) => [skill.name, skill]));
+  // Disabled stored rows are "reverted" overrides — for built-ins they must
+  // be treated as absent, otherwise the card shows an empty editor and a
+  // permanent stale-override badge (audit M3). Custom specialists keep
+  // their disabled rows so the user can re-enable them.
+  const storedEnabledByName = new Map(storedSkills.filter((skill) => skill.enabled).map((skill) => [skill.name, skill]));
 
   const builtinEditors = BUILTIN_SPECIALIST_ORDER.map((name) => {
     const active = activeByName.get(name);
-    const stored = storedByName.get(name);
+    const stored = storedEnabledByName.get(name);
     const config = configRecord(stored?.config);
 
     const storedInstructions = stringValue(config?.instructions) || stringValue(config?.prompt);
@@ -214,6 +219,42 @@ export const AgentSpecialistsPage = () => {
       toast.error(error instanceof Error ? error.message : "Failed to save specialist");
     } finally {
       setSavingNames((current) => current.filter((name) => name !== trimmedName));
+    }
+  };
+
+  // "Use Built-In" removes the stored override entirely instead of saving
+  // enabled:false — the disabled row previously left a zombie entry and a
+  // permanent stale-override badge (audit M3).
+  const useBuiltinSpecialist = async (specialist: SpecialistEditor) => {
+    if (!specialist.id) {
+      // Nothing stored — the editor is already showing the built-in.
+      await loadSpecialists();
+      return;
+    }
+    setSavingNames((current) => current.includes(specialist.name) ? current : [...current, specialist.name]);
+    try {
+      await deleteAgentSkill(specialist.id);
+      toast.success(`Reverted "${specialist.name}" to built-in behavior`);
+      await loadSpecialists();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to revert specialist");
+    } finally {
+      setSavingNames((current) => current.filter((name) => name !== specialist.name));
+    }
+  };
+
+  const deleteCustomSpecialist = async (specialist: SpecialistEditor) => {
+    setSavingNames((current) => current.includes(specialist.name) ? current : [...current, specialist.name]);
+    try {
+      if (specialist.id) {
+        await deleteAgentSkill(specialist.id);
+      }
+      setSpecialists((current) => current.filter((s) => s.name !== specialist.name));
+      toast.success(`Deleted specialist "${specialist.name}"`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to delete specialist");
+    } finally {
+      setSavingNames((current) => current.filter((name) => name !== specialist.name));
     }
   };
 
@@ -382,7 +423,7 @@ export const AgentSpecialistsPage = () => {
                       <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border/60 bg-card-3/30 px-4 py-3">
                         <button
                           type="button"
-                          onClick={() => void saveSpecialist(specialist, false)}
+                          onClick={() => void useBuiltinSpecialist(specialist)}
                           disabled={isSaving || !specialist.id}
                           className="panel-badge inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/30 disabled:opacity-50 transition-colors"
                         >
@@ -437,26 +478,6 @@ export const AgentSpecialistsPage = () => {
                           <p className="mt-1 max-w-[62ch] panel-desc">
                             Custom specialists are stored in <code>AgentSkill</code> and injected into the main agent catalog.
                           </p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => void saveSpecialist(specialist, true)}
-                            disabled={isSaving}
-                            className="inline-flex items-center gap-1.5 rounded bg-accent-orange px-3 py-1.5 font-mono-tech text-[10px] font-semibold uppercase tracking-[0.12em] text-white hover:bg-accent-orange/80 disabled:opacity-50 transition-colors"
-                          >
-                            {isSaving ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
-                            {isSaving ? "Saving" : specialist.id ? "Save" : "Create"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void saveSpecialist(specialist, false)}
-                            disabled={isSaving || !specialist.id}
-                            className="panel-badge inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/30 disabled:opacity-50 transition-colors"
-                          >
-                            <RotateCcw size={11} />
-                            Disable
-                          </button>
                         </div>
                       </div>
 
@@ -528,12 +549,12 @@ export const AgentSpecialistsPage = () => {
                       <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border/60 bg-card-3/30 px-4 py-3">
                         <button
                           type="button"
-                          onClick={() => void saveSpecialist(specialist, false)}
-                          disabled={isSaving || !specialist.id}
-                          className="panel-badge inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/30 disabled:opacity-50 transition-colors"
+                          onClick={() => { void deleteCustomSpecialist(specialist); }}
+                          disabled={isSaving}
+                          className="inline-flex items-center gap-1.5 rounded border border-accent-red/40 px-2.5 py-1.5 font-mono-tech text-[10px] font-semibold uppercase tracking-[0.12em] text-accent-red transition-colors hover:bg-accent-red/10 disabled:opacity-50"
                         >
-                          <RotateCcw size={11} />
-                          Disable
+                          <Trash2 size={11} />
+                          Delete
                         </button>
                         <button
                           type="button"

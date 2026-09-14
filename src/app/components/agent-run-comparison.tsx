@@ -18,12 +18,21 @@ type RunPanel = {
 
 function formatDuration(start: string, end?: string | null): string {
   if (!end) return "running...";
-  const ms = new Date(end).getTime() - new Date(start).getTime();
+  return formatDurationMs(new Date(end).getTime() - new Date(start).getTime());
+}
+
+function formatDurationMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   const mins = Math.floor(ms / 60_000);
   const secs = Math.floor((ms % 60_000) / 1000);
   return `${mins}m ${secs}s`;
+}
+
+/** Duration in milliseconds for numeric comparison (null while running). */
+function durationMs(start: string, end?: string | null): number | null {
+  if (!end) return null;
+  return new Date(end).getTime() - new Date(start).getTime();
 }
 
 function formatTokens(usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | null): string {
@@ -128,8 +137,20 @@ export function AgentRunComparison({ open, onClose, leftRunId, rightRunId }: Pro
     const rightTokens = r?.tokenUsage?.totalTokens ?? ((r?.tokenUsage?.promptTokens ?? 0) + (r?.tokenUsage?.completionTokens ?? 0));
     const leftDuration = l ? formatDuration(l.startedAt, l.completedAt) : "—";
     const rightDuration = r ? formatDuration(r.startedAt, r.completedAt) : "—";
+    const leftDurationMs = l ? durationMs(l.startedAt, l.completedAt) : null;
+    const rightDurationMs = r ? durationMs(r.startedAt, r.completedAt) : null;
     const leftToolCalls = l?.toolCalls?.length ?? 0;
     const rightToolCalls = r?.toolCalls?.length ?? 0;
+
+    // Compare durations numerically — the previous string comparison made
+    // "10.0s" sort before "9.1s" lexically and highlighted the slower run
+    // as faster (audit M2.1). A still-running run (null) never highlights.
+    const durationHighlight =
+      leftDurationMs !== null && rightDurationMs !== null
+        ? leftDurationMs < rightDurationMs ? "left" as const
+          : rightDurationMs < leftDurationMs ? "right" as const
+          : "equal" as const
+        : "equal" as const;
 
     return {
       leftTokens,
@@ -139,7 +160,7 @@ export function AgentRunComparison({ open, onClose, leftRunId, rightRunId }: Pro
       leftToolCalls,
       rightToolCalls,
       tokenHighlight: leftTokens < rightTokens ? "left" as const : rightTokens < leftTokens ? "right" as const : "equal" as const,
-      durationHighlight: leftDuration < rightDuration ? "left" as const : rightDuration < leftDuration ? "right" as const : "equal" as const,
+      durationHighlight,
       iterationHighlight: (l?.iterationCount ?? 0) < (r?.iterationCount ?? 0) ? "left" as const : (r?.iterationCount ?? 0) < (l?.iterationCount ?? 0) ? "right" as const : "equal" as const,
     };
   }, [leftPanel.run, rightPanel.run]);

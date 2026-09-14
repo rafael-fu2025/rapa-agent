@@ -13,7 +13,7 @@ Rapa is a **full-stack AI agent platform** with a React frontend and a Fastify/N
 - **Agent Tools**: 58 registered tools across 11 categories (filesystem, shell, web, git, browser, system, code, document, media, scheduler, notification/integration/mcp)
 - **Database**: Prisma ORM with 22 models. Default for personal-machine use is **SQLite** (`file:./dev.db`, no daemon). The same schema also supports MySQL / PostgreSQL by switching the `provider` in `server/prisma/schema.prisma` — see [docs/PERSONAL_DEPLOY.md](docs/PERSONAL_DEPLOY.md) §6.
 - **Deployment**: Personal-machine default (Node.js + Vite, two terminals). Docker (Dockerfile + docker-compose.yml) ships SQLite on a volume by default; MySQL is an opt-in for hosted / multi-user setups (see the comment block in `docker-compose.yml`).
-- **Testing**: 602 tests (60 frontend + 542 server) via Vitest; type-check (`tsc --noEmit`), lint (`eslint --max-warnings 0`), and coverage gates all enforced in both packages
+- **Testing**: 646 tests (74 frontend + 572 server) via Vitest; type-check (`tsc --noEmit`), lint (`eslint --max-warnings 0`), and coverage gates all enforced in both packages
 
 ---
 
@@ -34,6 +34,7 @@ Recreate UI/
 │   │       ├── chat-input.tsx    # Message input with attachments, drag-and-drop
 │   │       ├── assistant-markdown.tsx  # Renders LLM responses (Markdown + KaTeX + code blocks)
 │   │       ├── agent-steps-viewer.tsx  # Tool call trace, reasoning panels, ProgressRing
+│       ├── runs-panel.tsx          # Right-sidebar Runs tab (run list, detail, A/B compare)
 │   │       ├── agent-run-panel.tsx     # Historical run detail view
 │   │       ├── interactive-options.tsx # Ask-user question UI (blueprint checkboxes)
 │   │       ├── mode-switch-prompt.tsx  # Mode switch approval prompt
@@ -134,7 +135,8 @@ The agent loop is decomposed into focused modules:
 | `llm-client.ts` | LLM API call with timeout, key failover, idle-read timeout, and abort support |
 | `tool-orchestrator.ts` | Batch tool execution (read-only parallel, write sequential), approval flow, truncation |
 | `reasoning-budget.ts` | Token budget allocation for reasoning vs. response |
-| `reasoning-translator.ts` | Translates reasoning-effort requests to provider-native fields |
+| `reasoning-translator.ts` | Translates reasoning-effort requests to provider-native fields, per model |
+| `reasoning-capabilities.ts` | Per-model effort-level profiles (binary/standard/extended + snap ladder) — single source of truth shared with the UI via `GET /api/settings/reasoning-profile` |
 | `context-compactor.ts` | Mid-run history compaction (warn → compact → force-answer) + post-compaction file restoration |
 | `working-memory.ts` | Persisted `.rapa/working-memory.md` state (skipped for child agents) |
 | `loop-detector.ts` | Repeated tool-call signature detection |
@@ -262,7 +264,7 @@ The agent operates on a workspace directory:
 | `npm run dev` | Start Fastify with tsx watch (auto-reload) |
 | `npm run build` | Compile TypeScript → `server/dist/` |
 | `npm start` | Run compiled production server |
-| `npm test` | Run backend tests (Vitest, 542 tests) |
+| `npm test` | Run backend tests (Vitest, 571 tests) |
 | `npm run typecheck` | TypeScript check (`tsc --noEmit`) |
 | `npm run lint` | ESLint backend (`src/`, zero warnings allowed) |
 | `npm run test:coverage` | Coverage gate (per-area thresholds in `vitest.config.ts`) |
@@ -281,7 +283,7 @@ npm run lint && npm run lint:server
 
 # Run all tests
 npm test                  # Frontend (56 tests)
-cd server && npm test     # Backend (542 tests)
+cd server && npm test     # Backend (571 tests)
 
 # All must pass before committing
 ```
@@ -569,7 +571,7 @@ Promise resolved → tool executes (or rejected result returned)
 | `ScheduledTask` | Cron-style scheduled agent tasks |
 | `IntegrationCredential` | Encrypted credentials for integrations |
 
-The authoritative list is always [`server/prisma/schema.prisma`](server/prisma/schema.prisma) — 22 models as of 2026-08-22.
+The authoritative list is always [`server/prisma/schema.prisma`](server/prisma/schema.prisma) — 23 models as of 2026-09-14 (`ServiceIntegrationSetting` added for per-service enable/pause).
 
 ### 7.4 Migration Guidelines
 
@@ -585,14 +587,14 @@ The authoritative list is always [`server/prisma/schema.prisma`](server/prisma/s
 
 ### 8.1 Current State
 
-**602 tests across 54 test files, all passing.**
+**646 tests across 63 test files, all passing.**
 
 | Suite | Files | Tests | Runner |
 |-------|-------|-------|--------|
-| Frontend | 9 | 60 | Vitest + jsdom |
-| Backend | 46 | 542 | Vitest |
+| Frontend | 11 | 74 | Vitest + jsdom |
+| Backend | 52 | 572 | Vitest |
 
-Frontend tests cover chat types, utility functions, and sidebar rendering. Backend tests cover the agent loop (envelope, response parser, tool orchestrator, tracing, LLM client, resilience, plugin/system, snapshot harness), safety modules (prompt injection, dangerous patterns), tools (filesystem traversal, edit-file symlink safety, git injection), route helper logic (workspaces search/mutations), and infrastructure (crypto, env, tool scopes, run limits, exit hatch, MCP server, scheduler).
+Frontend tests cover chat types, utility functions, sidebar rendering, the plan→agent handoff, the reasoning-effort picker, and the HTTP auth-refresh layer (single-flight refresh, retry, logout). Backend tests cover the agent loop (envelope, response parser, tool orchestrator, tracing, LLM client, resilience, plugin/system, snapshot harness), safety modules (prompt injection, dangerous patterns), tools (filesystem traversal, edit-file symlink safety, git injection), route helper logic (workspaces search/mutations), and infrastructure (crypto, env, tool scopes, run limits, exit hatch, MCP server, scheduler).
 
 **Gates** (all must be green before committing):
 - `tsc --noEmit` in both packages — the root `build` script runs it before Vite; the server has `npm run typecheck`.

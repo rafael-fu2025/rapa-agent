@@ -17,6 +17,7 @@ import {
   ExternalLink,
   FolderOpen
 } from "lucide-react";
+import { Hint } from "./ui/tooltip";
 
 export type PresentedFile = {
   path: string;
@@ -100,12 +101,16 @@ function FileCard({ file }: { file: PresentedFile }) {
       <div className="flex items-start gap-2">
         <FileIcon kind={kind} isDirectory={file.isDirectory} />
         <div className="flex-1 min-w-0">
-          <div className="font-mono text-[12px] font-medium text-foreground truncate" title={file.path}>
-            {file.label || file.name}
-          </div>
-          <div className="font-mono text-[10px] text-muted-foreground/60 truncate" title={file.fullPath}>
-            {file.path}
-          </div>
+          <Hint label={file.path}>
+            <div className="font-mono text-[12px] font-medium text-foreground truncate">
+              {file.label || file.name}
+            </div>
+          </Hint>
+          <Hint label={file.fullPath}>
+            <div className="font-mono text-[10px] text-muted-foreground/60 truncate">
+              {file.path}
+            </div>
+          </Hint>
         </div>
       </div>
       {file.description && (
@@ -118,24 +123,26 @@ function FileCard({ file }: { file: PresentedFile }) {
           <span>{formatBytes(file.size)}</span>
         </div>
         <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={handleOpen}
-            className="flex items-center gap-1 rounded border border-border/60 bg-card px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-foreground/80 hover:border-foreground/40 hover:text-foreground transition-colors"
-            title="Open in viewer"
-          >
-            <ExternalLink className="h-3 w-3" />
-            Open
-          </button>
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="flex items-center gap-1 rounded border border-border/60 bg-card px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-foreground/80 hover:border-foreground/40 hover:text-foreground transition-colors"
-            title="Copy relative path"
-          >
-            {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
-            {copied ? "Copied" : "Copy"}
-          </button>
+          <Hint label="Open in viewer">
+            <button
+              type="button"
+              onClick={handleOpen}
+              className="flex items-center gap-1 rounded border border-border/60 bg-card px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-foreground/80 hover:border-foreground/40 hover:text-foreground transition-colors"
+            >
+              <ExternalLink className="h-3 w-3" />
+              Open
+            </button>
+          </Hint>
+          <Hint label="Copy relative path">
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="flex items-center gap-1 rounded border border-border/60 bg-card px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-foreground/80 hover:border-foreground/40 hover:text-foreground transition-colors"
+            >
+              {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </Hint>
         </div>
       </div>
     </div>

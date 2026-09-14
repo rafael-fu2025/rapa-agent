@@ -135,10 +135,19 @@ describe("translateReasoning", () => {
       expect(translateReasoning("gemini", "gemini-2.5-pro", "low")).toEqual({ thinking_budget: 1024 });
       expect(translateReasoning("gemini", "gemini-2.5-pro", "medium")).toEqual({ thinking_budget: 8192 });
       expect(translateReasoning("gemini", "gemini-2.5-pro", "high")).toEqual({ thinking_budget: 24576 });
-      expect(translateReasoning("gemini", "gemini-2.5-pro", "max")).toEqual({ thinking_budget: 65536 });
+      // Per-model cap: Pro tops out at 32768. The old flat 65536 value
+      // 400'd on every Gemini 2.5 model.
+      expect(translateReasoning("gemini", "gemini-2.5-pro", "max")).toEqual({ thinking_budget: 32768 });
+      expect(translateReasoning("gemini", "gemini-2.5-pro", "ultra")).toEqual({ thinking_budget: 32768 });
     });
 
-    it("emits thinking_budget: 0 for 'off'", () => {
+    it("caps flash models at 24576 — never sends the Pro budget to a Flash model", () => {
+      expect(translateReasoning("gemini", "gemini-2.5-flash", "max")).toEqual({ thinking_budget: 24576 });
+      expect(translateReasoning("gemini", "gemini-3-flash-preview", "ultra")).toEqual({ thinking_budget: 24576 });
+      expect(translateReasoning("gemini", "gemini-3-pro-preview", "max")).toEqual({ thinking_budget: 32768 });
+    });
+
+    it("emits nothing for 'off'", () => {
       // Caller is expected to filter 'off' before calling — this is the
       // case where someone manually sets off via the dropdown. The body
       // still carries the field so the provider can interpret it as
@@ -302,5 +311,44 @@ describe("ReasoningSetting value space", () => {
       const result = translateReasoning("openai", "o3-mini", v);
       expect(result).toBeDefined();
     }
+  });
+});
+
+// ─── Per-model extended tiers (xhigh / ultra / on) ──────────────────────────
+
+describe("per-model extended tiers", () => {
+  it("forwards xhigh on GPT-5.1+ and clamps ultra to xhigh there", () => {
+    expect(translateReasoning("openai", "gpt-5.1", "xhigh")).toEqual({ reasoning_effort: "xhigh" });
+    expect(translateReasoning("openai", "gpt-5.1-chat-latest", "ultra")).toEqual({ reasoning_effort: "xhigh" });
+    expect(translateReasoning("openai", "gpt-5.1", "max")).toEqual({ reasoning_effort: "xhigh" });
+  });
+
+  it("clamps xhigh/ultra to high on pre-5.1 OpenAI-style models", () => {
+    expect(translateReasoning("openai", "gpt-5", "xhigh")).toEqual({ reasoning_effort: "high" });
+    expect(translateReasoning("deepseek", "deepseek-reasoner", "ultra")).toEqual({ reasoning_effort: "high" });
+    expect(translateReasoning("puter", "gpt-4o-mini", "xhigh")).toEqual({ reasoning_effort: "high" });
+  });
+
+  it("forwards xhigh on OpenRouter and clamps ultra to xhigh", () => {
+    expect(translateReasoning("openrouter", "openai/gpt-5.1", "xhigh")).toEqual({ reasoning: { effort: "xhigh" } });
+    expect(translateReasoning("openrouter", "deepseek/deepseek-v3.2", "ultra")).toEqual({ reasoning: { effort: "xhigh" } });
+    // max passthrough is still honored (DeepSeek recognizes it).
+    expect(translateReasoning("openrouter", "deepseek/deepseek-v3.2", "max")).toEqual({ reasoning: { effort: "max" } });
+  });
+
+  it("clamps above-high to high on adaptive Claude and maps everything to 32768 on legacy Claude", () => {
+    expect(translateReasoning("anthropic", "claude-opus-5", "xhigh")).toEqual({
+      thinking: { type: "adaptive" },
+      effort: "high"
+    });
+    expect(translateReasoning("anthropic", "claude-sonnet-4-5", "ultra")).toEqual({
+      thinking: { type: "enabled", budget_tokens: 32768 }
+    });
+  });
+
+  it("binary 'on' collapses like any non-off tier", () => {
+    expect(translateReasoning("minimax", "MiniMax-M3", "on")).toEqual({ thinking: { type: "adaptive" } });
+    expect(translateReasoning("ollama", "deepseek-r1", "on")).toEqual({ think: true });
+    expect(translateReasoning("openai", "o4-mini", "on")).toEqual({ reasoning_effort: "high" });
   });
 });

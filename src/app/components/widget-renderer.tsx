@@ -7,6 +7,7 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronRight, AlertTriangle, Maximize2, X } from "lucide-react";
+import { Hint } from "./ui/tooltip";
 
 export type AgentWidget = {
   title: string;
@@ -78,22 +79,24 @@ export function WidgetRenderer({ widget }: WidgetRendererProps) {
         </button>
         <div className="flex items-center gap-1">
           {widget.sanitized && widget.sanitized.length > 0 && (
-            <span
-              className="flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider text-amber-400"
-              title={`Sanitized: ${widget.sanitized.join(", ")}`}
-            >
-              <AlertTriangle className="h-3 w-3" />
-              {widget.sanitized.length} sanitized
-            </span>
+            <Hint label={`Sanitized: ${widget.sanitized.join(", ")}`}>
+              <span
+                className="flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider text-amber-400"
+              >
+                <AlertTriangle className="h-3 w-3" />
+                {widget.sanitized.length} sanitized
+              </span>
+            </Hint>
           )}
-          <button
-            type="button"
-            onClick={() => setFullscreen((f) => !f)}
-            className="rounded p-1 text-muted-foreground hover:text-foreground transition-colors"
-            title={fullscreen ? "Restore" : "Maximize"}
-          >
-            {fullscreen ? <X className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
-          </button>
+          <Hint label={fullscreen ? "Restore" : "Maximize"}>
+            <button
+              type="button"
+              onClick={() => setFullscreen((f) => !f)}
+              className="rounded p-1 text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {fullscreen ? <X className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+            </button>
+          </Hint>
         </div>
       </div>
       {!collapsed && (

@@ -476,6 +476,23 @@ export class WebSearchTool extends Tool {
 
     if (!query) return { success: false, error: "Search query is required" };
 
+    // Honor the service pause switch from Settings → Web Search. A missing
+    // row means enabled (default), so existing installs keep searching.
+    try {
+      const user = await getLocalUser();
+      const setting = await prisma.serviceIntegrationSetting.findUnique({
+        where: { userId_service: { userId: user.id, service: "serper" } },
+      });
+      if (setting && !setting.enabled) {
+        return {
+          success: false,
+          error: "Web search is paused in Settings (Web Search → enable/pause toggle). Tell the user to re-enable it there if they want live web results."
+        };
+      }
+    } catch {
+      // Setting lookup must never break the search itself — fall through.
+    }
+
     // Force current year into the query to override LLM training bias
     const lowerQuery = query.toLowerCase();
     const currentYear = new Date().getFullYear().toString();

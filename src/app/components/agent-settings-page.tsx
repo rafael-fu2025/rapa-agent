@@ -1,6 +1,7 @@
 import { Brain, ShieldCheck, SlidersHorizontal, Sparkles } from "lucide-react";
 import { useAgentSettings } from "../../lib/agent-settings";
 import { AgentSettingsPanel } from "./agent-settings-panel";
+import { AutoApprovePatternsSection } from "./auto-approve-patterns-section";
 
 export function AgentSettingsPage() {
   const { settings, setMaxIterations, setAutoApproveCategories, setShowThinking } = useAgentSettings();
@@ -36,6 +37,7 @@ export function AgentSettingsPage() {
               thinking: <Brain size={14} />
             }}
           />
+          <AutoApprovePatternsSection />
         </div>
       </div>
       <div

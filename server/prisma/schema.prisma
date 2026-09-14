@@ -28,6 +28,7 @@ model AppUser {
   agentMcpServers        AgentMcpServer[]
   autoApprovePatterns    AutoApprovePattern[]
   serviceApiKeys         ServiceApiKey[]
+  serviceIntegrationSettings ServiceIntegrationSetting[]
   agentTasks             AgentTask[]
   notificationChannels   NotificationChannel[]
   scheduledTasks         ScheduledTask[]
@@ -405,6 +406,22 @@ model ServiceApiKey {
 
   @@unique([userId, service, name])
   @@index([userId, service, isActive])
+}
+
+// Per-service enable/pause switch (e.g. temporarily disable web search
+// without removing stored keys). Backs the toggle on the Web Search
+// settings page that previously had no persistence (audit M1.8).
+model ServiceIntegrationSetting {
+  id        String   @id @default(cuid())
+  userId    String
+  service   String
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, service])
 }
 
 model AutoApprovePattern {

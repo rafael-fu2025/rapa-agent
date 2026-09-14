@@ -11,8 +11,9 @@ import { RightSidebar } from "./components/right-sidebar";
 import { AgentRunComparison } from "./components/agent-run-comparison";
 import { TerminalDialog } from "./components/terminal-dialog";
 import { GoToFileDialog, FindInFilesDialog } from "./components/command-palette";
-import { getConversationMessages, type ChatAttachment, type ReasoningEffort } from "../lib/api";
-import { listAgentRuns, type AgentRunSummary } from "../lib/agent-api";
+import { Hint } from "./components/ui/tooltip";
+import { getConversationMessages, deleteConversationMessages, type ChatAttachment, type ReasoningEffort } from "../lib/api";
+import { listAgentRuns, listPendingApprovals, type AgentRunSummary, type PendingApprovalInfo } from "../lib/agent-api";
 import { useAgentSettings } from "../lib/agent-settings";
 import { useKeyboardShortcuts } from "./hooks/use-keyboard-shortcuts";
 import { useChatStream } from "./hooks/use-chat-stream";
@@ -38,7 +39,7 @@ const AppearancePage = lazy(() => import("./components/appearance-page").then(m 
 /*  Layout                                                             */
 /* ------------------------------------------------------------------ */
 
-type RightSidebarTab = "tools" | "files" | "todos";
+type RightSidebarTab = "tools" | "files" | "todos" | "runs";
 
 type LayoutProps = {
   children: ReactNode;
@@ -61,9 +62,13 @@ type LayoutProps = {
   rightSidebarMessages?: ChatMessage[];
   rightSidebarWorkspaceId?: string | null;
   rightSidebarWorkspaceName?: string;
+  rightSidebarConversationId?: string;
+  onCompareRuns?: (leftRunId: string, rightRunId: string) => void;
+  onToggleRightSidebar?: () => void;
+  rightSidebarOpen?: boolean;
 };
 
-const Layout = ({ children, hideModelSelector = false, mode = "chat", onModeChange, onExport, onNewChat, conversationWorkspace, onSearchOpen, onOpenGoToFile, onOpenFindInFiles, onOpenTerminal, rightTab, onRightTabChange, onRightClose, rightSidebarMessages, rightSidebarWorkspaceId, rightSidebarWorkspaceName }: LayoutProps) => {
+const Layout = ({ children, hideModelSelector = false, mode = "chat", onModeChange, onExport, onNewChat, conversationWorkspace, onSearchOpen, onOpenGoToFile, onOpenFindInFiles, onOpenTerminal, rightTab, onRightTabChange, onRightClose, rightSidebarMessages, rightSidebarWorkspaceId, rightSidebarWorkspaceName, rightSidebarConversationId, onCompareRuns, onToggleRightSidebar, rightSidebarOpen }: LayoutProps) => {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const navigate = useNavigate();
 
@@ -121,7 +126,7 @@ const Layout = ({ children, hideModelSelector = false, mode = "chat", onModeChan
         />
       </aside>
       <div className="flex-1 flex flex-col min-w-0">
-        <TopBar hideModelSelector={hideModelSelector} mode={mode} onModeChange={onModeChange} onExport={onExport} conversationWorkspace={conversationWorkspace} onSearchOpen={onSearchOpen} onOpenTerminal={onOpenTerminal} />
+        <TopBar hideModelSelector={hideModelSelector} mode={mode} onModeChange={onModeChange} onExport={onExport} conversationWorkspace={conversationWorkspace} onSearchOpen={onSearchOpen} onOpenTerminal={onOpenTerminal} onToggleRightSidebar={onToggleRightSidebar} rightSidebarOpen={rightSidebarOpen} />
         <main className="flex-1 flex flex-col min-h-0">{children}</main>
       </div>
       {rightTab && onRightTabChange && onRightClose && (
@@ -133,6 +138,8 @@ const Layout = ({ children, hideModelSelector = false, mode = "chat", onModeChan
             messages={rightSidebarMessages ?? []}
             workspaceId={rightSidebarWorkspaceId ?? null}
             workspaceName={rightSidebarWorkspaceName}
+            conversationId={rightSidebarConversationId}
+            onCompareRuns={onCompareRuns ?? (() => undefined)}
           />
         </aside>
       )}
@@ -167,6 +174,9 @@ const Home = () => {
   const [apiKeySwitchNotice, setApiKeySwitchNotice] = useState<ApiKeySwitchNotice | null>(null);
   const [resumableRun, setResumableRun] = useState<AgentRunSummary | null>(null);
   const [dismissedResumeRunId, setDismissedResumeRunId] = useState<string | null>(null);
+  // Approvals the server is still holding for this conversation — shown
+  // after a reload so a blocked run can be unblocked (audit M2.2).
+  const [pendingApprovals, setPendingApprovals] = useState<PendingApprovalInfo[]>([]);
   const [editDraft, setEditDraft] = useState("");
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [inputDockHeight, setInputDockHeight] = useState(176);
@@ -183,9 +193,20 @@ const Home = () => {
   // in its viewer.
   const [goToFileOpen, setGoToFileOpen] = useState(false);
   const [findInFilesOpen, setFindInFilesOpen] = useState(false);
-  const [rightTab, setRightTab] = useState<RightSidebarTab | null>("files");
+  // Right-panel tab, persisted so the layout survives reloads (audit M3).
+  const [rightTab, setRightTab] = useState<RightSidebarTab | null>(() => {
+    try {
+      const stored = localStorage.getItem("rapa.rightSidebarTab");
+      if (stored === "tools" || stored === "files" || stored === "todos" || stored === "runs") return stored;
+      if (stored === "closed") return null;
+    } catch { /* ignore */ }
+    return "files";
+  });
+  useEffect(() => {
+    try { localStorage.setItem("rapa.rightSidebarTab", rightTab ?? "closed"); } catch { /* ignore */ }
+  }, [rightTab]);
   const [comparisonOpen, setComparisonOpen] = useState(false);
-  const [comparisonRunIds, _setComparisonRunIds] = useState<[string | null, string | null]>([null, null]);
+  const [comparisonRunIds, setComparisonRunIds] = useState<[string | null, string | null]>([null, null]);
   // Terminal dialog — opens a real PTY-backed terminal scoped to the
   // active workspace's cwd and the current conversation's session id,
   // so closing and re-opening the dialog reuses the same shell (history
@@ -239,6 +260,7 @@ const Home = () => {
   const {
     pending,
     reconnecting,
+    queuedPrompt,
     isStreamingRef,
     submitPrompt,
     handleStopGeneration,
@@ -248,6 +270,8 @@ const Home = () => {
     handleResendEdit,
     handleResumeRun,
     handleFork,
+    handlePauseRun,
+    handleResumeRunControls,
     resetStreamState,
   } = useChatStream({
     conversationId,
@@ -460,6 +484,7 @@ const Home = () => {
 
   useEffect(() => {
     setDismissedResumeRunId(null);
+    setPendingApprovals([]);
     if (!conversationId) setResumableRun(null);
   }, [conversationId]);
 
@@ -478,6 +503,15 @@ const Home = () => {
       })
       .catch(() => {
         if (!cancelled) setResumableRun(null);
+      });
+    // Rehydrate approvals the run is still waiting on — a page reload
+    // mid-approval used to orphan the blocked run (audit M2.2).
+    listPendingApprovals(conversationId)
+      .then(({ approvals }) => {
+        if (!cancelled) setPendingApprovals(approvals);
+      })
+      .catch(() => {
+        if (!cancelled) setPendingApprovals([]);
       });
     return () => { cancelled = true; };
   }, [conversationId, pending]);
@@ -556,7 +590,15 @@ const Home = () => {
       setEditingMessageId(null);
       setEditDraft("");
     }
-  }, [editingMessageId]);
+    // Persist the deletion so it survives reload. Previously the delete
+    // was local-only and the message reappeared on refresh (audit M1.3).
+    const ownerConversationId = conversationId ?? selectedConversationId;
+    if (ownerConversationId) {
+      void deleteConversationMessages(ownerConversationId, { messageId }).catch(() => {
+        setError("Failed to delete message on the server — it will reappear after reload.");
+      });
+    }
+  }, [editingMessageId, conversationId, selectedConversationId]);
 
   const handleCopy = useCallback(async (content: string) => {
     try {
@@ -583,13 +625,21 @@ const Home = () => {
 
   /* --- Submit / Export / New Chat --- */
 
-  const handleSubmit = useCallback(async (prompt: string, attachments: ChatAttachment[] = []) => {
-    await submitPrompt(prompt, attachments);
+  const handleSubmit = useCallback(async (prompt: string, attachments: ChatAttachment[] = [], overrides?: { mode?: ChatMode }) => {
+    await submitPrompt(prompt, attachments, overrides);
   }, [submitPrompt]);
 
-  const handleMessageReplySubmit = useCallback((prompt: string) => {
-    void handleSubmit(prompt);
+  const handleMessageReplySubmit = useCallback((prompt: string, overrides?: { mode?: ChatMode }) => {
+    void handleSubmit(prompt, [], overrides);
   }, [handleSubmit]);
+
+  // Approval decisions flow through the streaming hook; the local
+  // rehydrated-pending list is updated optimistically so the card
+  // disappears immediately.
+  const handleApprovalDecision = useCallback((approvalId: string, approved: boolean) => {
+    setPendingApprovals((prev) => prev.filter((a) => a.approvalId !== approvalId));
+    handleAgentToolApproval(approvalId, approved);
+  }, [handleAgentToolApproval]);
 
   const handleResumeActiveRun = useCallback(() => {
     void handleResumeRun(resumableRun);
@@ -668,7 +718,13 @@ const Home = () => {
         }
 
         // Final assistant response (the main content)
-        let displayContent = m.content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+        // Strip every thought-tag variant the renderer hides (audit M3) —
+        // previously only <think> was stripped, so exports could contain
+        // raw <thinking>/<thought>/<reasoning> blocks.
+        let displayContent = m.content
+          .replace(/<(think|thinking|thought|reasoning)>[\s\S]*?<\/\1>/g, "")
+          .replace(/<(?:think|thinking|thought|reasoning)>[\s\S]*$/g, "")
+          .trim();
         if (!displayContent && m.agentSteps?.length) {
           const lastStep = m.agentSteps[m.agentSteps.length - 1];
           if (lastStep?.response) displayContent = lastStep.response;
@@ -697,6 +753,16 @@ const Home = () => {
     setTerminalOpen(true);
     setTerminalMinimized(false);
   }, []);
+
+  // Global Ctrl+` opens the terminal panel. The in-dialog handler only
+  // toggles minimize/restore while the panel is already open (audit M3).
+  useKeyboardShortcuts([
+    {
+      key: "`",
+      ctrlOrCmd: true,
+      action: () => { if (!terminalOpen) handleOpenTerminal(); }
+    }
+  ]);
 
   // Cross-component bridge: the file tree (and any future surface) can
   // request that the terminal panel open by dispatching
@@ -758,6 +824,13 @@ const Home = () => {
       rightSidebarMessages={messages}
       rightSidebarWorkspaceId={conversationWorkspace?.id ?? activeWorkspace?.id ?? null}
       rightSidebarWorkspaceName={conversationWorkspace?.name ?? activeWorkspace?.name}
+      rightSidebarConversationId={conversationId ?? selectedConversationId}
+      onCompareRuns={(leftRunId, rightRunId) => {
+        setComparisonRunIds([leftRunId, rightRunId]);
+        setComparisonOpen(true);
+      }}
+      onToggleRightSidebar={() => setRightTab(rightTab ? null : "files")}
+      rightSidebarOpen={rightTab !== null}
     >
       <div className="flex-1 flex flex-col min-h-0 relative bg-app">
         <div className="flex h-full min-h-0 flex-col">
@@ -795,6 +868,14 @@ const Home = () => {
                 dismissedResumeRunId={dismissedResumeRunId}
                 formattedError={formattedError}
                 bottomGap={messageFadeGap}
+                pendingApprovals={pendingApprovals}
+                onPauseLiveRun={handlePauseRun}
+                onResumeLiveRun={handleResumeRunControls}
+                currentModel={selectedModel}
+                onRegenerateWithCurrent={(messageId) => {
+                  void handleRegenerate(messageId, { model: selectedModel, provider: selectedProvider });
+                }}
+                queuedPrompt={queuedPrompt}
                 onCopy={handleCopy}
                 onStartEdit={handleEdit}
                 onDraftChange={handleDraftChange}
@@ -804,7 +885,7 @@ const Home = () => {
                 onDelete={handleDelete}
                 onFork={handleFork}
                 onRegenerate={handleRegenerate}
-                onToolApproval={handleAgentToolApproval}
+                onToolApproval={handleApprovalDecision}
                 onModeSwitchApproval={handleModeSwitchApproval}
                 onResumeRun={handleResumeActiveRun}
                 onDismissResume={handleDismissResume}
@@ -826,14 +907,15 @@ const Home = () => {
             {showScrollToBottom && !isNewConversationView ? (
               <div className="absolute inset-x-0 bottom-[220px] z-20">
                 <div className="mx-auto flex w-full max-w-[800px] justify-center">
-                  <button
-                    onClick={scrollToBottom}
-                    className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-border bg-card/95 text-muted-foreground shadow-elevated transition-colors hover:bg-accent hover:text-foreground"
-                    title="Scroll to bottom"
-                    type="button"
-                  >
-                    <ArrowDown size={16} />
-                  </button>
+                  <Hint label="Scroll to bottom">
+                    <button
+                      onClick={scrollToBottom}
+                      className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-border bg-card/95 text-muted-foreground shadow-elevated transition-colors hover:bg-accent hover:text-foreground"
+                      type="button"
+                    >
+                      <ArrowDown size={16} />
+                    </button>
+                  </Hint>
                 </div>
               </div>
             ) : null}
@@ -862,6 +944,7 @@ const Home = () => {
                     onSelectModel={setSelectedModel}
                     selectedReasoningEffort={selectedReasoningEffort}
                     onSelectReasoningEffort={setSelectedReasoningEffort}
+                    onModeCommand={setMode}
                   />
                 </div>
               </div>

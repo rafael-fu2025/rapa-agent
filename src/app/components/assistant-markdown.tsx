@@ -8,6 +8,7 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight, vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import "katex/dist/katex.min.css";
 import { useTheme } from "../hooks/use-theme";
+import { Hint } from "./ui/tooltip";
 
 type AssistantMarkdownProps = {
   content: string;
@@ -64,24 +65,26 @@ const CodeBlock = ({ className, children }: CodeBlockProps) => {
           {language}
         </span>
         <div className="flex items-center gap-1">
-          <button
-            onClick={handleDownload}
-            className="rounded border border-border/40 p-1 text-muted-foreground/60 transition-colors hover:border-border hover:text-foreground"
-            title="Download"
-            type="button"
-          >
-            <Download size={12} />
-          </button>
-          <button
-            onClick={() => {
-              void handleCopy();
-            }}
-            className="rounded border border-border/40 p-1 text-muted-foreground/60 transition-colors hover:border-border hover:text-foreground"
-            title="Copy"
-            type="button"
-          >
-            {copied ? <Check size={12} /> : <Copy size={12} />}
-          </button>
+          <Hint label="Download">
+            <button
+              onClick={handleDownload}
+              className="rounded border border-border/40 p-1 text-muted-foreground/60 transition-colors hover:border-border hover:text-foreground"
+              type="button"
+            >
+              <Download size={12} />
+            </button>
+          </Hint>
+          <Hint label="Copy">
+            <button
+              onClick={() => {
+                void handleCopy();
+              }}
+              className="rounded border border-border/40 p-1 text-muted-foreground/60 transition-colors hover:border-border hover:text-foreground"
+              type="button"
+            >
+              {copied ? <Check size={12} /> : <Copy size={12} />}
+            </button>
+          </Hint>
         </div>
       </div>
 
@@ -224,19 +227,23 @@ export const AssistantMarkdown = ({ content, hideThoughtBlock }: AssistantMarkdo
   }, [hasThoughtTag, thoughtText, isThoughtExpanded, hideThoughtBlock]);
 
   return (
-    <div className="w-full min-w-0 overflow-hidden font-mono-tech text-[10px] leading-normal text-primary">
+    <div
+      className="w-full min-w-0 overflow-hidden font-mono-tech leading-normal text-primary"
+      style={{ fontSize: "calc(10px * var(--font-size-multiplier, 1))" }}
+    >
       {hasThoughtTag && !hideThoughtBlock && (
         <div className="mb-4 overflow-hidden rounded border border-border/40 bg-card-3/40" style={{ backdropFilter: "blur(16px)" }}>
           <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
             <span className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">thinking</span>
-            <button
-              onClick={() => setIsThoughtExpanded((prev) => !prev)}
-              className="rounded border border-border/40 p-1 text-muted-foreground/60 hover:border-border hover:text-foreground transition-colors"
-              type="button"
-              title={isThoughtExpanded ? "Collapse thinking panel" : "Expand thinking panel"}
-            >
-              {isThoughtExpanded ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-            </button>
+            <Hint label={isThoughtExpanded ? "Collapse thinking panel" : "Expand thinking panel"}>
+              <button
+                onClick={() => setIsThoughtExpanded((prev) => !prev)}
+                className="rounded border border-border/40 p-1 text-muted-foreground/60 hover:border-border hover:text-foreground transition-colors"
+                type="button"
+              >
+                {isThoughtExpanded ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+              </button>
+            </Hint>
           </div>
 
           <div

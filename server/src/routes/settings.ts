@@ -2,11 +2,12 @@ import type { FastifyInstance } from "fastify";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { z } from "zod";
-import { getDefaultBaseUrl, getDefaultModels } from "../lib/constants.js";
+import { getDefaultBaseUrl, getDefaultModels, DEFAULT_MODELS_BY_PROVIDER } from "../lib/constants.js";
 
 import { prisma, getLocalUser } from "../lib/db.js";
 import { decryptText, encryptText } from "../lib/crypto.js";
-import { diffModelLists, parseModelsResponse } from "../lib/provider-models.js";
+import { diffModelLists, parseModelsResponse, parseReasoningMetadata } from "../lib/provider-models.js";
+import { getReasoningProfile, levelsFromUpstreamValues } from "../lib/agent/reasoning-capabilities.js";
 
 
 const providerSchema = z.object({
@@ -396,6 +397,87 @@ export async function registerSettingsRoutes(app: FastifyInstance) {
       version,
       ...GENERAL_DEFAULTS
     } satisfies GeneralSettingsResponse;
+  });
+
+  // ── Per-model reasoning-effort profile ──────────────────────────────────
+  //
+  // Single source of truth for what effort levels a (provider, model)
+  // pair supports — consumed by the frontend picker. Pattern-table
+  // profile first; for providers whose /models endpoint carries per-model
+  // reasoning metadata (notably OpenRouter), the upstream is probed once
+  // per hour (cached) and its levels win when present.
+  const reasoningProfileQuerySchema = z.object({
+    provider: z.string().min(1),
+    model: z.string().min(1)
+  });
+
+  const upstreamReasoningCache = new Map<string, { expiresAt: number; byModel: Map<string, string[]> }>();
+  const UPSTREAM_REASONING_TTL_MS = 60 * 60 * 1000;
+
+  async function fetchUpstreamReasoningLevels(provider: string): Promise<Map<string, string[]> | undefined> {
+    const cached = upstreamReasoningCache.get(provider);
+    if (cached && cached.expiresAt > Date.now()) return cached.byModel;
+
+    try {
+      const user = await getLocalUser();
+      const setting = await getSettingWithKeys(user.id, provider);
+      const baseUrl = setting?.baseUrl || getDefaultBaseUrl(provider);
+      const activeKey = setting?.apiKeys.find((key) => key.isActive) ?? null;
+      const secret = process.env.APP_SECRET;
+      const authorization = activeKey && secret
+        ? (() => { try { return `Bearer ${decryptText(activeKey.apiKeyEncrypted, secret)}`; } catch { return undefined; } })()
+        : undefined;
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      try {
+        const response = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
+          headers: authorization ? { Authorization: authorization } : {},
+          signal: controller.signal
+        });
+        if (!response.ok) return undefined;
+        const byModel = parseReasoningMetadata(await response.json());
+        upstreamReasoningCache.set(provider, { expiresAt: Date.now() + UPSTREAM_REASONING_TTL_MS, byModel });
+        return byModel;
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch {
+      return undefined; // upstream unreachable — pattern table stands
+    }
+  }
+
+  app.get("/settings/reasoning-profile", async (request, reply) => {
+    const parsed = reasoningProfileQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ message: "provider and model are required" });
+    }
+    const { provider, model } = parsed.data;
+
+    let profile = getReasoningProfile(provider, model);
+
+    // Upstream probing only where the pattern table can't know better:
+    // OpenRouter (capabilities vary per routed model) and custom
+    // providers. The big five have reliable local patterns.
+    const isBuiltIn = provider in DEFAULT_MODELS_BY_PROVIDER;
+    const shouldProbe = provider.toLowerCase() === "openrouter" || (!isBuiltIn && profile.style !== "none");
+    if (shouldProbe) {
+      const byModel = await fetchUpstreamReasoningLevels(provider);
+      const rawLevels = byModel?.get(model);
+      if (rawLevels) {
+        const levels = levelsFromUpstreamValues(rawLevels);
+        if (levels) {
+          const onTiers = levels.filter((v) => v !== "off");
+          profile = {
+            style: onTiers.length > 3 ? "extended" : onTiers.length === 1 && levels[0] === "on" ? "binary" : "standard",
+            levels,
+            source: "upstream-metadata"
+          };
+        }
+      }
+    }
+
+    return { provider, model, ...profile };
   });
 
   app.get("/settings", async (request, reply) => {

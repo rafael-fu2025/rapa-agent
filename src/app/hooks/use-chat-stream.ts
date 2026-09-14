@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { streamChat, forkConversation, type ChatAttachment, type ReasoningEffort, type TokenUsage } from "../../lib/api";
-import { streamAgent, submitAgentToolApproval, type AgentRunSummary } from "../../lib/agent-api";
+import { streamChat, forkConversation, deleteConversationMessages, type ChatAttachment, type ReasoningEffort, type TokenUsage } from "../../lib/api";
+import { streamAgent, submitAgentToolApproval, abortAgentRun, pauseAgentRun, resumeAgentRun, type AgentRunSummary } from "../../lib/agent-api";
 import { DEFAULT_AUTO_APPROVE_TOOLS, useAgentSettings } from "../../lib/agent-settings";
 import type { ChatMessage, ChatMode, ApiKeySwitchNotice } from "../types/chat";
 import { getRealOrEstimatedTokenCount } from "../utils/chat-utils";
@@ -90,6 +90,9 @@ export function useChatStream(params: UseChatStreamParams) {
   const isStreamingRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
   const treeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Persisted id of the agent run currently streaming (null for chat mode),
+  // used by the exit-hatch controls (audit M2.4).
+  const activeRunIdRef = useRef<string | null>(null);
 
   const updateMessageById = useCallback(
     (messageId: string, updater: (message: ChatMessage) => ChatMessage) => {
@@ -320,8 +323,12 @@ export function useChatStream(params: UseChatStreamParams) {
       let finalTokenUsage: TokenUsage | undefined;
       let finalElapsedMs: number | undefined;
       let activeConversationId = conversationId;
+      let activeRunId: string | null = null;
       const controller = new AbortController();
       streamAbortRef.current = controller;
+      // Expose the run id to handleStopGeneration / pause / resume, which
+      // live outside this closure (audit M2.4).
+      activeRunIdRef.current = null;
 
       const setAgentMessageState = (updater: (message: ChatMessage) => ChatMessage) => {
         updateMessageById(assistantId, updater);
@@ -346,6 +353,10 @@ export function useChatStream(params: UseChatStreamParams) {
             onStart: (event) => {
               activeConversationId = event.conversationId;
               setConversationId(event.conversationId);
+              // Remember the persisted run id so Stop/Pause/Resume can
+              // address the exit-hatch control routes (audit M2.4).
+              activeRunId = event.runId ?? null;
+              activeRunIdRef.current = activeRunId;
               if (selectedConversationId !== event.conversationId) {
                 // Use history.replaceState instead of navigate() to update the URL
                 // WITHOUT triggering React Router's navigation handlers. This prevents
@@ -359,6 +370,7 @@ export function useChatStream(params: UseChatStreamParams) {
               updateMessageById(assistantId, (message) => ({
                 ...message,
                 conversationId: event.conversationId ?? message.conversationId,
+                ...(event.runId ? { agentRunId: event.runId } : {}),
               }));
             },
             onThinking: (event) => {
@@ -490,6 +502,20 @@ export function useChatStream(params: UseChatStreamParams) {
     ]
   );
 
+  // Queued prompt: submitted while a stream was running; auto-sent when
+  // the run finishes instead of the old silent no-op (audit M4).
+  const [queuedPrompt, setQueuedPrompt] = useState<string | null>(null);
+  const queuedPromptRef = useRef<{ prompt: string; attachments: ChatAttachment[] } | null>(null);
+  const submitPromptRef = useRef<((prompt: string, attachments: ChatAttachment[]) => Promise<void>) | null>(null);
+
+  const flushQueuedPrompt = useCallback(async () => {
+    const queued = queuedPromptRef.current;
+    if (!queued) return;
+    queuedPromptRef.current = null;
+    setQueuedPrompt(null);
+    await submitPromptRef.current?.(queued.prompt, queued.attachments);
+  }, []);
+
   const submitPrompt = useCallback(
     async (
       prompt: string,
@@ -501,7 +527,14 @@ export function useChatStream(params: UseChatStreamParams) {
       // 2. Ref-based streaming flag (synchronous, survives closures)
       // 3. State-based pending flag (async, catches other paths)
       // 4. Content deduplication (prevents same prompt being submitted twice)
-      if (_submitLock || isStreamingRef.current || pending) return;
+      if (_submitLock || isStreamingRef.current || pending) {
+        // A stream is already running — queue the prompt instead of the
+        // old silent no-op; it auto-sends when the run finishes
+        // (audit M4).
+        queuedPromptRef.current = { prompt, attachments };
+        setQueuedPrompt(prompt);
+        return;
+      }
 
       // Check if the last user message has the same content (deduplication)
       const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
@@ -570,6 +603,7 @@ export function useChatStream(params: UseChatStreamParams) {
           runMode,
           errorMessage: runMode === "plan" ? "Failed to run plan" : "Failed to run agent",
         });
+        await flushQueuedPrompt();
         return;
       }
 
@@ -584,6 +618,7 @@ export function useChatStream(params: UseChatStreamParams) {
         startedAt,
         errorMessage: "Failed to send message",
       });
+      await flushQueuedPrompt();
     },
     [
       pending,
@@ -602,14 +637,44 @@ export function useChatStream(params: UseChatStreamParams) {
       setMessages,
       executeAgentStream,
       executeChatStream,
+      flushQueuedPrompt,
     ]
   );
 
+  // The queue flush needs the latest submitPrompt; a ref breaks the
+  // circular dependency.
+  submitPromptRef.current = async (prompt, attachments) => {
+    await submitPrompt(prompt, attachments);
+  };
+
   const handleStopGeneration = useCallback(() => {
+    // Tell the server first when a persisted agent run is in flight, so
+    // the run's status is marked aborted and the exit hatch coordinates
+    // a clean stop — then cut the client stream (audit M2.4).
+    const runId = activeRunIdRef.current;
+    if (runId) {
+      activeRunIdRef.current = null;
+      void abortAgentRun(runId).catch(() => undefined);
+    }
+    // Stopping discards any queued follow-up — the user interrupted.
+    queuedPromptRef.current = null;
+    setQueuedPrompt(null);
     streamAbortRef.current?.abort();
     streamAbortRef.current = null;
     setPending(false);
     isStreamingRef.current = false;
+  }, []);
+
+  const handlePauseRun = useCallback(() => {
+    const runId = activeRunIdRef.current;
+    if (!runId) return;
+    void pauseAgentRun(runId).catch(() => undefined);
+  }, []);
+
+  const handleResumeRunControls = useCallback(() => {
+    const runId = activeRunIdRef.current;
+    if (!runId) return;
+    void resumeAgentRun(runId).catch(() => undefined);
   }, []);
 
   const handleAgentToolApproval = useCallback(
@@ -660,7 +725,7 @@ export function useChatStream(params: UseChatStreamParams) {
   );
 
   const handleRegenerate = useCallback(
-    async (assistantMessageId: string) => {
+    async (assistantMessageId: string, overrides?: { model?: string; provider?: string }) => {
       if (pending) return;
 
       const assistantIndex = messages.findIndex((item) => item.id === assistantMessageId && item.role === "assistant");
@@ -674,8 +739,10 @@ export function useChatStream(params: UseChatStreamParams) {
       const prompt = previous.content.trim();
       if (!prompt) return;
 
-      const modelToUse = target.model ?? selectedModel;
-      const runProvider = target.provider ?? selectedProvider;
+      // Explicit overrides (regenerate-with-a-different-model) win over
+      // the message's original settings (audit M4).
+      const modelToUse = overrides?.model ?? target.model ?? selectedModel;
+      const runProvider = overrides?.provider ?? target.provider ?? selectedProvider;
       const runMode: ChatMode = target.mode ?? "chat";
       // Preserve the reasoning effort of the message being regenerated.
       // If the target has no setting (older message before this column
@@ -814,6 +881,14 @@ export function useChatStream(params: UseChatStreamParams) {
       const prefix = messages.slice(0, userIndex);
       setMessages([...prefix, updatedUserMsg, assistantMessage]);
 
+      // Persist the truncation server-side. Without this the server kept
+      // the original unedited tail and the reloaded conversation showed
+      // BOTH branches (audit M1.3). Best-effort: on failure the stream
+      // still proceeds, matching the previous client-only behavior.
+      if (runConversationId) {
+        void deleteConversationMessages(runConversationId, { afterMessageId: userMessageId }).catch(() => undefined);
+      }
+
       if (runMode === "agent" || runMode === "plan") {
         await executeAgentStream({
           prompt: cleanPrompt,
@@ -865,6 +940,8 @@ export function useChatStream(params: UseChatStreamParams) {
     isStreamingRef.current = false;
     setPending(false);
     setReconnecting(null);
+    queuedPromptRef.current = null;
+    setQueuedPrompt(null);
   }, []);
 
   // Abort any in-flight stream when the owning component unmounts (e.g.
@@ -879,6 +956,7 @@ export function useChatStream(params: UseChatStreamParams) {
   return {
     pending,
     reconnecting,
+    queuedPrompt,
     isStreamingRef,
     streamAbortRef,
     submitPrompt,
@@ -889,6 +967,8 @@ export function useChatStream(params: UseChatStreamParams) {
     handleResendEdit,
     handleResumeRun,
     handleFork,
+    handlePauseRun,
+    handleResumeRunControls,
     updateMessageById,
     resetStreamState,
   };

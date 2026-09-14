@@ -25,6 +25,8 @@ export type ChatMessage = {
   stats?: {
     tokensPerSec: number;
     totalTokens: number;
+    /** True when totalTokens is a chars/4 estimate (no provider usage). */
+    tokensEstimated?: boolean;
     elapsedMs?: number;
   };
   interactive?: (
@@ -36,6 +38,9 @@ export type ChatMessage = {
         options: { label: string; description?: string; preview?: string; defaultOption?: boolean }[];
         multiSelect: boolean;
       }[];
+      /** True once the user submitted answers — persisted so a reloaded
+       *  card renders as answered instead of re-asking (audit M3). */
+      answered?: boolean;
     }
     | {
         type: "mode_switch";

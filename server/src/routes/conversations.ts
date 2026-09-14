@@ -22,7 +22,10 @@ const messagesQuerySchema = z.object({
 export async function registerConversationRoutes(app: FastifyInstance) {
   const getConversationsSchema = z.object({
     cursor: z.string().optional(),
-    limit: z.coerce.number().min(1).max(100).default(50)
+    limit: z.coerce.number().min(1).max(100).default(50),
+    // Optional title search — server-side so results are not limited to
+    // the pages the client happens to have loaded (audit M3).
+    q: z.string().min(1).max(200).optional()
   });
 
   app.get("/conversations", async (request, reply) => {
@@ -30,12 +33,15 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     if (!parsed.success) {
       return reply.code(400).send({ message: "Invalid query params" });
     }
-    
-    const { cursor, limit } = parsed.data;
+
+    const { cursor, limit, q } = parsed.data;
     const user = await getLocalUser();
-    
+
     const conversations = await prisma.conversation.findMany({
-      where: { userId: user.id },
+      where: {
+        userId: user.id,
+        ...(q ? { title: { contains: q } } : {})
+      },
       orderBy: { updatedAt: "desc" },
       take: limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
@@ -58,6 +64,14 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     }
 
     return { items: conversations, nextCursor };
+  });
+
+  // Total conversation count — powers the destructive Delete All confirm
+  // with the true number instead of the loaded page size (audit M3).
+  app.get("/conversations/count", async () => {
+    const user = await getLocalUser();
+    const count = await prisma.conversation.count({ where: { userId: user.id } });
+    return { count };
   });
 
   app.post("/conversations/:id/fork", async (request, reply) => {
@@ -106,6 +120,10 @@ export async function registerConversationRoutes(app: FastifyInstance) {
             metadata: m.metadata ?? undefined,
             model: m.model,
             provider: m.provider,
+            // Forks previously dropped the per-turn reasoning effort —
+            // the first message after forking then fell back to the
+            // provider default (audit M3).
+            reasoningEffort: m.reasoningEffort,
             createdAt: m.createdAt
           }))
         }
@@ -274,5 +292,123 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     }
 
     return { messages, workspaceId: conversation.workspaceId, workspace: conversation.workspace };
+  });
+
+  // Message-level deletion. Two modes (exactly one required):
+  //  - { messageId }: delete a single message.
+  //  - { afterMessageId }: delete every message AFTER that message — the
+  //    server-side counterpart of "resend edit", which previously truncated
+  //    the conversation locally only and duplicated history on reload
+  //    (audit M1.3). AgentRun references to deleted messages are SetNull
+  //    by schema, so run history survives with detached refs.
+  const deleteMessagesSchema = z
+    .object({
+      messageId: z.string().min(1).optional(),
+      afterMessageId: z.string().min(1).optional()
+    })
+    .refine((data) => (data.messageId ? !data.afterMessageId : !!data.afterMessageId), {
+      message: "Provide exactly one of messageId or afterMessageId"
+    });
+
+  app.delete("/conversations/:id/messages", async (request, reply) => {
+    const params = conversationParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ message: "Invalid params", issues: params.error.issues });
+    }
+
+    const body = deleteMessagesSchema.safeParse(request.body ?? {});
+    if (!body.success) {
+      return reply.code(400).send({ message: "Invalid payload", issues: body.error.issues });
+    }
+
+    const user = await getLocalUser();
+    const conversation = await prisma.conversation.findFirst({
+      where: { id: params.data.id, userId: user.id },
+      select: { id: true }
+    });
+    if (!conversation) {
+      return reply.code(404).send({ message: "Conversation not found" });
+    }
+
+    // Resolve the anchor message (the one to delete, or the one after
+    // which everything is deleted). Both must belong to this conversation.
+    const anchorId = body.data.messageId ?? body.data.afterMessageId;
+    const anchor = await prisma.message.findFirst({
+      where: { id: anchorId, conversationId: conversation.id },
+      select: { id: true, createdAt: true }
+    });
+    if (!anchor) {
+      return reply.code(404).send({ message: "Message not found" });
+    }
+
+    const where =
+      body.data.messageId
+        ? { id: body.data.messageId, conversationId: conversation.id }
+        : { conversationId: conversation.id, createdAt: { gt: anchor.createdAt }, NOT: { id: anchor.id } };
+
+    const result = await prisma.message.deleteMany({ where });
+
+    // Message deletes change the conversation's effective updatedAt —
+    // keep the sidebar ordering anchored to real activity.
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { updatedAt: new Date() }
+    });
+
+    return { ok: true, count: result.count };
+  });
+
+  // Mark an assistant message's interactive card as answered. Scoped to
+  // the `interactive.answered` flag only — content is not editable here.
+  const patchMessageSchema = z.object({
+    interactiveAnswered: z.literal(true)
+  });
+
+  app.patch("/conversations/:id/messages/:messageId", async (request, reply) => {
+    const params = z
+      .object({ id: z.string().min(1), messageId: z.string().min(1) })
+      .safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ message: "Invalid params", issues: params.error.issues });
+    }
+
+    const body = patchMessageSchema.safeParse(request.body ?? {});
+    if (!body.success) {
+      return reply.code(400).send({ message: "Invalid payload", issues: body.error.issues });
+    }
+
+    const user = await getLocalUser();
+    const conversation = await prisma.conversation.findFirst({
+      where: { id: params.data.id, userId: user.id },
+      select: { id: true }
+    });
+    if (!conversation) {
+      return reply.code(404).send({ message: "Conversation not found" });
+    }
+
+    const message = await prisma.message.findFirst({
+      where: { id: params.data.messageId, conversationId: conversation.id },
+      select: { id: true, metadata: true }
+    });
+    if (!message) {
+      return reply.code(404).send({ message: "Message not found" });
+    }
+
+    const metadata =
+      (message.metadata as Record<string, unknown> | null) ?? {};
+    const interactive =
+      (metadata.interactive as Record<string, unknown> | null | undefined) ?? {};
+    const nextMetadata = {
+      ...metadata,
+      interactive: { ...interactive, answered: true }
+    };
+
+    const updated = await prisma.message.update({
+      where: { id: message.id },
+      data: { metadata: nextMetadata },
+      select: { id: true }
+    });
+
+    return { ok: true, id: updated.id };
   });
 }

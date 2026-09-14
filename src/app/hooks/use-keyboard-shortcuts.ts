@@ -21,13 +21,17 @@ export function useKeyboardShortcuts(shortcuts: ShortcutConfig[]) {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger shortcuts if the user is typing in an input, textarea, or contenteditable
+      // While the user is typing in an input, textarea, or contenteditable,
+      // only modifier combos (Ctrl/Cmd+key) may fire — they never insert
+      // text, so Ctrl+K / Ctrl+P / Ctrl+N must keep working in the chat
+      // composer (audit M3). Bare and Alt-modified keys are left for the
+      // field itself.
       const target = e.target as HTMLElement;
-      if (
+      const inEditable =
         target.tagName === "INPUT" ||
         target.tagName === "TEXTAREA" ||
-        target.isContentEditable
-      ) {
+        target.isContentEditable;
+      if (inEditable && !(e.metaKey || e.ctrlKey)) {
         return;
       }
 

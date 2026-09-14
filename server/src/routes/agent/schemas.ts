@@ -33,7 +33,7 @@ export const agentRequestSchema = z.object({
   //                `high` because Anthropic only accepts low/medium/high)
   // Omit to let the provider default. This is the actual lever for
   // "thinking too much".
-  reasoningEffort: z.enum(["off", "low", "medium", "high", "max"]).optional()
+  reasoningEffort: z.enum(["off", "low", "medium", "high", "xhigh", "max", "ultra", "on"]).optional()
 });
 
 export const executeCommandSchema = z.object({

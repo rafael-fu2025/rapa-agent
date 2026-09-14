@@ -9,19 +9,28 @@
 // The keys are normalised lowercase provider ids (matching the `provider`
 // field on the `ProviderSetting` DB row and the route slug).
 //
-// The values are absolute paths under /src/assets/. Vite's static asset
-// handler resolves these at build time, so we can use the literal path
-// without any import statement.
+// The values are ESM asset imports so Vite hashes + emits them at build
+// time — the previous runtime `/src/assets/...` string paths only worked
+// under the dev server and 404'd in production builds (audit M3).
+
+import geminiColor from "../assets/gemini-color.svg";
+import puterPng from "../assets/puter.png";
+import ollamaWebp from "../assets/ollama.webp";
+import nvidiaColor from "../assets/nvidia-color.svg";
+import groqWebp from "../assets/groq.webp";
+import huggingfaceSvg from "../assets/huggingface.svg";
+import minimaxWebp from "../assets/minimax.webp";
+import openrouterWebp from "../assets/openrouter.webp";
 
 const ICONS: Record<string, string> = {
-  gemini: "/src/assets/gemini-color.svg",
-  puter: "/src/assets/puter.png",
-  ollama: "/src/assets/ollama.webp",
-  nvidia: "/src/assets/nvidia-color.svg",
-  groq: "/src/assets/groq.webp",
-  huggingface: "/src/assets/huggingface.svg",
-  minimax: "/src/assets/minimax.webp",
-  openrouter: "/src/assets/openrouter.webp"
+  gemini: geminiColor,
+  puter: puterPng,
+  ollama: ollamaWebp,
+  nvidia: nvidiaColor,
+  groq: groqWebp,
+  huggingface: huggingfaceSvg,
+  minimax: minimaxWebp,
+  openrouter: openrouterWebp
 };
 
 export function getProviderIcon(provider: string | undefined | null): string | undefined {

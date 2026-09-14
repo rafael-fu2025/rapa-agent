@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { Switch as ToggleSwitch } from "./ui/switch";
 import { toast } from "sonner";
+import { useNavigate } from "react-router";
 import {
   getSettings,
   saveSettings,
@@ -26,9 +27,12 @@ import {
   getApiKey,
   updateApiKey,
   refreshModels,
+  getProviders,
+  deleteCustomProvider,
   type ProviderApiKeyRef
 } from "../../lib/api";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "./ui/accordion";
+import { Hint } from "./ui/tooltip";
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "./ui/alert-dialog";
 import { getProviderIcon } from "../../lib/provider-icons";
 
@@ -89,6 +93,39 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
   const [message, setMessage] = useState<string>("");
   const [accordionOpen, setAccordionOpen] = useState(false);
   const [refreshingModels, setRefreshingModels] = useState(false);
+  // Destructive "Refresh" (replace) confirmation — a misclick previously
+  // wiped the whole curated model list (audit M3).
+  const [confirmReplaceModels, setConfirmReplaceModels] = useState(false);
+  // Custom providers can be removed entirely — the endpoint existed but
+  // had no UI (audit M3).
+  const [isCustomProvider, setIsCustomProvider] = useState(false);
+  const [confirmDeleteProvider, setConfirmDeleteProvider] = useState(false);
+  const [deletingProvider, setDeletingProvider] = useState(false);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    let cancelled = false;
+    void getProviders()
+      .then(({ providers }) => {
+        if (!cancelled) setIsCustomProvider(providers.some((p) => p.provider === provider && p.isCustom));
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [provider]);
+
+  const handleDeleteProvider = async () => {
+    setDeletingProvider(true);
+    try {
+      await deleteCustomProvider(provider);
+      toast.success(`Provider "${PROVIDER_LABEL[provider] ?? provider}" removed`);
+      navigate("/settings?tab=usage", { replace: true });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to delete provider");
+    } finally {
+      setDeletingProvider(false);
+      setConfirmDeleteProvider(false);
+    }
+  };
   
   // Edit/view state
   const [editingKeyId, setEditingKeyId] = useState<string | null>(null);
@@ -155,7 +192,7 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
     }
     // Save with the new key + name; the server will return a new key entry
     // with a real id, which the load-from-response step below picks up.
-    await persistSettings({ successMessage: "API key added." });
+    await persistSettings({ successMessage: "API key added.", includeStagedKey: true });
   };
 
   // === Auto-save machinery ====================================================
@@ -180,7 +217,18 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
   const baseUrlDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlightRef = useRef<Promise<void> | null>(null);
 
-  const persistSettings = async (overrides?: { successMessage?: string }) => {
+  const persistSettings = async (options?: {
+    successMessage?: string;
+    includeStagedKey?: boolean;
+    includeEnabled?: boolean;
+    /** Explicit values for same-tick mutations — setState followed
+     *  immediately by persistSettings would otherwise read the stale
+     *  closure (audit M3). */
+    models?: string[];
+    autoSwitchApiKey?: boolean;
+    activeApiKeyId?: string | null;
+    removeApiKeyIds?: string[];
+  }) => {
     // Coalesce overlapping auto-save calls. If a save is already in-flight,
     // we chain a follow-up so the latest local state is persisted after the
     // current one resolves. This protects against rapid-fire events (e.g.
@@ -191,14 +239,18 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
       try {
         const saved = await saveSettings({
           provider,
-          enabled,
+          // Auto-saves must never commit staged state (audit M3): a
+          // disabled toggle waiting for the explicit Save, or a key the
+          // user pasted but hasn't added yet. Only the explicit actions
+          // opt in to sending them.
+          enabled: options?.includeEnabled ? enabled : savedEnabled,
           baseUrl,
-          apiKey: newApiKey.trim() || undefined,
-          apiKeyName: newApiKeyName.trim() || undefined,
-          selectedApiKeyId: activeApiKeyId,
-          autoSwitchApiKey,
-          removeApiKeyIds: pendingDeleteIds.length > 0 ? pendingDeleteIds : undefined,
-          models: modelsData
+          apiKey: options?.includeStagedKey ? (newApiKey.trim() || undefined) : undefined,
+          apiKeyName: options?.includeStagedKey ? (newApiKeyName.trim() || undefined) : undefined,
+          selectedApiKeyId: options?.activeApiKeyId !== undefined ? options.activeApiKeyId : activeApiKeyId,
+          autoSwitchApiKey: options?.autoSwitchApiKey !== undefined ? options.autoSwitchApiKey : autoSwitchApiKey,
+          removeApiKeyIds: options?.removeApiKeyIds ?? (pendingDeleteIds.length > 0 ? pendingDeleteIds : undefined),
+          models: options?.models ?? modelsData
         });
 
         setEnabled(saved.enabled);
@@ -212,7 +264,7 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
         setNewApiKey("");
         setNewApiKeyName("");
         setPendingDeleteIds([]);
-        if (overrides?.successMessage) toast.success(overrides.successMessage);
+        if (options?.successMessage) toast.success(options.successMessage);
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Failed to save settings");
       } finally {
@@ -247,7 +299,7 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
       clearTimeout(baseUrlDebounceRef.current);
       baseUrlDebounceRef.current = null;
     }
-    await persistSettings({ successMessage: "Settings saved." });
+    await persistSettings({ successMessage: "Settings saved.", includeEnabled: true, includeStagedKey: true });
   };
 
   const handleAddModel = async () => {
@@ -260,14 +312,16 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
     // Optimistic update for snappy UX, then auto-save in the background.
     // If the save fails, the user sees the error toast and the local
     // change is naturally reverted when they retry.
-    setModelsData((prev) => [...prev, model]);
+    const nextModels = [...modelsData, model];
+    setModelsData(nextModels);
     setNewModel("");
-    await persistSettings({ successMessage: `Model "${model}" added.` });
+    await persistSettings({ successMessage: `Model "${model}" added.`, models: nextModels });
   };
 
   const handleRemoveModel = async (model: string) => {
-    setModelsData((prev) => prev.filter((m) => m !== model));
-    await persistSettings({ successMessage: `Model "${model}" removed.` });
+    const nextModels = modelsData.filter((m) => m !== model);
+    setModelsData(nextModels);
+    await persistSettings({ successMessage: `Model "${model}" removed.`, models: nextModels });
   };
 
   // Reset baseUrlDebounceRef on unmount to avoid stray callbacks.
@@ -404,10 +458,11 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
       return;
     }
 
-    setModelsData(prev => prev.map((m, idx) => idx === editingModelIndex ? trimmed : m));
+    const nextModels = modelsData.map((m, idx) => idx === editingModelIndex ? trimmed : m);
+    setModelsData(nextModels);
     setEditingModelIndex(null);
     setEditingModelValue("");
-    await persistSettings({ successMessage: `Model updated to "${trimmed}".` });
+    await persistSettings({ successMessage: `Model updated to "${trimmed}".`, models: nextModels });
   };
 
   const handleCancelEditModel = () => {
@@ -455,6 +510,19 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
             </p>
           </div>
           <div className="flex items-center gap-3 pt-1">
+            {isCustomProvider && (
+              <Hint label="Remove this custom provider">
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeleteProvider(true)}
+                  disabled={deletingProvider}
+                  className="inline-flex items-center gap-1.5 rounded border border-accent-red/40 px-2.5 py-1.5 font-mono-tech text-[10px] font-semibold uppercase tracking-[0.12em] text-accent-red transition-colors hover:bg-accent-red/10 disabled:opacity-50"
+                >
+                  <Trash2 size={11} />
+                  Delete
+                </button>
+              </Hint>
+            )}
             <ToggleSwitch
               checked={enabled}
               onCheckedChange={setEnabled}
@@ -575,16 +643,17 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
                               className="w-full panel-card rounded border-border/60 py-1 px-2 font-mono-tech text-[10px] text-foreground pr-9"
                             />
                             <div className="absolute right-1 top-1/2 -translate-y-1/2 flex gap-1">
-                              <button
-                                onClick={() => {
-                                  void navigator.clipboard.writeText(viewingKeyValue);
-                                  toast.success("API key copied to clipboard");
-                                }}
-                                className="p-1 text-muted-foreground hover:text-foreground transition-colors"
-                                title="Copy"
-                              >
-                                <Copy size={11} />
-                              </button>
+                              <Hint label="Copy">
+                                <button
+                                  onClick={() => {
+                                    void navigator.clipboard.writeText(viewingKeyValue);
+                                    toast.success("API key copied to clipboard");
+                                  }}
+                                  className="p-1 text-muted-foreground hover:text-foreground transition-colors"
+                                >
+                                  <Copy size={11} />
+                                </button>
+                              </Hint>
                             </div>
                           </div>
                         ) : (
@@ -592,41 +661,45 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
                         )}
                         </div>
                         <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => {
-                              if (isActive) return; // no-op
-                              setActiveApiKeyId(item.id);
-                              void persistSettings({ successMessage: `Active key set to "${item.name}".` });
-                            }}
-                            className={`px-2 py-1 rounded panel-badge ${isActive ? "border-accent-green/30 bg-accent-green/15 text-accent-green" : ""}`}
-                            title={isActive ? "Active key" : "Set as active"}
-                          >
-                            {isActive ? "Active" : "Use"}
-                          </button>
-                          <button
-                            onClick={() => void handleViewKey(item.id)}
-                            disabled={isLoading}
-                            className="p-1.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
-                            title={isViewing ? "Hide key" : "View key"}
-                          >
-                            {isLoading ? "..." : isViewing ? <EyeOff size={13} strokeWidth={2.5} /> : <Eye size={13} strokeWidth={2.5} />}
-                          </button>
-                          <button
-                            onClick={() => void handleStartEdit(item.id)}
-                            disabled={isLoading}
-                            className="p-1.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
-                            title="Edit key"
-                          >
-                            <Edit2 size={13} strokeWidth={2.5} />
-                          </button>
+                          <Hint label={isActive ? "Active key" : "Set as active"}>
+                            <button
+                              onClick={() => {
+                                if (isActive) return; // no-op
+                                setActiveApiKeyId(item.id);
+                                void persistSettings({ successMessage: `Active key set to "${item.name}".`, activeApiKeyId: item.id });
+                              }}
+                              className={`px-2 py-1 rounded panel-badge ${isActive ? "border-accent-green/30 bg-accent-green/15 text-accent-green" : ""}`}
+                            >
+                              {isActive ? "Active" : "Use"}
+                            </button>
+                          </Hint>
+                          <Hint label={isViewing ? "Hide key" : "View key"}>
+                            <button
+                              onClick={() => void handleViewKey(item.id)}
+                              disabled={isLoading}
+                              className="p-1.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                            >
+                              {isLoading ? "..." : isViewing ? <EyeOff size={13} strokeWidth={2.5} /> : <Eye size={13} strokeWidth={2.5} />}
+                            </button>
+                          </Hint>
+                          <Hint label="Edit key">
+                            <button
+                              onClick={() => void handleStartEdit(item.id)}
+                              disabled={isLoading}
+                              className="p-1.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                            >
+                              <Edit2 size={13} strokeWidth={2.5} />
+                            </button>
+                          </Hint>
                           <AlertDialog open={deletingKeyId === item.id} onOpenChange={(open) => setDeletingKeyId(open ? item.id : null)}>
                             <AlertDialogTrigger asChild>
-                              <button
-                              className="p-1.5 text-muted-foreground hover:text-accent-red transition-colors"
-                                title="Delete key"
-                              >
-                                <Trash2 size={13} strokeWidth={2.5} />
-                              </button>
+                              <Hint label="Delete key">
+                                <button
+                                  className="p-1.5 text-muted-foreground hover:text-accent-red transition-colors"
+                                >
+                                  <Trash2 size={13} strokeWidth={2.5} />
+                                </button>
+                              </Hint>
                             </AlertDialogTrigger>
                             <AlertDialogContent className="bg-card-3 border-card-hover text-primary">
                               <AlertDialogHeader>
@@ -643,7 +716,10 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
                                   onClick={() => {
                                     handleRemoveKey(item.id);
                                     setDeletingKeyId(null);
-                                    void persistSettings({ successMessage: `API key "${item.name}" deleted.` });
+                                    void persistSettings({
+                                      successMessage: `API key "${item.name}" deleted.`,
+                                      removeApiKeyIds: [...pendingDeleteIds, item.id]
+                                    });
                                   }}
                                   disabled={saving}
                                   className="bg-accent-red font-mono-tech text-[10px] font-semibold uppercase tracking-[0.12em] hover:bg-accent-red/80 disabled:opacity-50"
@@ -769,12 +845,14 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
                   </button>
                   <ToggleSwitch
                     checked={autoSwitchApiKey}
+                    disabled={apiKeys.filter(k => !pendingDeleteIds.includes(k.id)).length === 0}
                     onCheckedChange={(next) => {
                       setAutoSwitchApiKey(next);
                       void persistSettings({
                         successMessage: next
                           ? "Automatic fallback enabled."
-                          : "Automatic fallback disabled."
+                          : "Automatic fallback disabled.",
+                        autoSwitchApiKey: next
                       });
                     }}
                   />
@@ -845,24 +923,26 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => void handleRefreshModels(true)}
-                disabled={refreshingModels || loading}
-                title="Fetch from provider and merge with current list"
-                className="px-3 py-1.5 rounded border border-border/60 bg-card-3/50 font-mono-tech text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground hover:bg-card-3 disabled:opacity-50 inline-flex items-center gap-1.5 transition-colors"
-              >
-                {refreshingModels ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
-                Merge
-              </button>
-              <button
-                onClick={() => void handleRefreshModels(false)}
-                disabled={refreshingModels || loading}
-                title="Fetch from provider and replace the current list"
-                className="rounded bg-accent-purple px-3 py-1.5 font-mono-tech text-[10px] font-semibold uppercase tracking-[0.12em] text-white hover:bg-accent-purple/80 disabled:opacity-50 inline-flex items-center gap-1.5 transition-colors"
-              >
-                {refreshingModels ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
-                Refresh
-              </button>
+              <Hint label="Fetch from provider and merge with current list">
+                <button
+                  onClick={() => void handleRefreshModels(true)}
+                  disabled={refreshingModels || loading}
+                  className="px-3 py-1.5 rounded border border-border/60 bg-card-3/50 font-mono-tech text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground hover:bg-card-3 disabled:opacity-50 inline-flex items-center gap-1.5 transition-colors"
+                >
+                  {refreshingModels ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                  Merge
+                </button>
+              </Hint>
+              <Hint label="Fetch from provider and replace the current list">
+                <button
+                  onClick={() => setConfirmReplaceModels(true)}
+                  disabled={refreshingModels || loading}
+                  className="rounded bg-accent-purple px-3 py-1.5 font-mono-tech text-[10px] font-semibold uppercase tracking-[0.12em] text-white hover:bg-accent-purple/80 disabled:opacity-50 inline-flex items-center gap-1.5 transition-colors"
+                >
+                  {refreshingModels ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                  Refresh
+                </button>
+              </Hint>
             </div>
           </div>
           <div className="panel-card rounded p-4 space-y-3">
@@ -891,20 +971,22 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
                           className="flex-1 panel-card rounded border-border/60 py-1 px-2 font-mono-tech text-[10px] text-foreground focus:outline-none focus:border-ring"
                           autoFocus
                         />
-                        <button
-                          onClick={handleSaveEditModel}
-                          className="p-1.5 text-accent-green hover:text-foreground transition-colors"
-                          title="Save"
-                        >
-                          <Check size={12} strokeWidth={2.5} />
-                        </button>
-                        <button
-                          onClick={handleCancelEditModel}
-                          className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"
-                          title="Cancel"
-                        >
-                          <X size={12} strokeWidth={2.5} />
-                        </button>
+                        <Hint label="Save">
+                          <button
+                            onClick={handleSaveEditModel}
+                            className="p-1.5 text-accent-green hover:text-foreground transition-colors"
+                          >
+                            <Check size={12} strokeWidth={2.5} />
+                          </button>
+                        </Hint>
+                        <Hint label="Cancel">
+                          <button
+                            onClick={handleCancelEditModel}
+                            className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            <X size={12} strokeWidth={2.5} />
+                          </button>
+                        </Hint>
                       </div>
                     );
                   }
@@ -913,21 +995,23 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
                     <div key={model} className="flex items-center justify-between gap-3 panel-card rounded px-3 py-2">
                       <span className="font-mono-tech text-[10px] text-foreground truncate flex-1">{model}</span>
                       <div className="flex items-center gap-1">
-                        <button
-                          onClick={() => handleStartEditModel(index, model)}
-                          className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"
-                          title="Edit model"
-                        >
-                          <Edit2 size={12} strokeWidth={2.5} />
-                        </button>
+                        <Hint label="Edit model">
+                          <button
+                            onClick={() => handleStartEditModel(index, model)}
+                            className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            <Edit2 size={12} strokeWidth={2.5} />
+                          </button>
+                        </Hint>
                         <AlertDialog open={deletingModel === model} onOpenChange={(open) => setDeletingModel(open ? model : null)}>
                           <AlertDialogTrigger asChild>
-                            <button
-                              className="p-1.5 text-muted-foreground hover:text-accent-red transition-colors"
-                              title="Remove model"
-                            >
-                              <Trash2 size={12} strokeWidth={2.5} />
-                            </button>
+                            <Hint label="Remove model">
+                              <button
+                                className="p-1.5 text-muted-foreground hover:text-accent-red transition-colors"
+                              >
+                                <Trash2 size={12} strokeWidth={2.5} />
+                              </button>
+                            </Hint>
                           </AlertDialogTrigger>
                           <AlertDialogContent className="bg-card-3 border-card-hover text-primary">
                             <AlertDialogHeader>
@@ -1022,11 +1106,59 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
               <strong className="text-foreground">API Keys</strong> — Add one or more keys. The active key is used for every request; enable <em>Automatic fallback</em> to rotate to the next key on auth or rate-limit errors.
             </p>
             <p>
-              <strong className="text-foreground">Available Models</strong> — The list shown in the model picker. Add or remove entries at any time; changes are saved when you click the top-right Save.
+              <strong className="text-foreground">Available Models</strong> — The list shown in the model picker. Entries save instantly — no Save button needed. Use <strong>Refresh</strong> to replace the list with whatever the provider returns, or <strong>Merge</strong> to add provider models to your current list.
             </p>
           </div>
         </section>
       </div>
+
+      {/* Destructive replace confirmation for Refresh */}
+      <AlertDialog open={confirmReplaceModels} onOpenChange={setConfirmReplaceModels}>
+        <AlertDialogContent className="dialog-panel rounded-lg text-foreground">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-[11px] font-semibold uppercase tracking-[0.1em]">Replace Model List</AlertDialogTitle>
+            <AlertDialogDescription className="text-[10px] text-muted-foreground">
+              Refresh replaces your entire model list with the provider&apos;s current list — hand-added entries will be lost. Use Merge to keep them.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="bg-transparent border-border/50 text-[10px] font-semibold uppercase tracking-[0.06em] text-foreground hover:bg-accent">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { void handleRefreshModels(false); }}
+              className="bg-accent-purple text-[10px] font-semibold uppercase tracking-[0.06em] text-white hover:bg-accent-purple/80"
+            >
+              Replace List
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Destructive delete confirmation for custom providers */}
+      <AlertDialog open={confirmDeleteProvider} onOpenChange={setConfirmDeleteProvider}>
+        <AlertDialogContent className="dialog-panel rounded-lg text-foreground">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-[11px] font-semibold uppercase tracking-[0.1em]">Delete Provider</AlertDialogTitle>
+            <AlertDialogDescription className="text-[10px] text-muted-foreground">
+              Remove &ldquo;{PROVIDER_LABEL[provider] || provider}&rdquo; and its settings? Stored API keys for this provider are deleted too. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="bg-transparent border-border/50 text-[10px] font-semibold uppercase tracking-[0.06em] text-foreground hover:bg-accent">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { void handleDeleteProvider(); }}
+              disabled={deletingProvider}
+              className="bg-accent-red text-[10px] font-semibold uppercase tracking-[0.06em] text-white hover:bg-accent-red/80 disabled:opacity-50"
+            >
+              {deletingProvider ? "Deleting…" : "Delete Provider"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <div
         className="sticky bottom-[-20px] z-10 w-full h-12 pointer-events-none"
         style={{ backgroundImage: "linear-gradient(to top, var(--fade-tint-strong), transparent)" }}

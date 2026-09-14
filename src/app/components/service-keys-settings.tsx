@@ -9,18 +9,23 @@ import {
   setActiveServiceKey,
   toggleServiceAutoSwitch,
   decryptServiceKey,
+  getServiceStatus,
+  setServiceStatus,
   type ServiceApiKeyRef,
 } from "../../lib/api";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "./ui/accordion";
+import { Hint } from "./ui/tooltip";
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "./ui/alert-dialog";
 import { Switch as ToggleSwitch } from "./ui/switch";
+import serperLogo from "../../assets/serper.jpg";
 
 const SERVICE_META: Record<string, { label: string; logo?: string }> = {
   serper: {
     label: "Serper",
     // Serper is the default web search backend (used by the web_search tool
     // when SERPER_API_KEY is set; falls back to DuckDuckGo otherwise).
-    logo: "/src/assets/serper.jpg"
+    // ESM import so the asset is hashed + emitted in production builds.
+    logo: serperLogo
   },
 };
 
@@ -66,6 +71,13 @@ export const ServiceKeysSettings = ({ service = "serper" }: ServiceKeysSettingsP
         setAutoSwitchState(data.autoSwitch);
         const active = data.keys.find((k) => k.isActive);
         setActiveKeyIdState(active?.id ?? null);
+        // Integration enable/pause state (server-persisted — audit M1.8).
+        try {
+          const status = await getServiceStatus(service);
+          setEnabled(status.enabled);
+        } catch {
+          setEnabled(true);
+        }
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to load keys");
       } finally {
@@ -74,6 +86,18 @@ export const ServiceKeysSettings = ({ service = "serper" }: ServiceKeysSettingsP
     };
     void load();
   }, [service]);
+
+  const handleToggleEnabled = async (next: boolean) => {
+    // Optimistic flip; revert on failure.
+    setEnabled(next);
+    try {
+      await setServiceStatus(service, next);
+      toast.success(next ? `${meta.label} enabled` : `${meta.label} paused — the agent will not use it until re-enabled`);
+    } catch (err) {
+      setEnabled(!next);
+      toast.error(err instanceof Error ? err.message : "Failed to update status");
+    }
+  };
 
   const handleAdd = async () => {
     const name = newKeyName.trim() || `Key ${keys.length + 1}`;
@@ -253,16 +277,17 @@ export const ServiceKeysSettings = ({ service = "serper" }: ServiceKeysSettingsP
                   className="w-full panel-card rounded border-border/60 py-1 px-2 font-mono-tech text-[10px] text-foreground pr-9"
                 />
                 <div className="absolute right-1 top-1/2 -translate-y-1/2 flex gap-1">
-                  <button
-                    onClick={() => {
-                      void navigator.clipboard.writeText(viewingValue);
-                      toast.success("API key copied to clipboard");
-                    }}
-                  className="p-1 text-muted-foreground hover:text-foreground transition-colors"
-                    title="Copy"
-                  >
-                    <Copy size={11} />
-                  </button>
+                  <Hint label="Copy">
+                    <button
+                      onClick={() => {
+                        void navigator.clipboard.writeText(viewingValue);
+                        toast.success("API key copied to clipboard");
+                      }}
+                      className="p-1 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <Copy size={11} />
+                    </button>
+                  </Hint>
                 </div>
               </div>
             ) : (
@@ -270,37 +295,41 @@ export const ServiceKeysSettings = ({ service = "serper" }: ServiceKeysSettingsP
             )}
           </div>
           <div className="flex items-center gap-1">
-            <button
-              onClick={() => void handleSetActive(item.id)}
-              className={`px-2 py-1 rounded panel-badge ${isActive ? "border-accent-green/30 bg-accent-green/15 text-accent-green" : ""}`}
-              title={isActive ? "Active key" : "Set as active"}
-            >
-              {isActive ? "Active" : "Use"}
-            </button>
-            <button
-              onClick={() => void handleViewKey(item.id)}
-              disabled={isLoading}
-              className="p-1.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
-              title={isViewing ? "Hide key" : "View key"}
-            >
-              {isLoading ? "..." : isViewing ? <EyeOff size={13} strokeWidth={2.5} /> : <Eye size={13} strokeWidth={2.5} />}
-            </button>
-            <button
-              onClick={() => void handleStartEdit(item.id)}
-              disabled={isLoading}
-              className="p-1.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
-              title="Edit key"
-            >
-              <Edit2 size={13} strokeWidth={2.5} />
-            </button>
+            <Hint label={isActive ? "Active key" : "Set as active"}>
+              <button
+                onClick={() => void handleSetActive(item.id)}
+                className={`px-2 py-1 rounded panel-badge ${isActive ? "border-accent-green/30 bg-accent-green/15 text-accent-green" : ""}`}
+              >
+                {isActive ? "Active" : "Use"}
+              </button>
+            </Hint>
+            <Hint label={isViewing ? "Hide key" : "View key"}>
+              <button
+                onClick={() => void handleViewKey(item.id)}
+                disabled={isLoading}
+                className="p-1.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              >
+                {isLoading ? "..." : isViewing ? <EyeOff size={13} strokeWidth={2.5} /> : <Eye size={13} strokeWidth={2.5} />}
+              </button>
+            </Hint>
+            <Hint label="Edit key">
+              <button
+                onClick={() => void handleStartEdit(item.id)}
+                disabled={isLoading}
+                className="p-1.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              >
+                <Edit2 size={13} strokeWidth={2.5} />
+              </button>
+            </Hint>
             <AlertDialog open={deletingKeyId === item.id} onOpenChange={(open) => setDeletingKeyId(open ? item.id : null)}>
               <AlertDialogTrigger asChild>
-                <button
-                  className="p-1.5 text-muted-foreground hover:text-accent-red transition-colors"
-                  title="Delete key"
-                >
-                  <Trash2 size={13} strokeWidth={2.5} />
-                </button>
+                <Hint label="Delete key">
+                  <button
+                    className="p-1.5 text-muted-foreground hover:text-accent-red transition-colors"
+                  >
+                    <Trash2 size={13} strokeWidth={2.5} />
+                  </button>
+                </Hint>
               </AlertDialogTrigger>
               <AlertDialogContent className="bg-card-3 border-card-hover text-primary">
                 <AlertDialogHeader>
@@ -376,7 +405,7 @@ export const ServiceKeysSettings = ({ service = "serper" }: ServiceKeysSettingsP
               </div>
               <ToggleSwitch
                 checked={enabled}
-                onCheckedChange={setEnabled}
+                onCheckedChange={(v) => { void handleToggleEnabled(v); }}
               />
             </div>
 

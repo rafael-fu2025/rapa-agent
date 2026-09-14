@@ -8,6 +8,7 @@ import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { toast } from "sonner";
 import { cn } from "../../lib/utils";
+import { Hint } from "./ui/tooltip";
 import {
   listWorkspaces,
   createWorkspace,
@@ -213,17 +214,18 @@ export function WorkspaceSelector({ variant = "default", className }: WorkspaceS
       <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
         <DropdownMenuTrigger asChild>
           {isIconTrigger ? (
-            <button
-              type="button"
-              className={cn(
-                "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-card-4 hover:text-primary",
-                activeWorkspace && "text-primary",
-                className
-              )}
-              title={activeWorkspace ? `Open workspace (${activeWorkspace.name})` : "Open workspace"}
-            >
-              {activeWorkspace ? <FolderOpen className="h-4 w-4" /> : <Folder className="h-4 w-4" />}
-            </button>
+            <Hint label={activeWorkspace ? `Open workspace (${activeWorkspace.name})` : "Open workspace"}>
+              <button
+                type="button"
+                className={cn(
+                  "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-card-4 hover:text-primary",
+                  activeWorkspace && "text-primary",
+                  className
+                )}
+              >
+                {activeWorkspace ? <FolderOpen className="h-4 w-4" /> : <Folder className="h-4 w-4" />}
+              </button>
+            </Hint>
           ) : (
             <Button
               variant="outline"
@@ -305,16 +307,17 @@ export function WorkspaceSelector({ variant = "default", className }: WorkspaceS
                     </button>
                     <div className="flex shrink-0 items-center gap-0.5">
                       {workspace.isActive ? <Check className="h-3.5 w-3.5 text-primary" /> : null}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setWorkspaceToDelete({ id: workspace.id, name: workspace.name });
-                        }}
-                        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-card-hover hover:text-primary"
-                        title={`Delete ${workspace.name}`}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      <Hint label={`Delete ${workspace.name}`}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setWorkspaceToDelete({ id: workspace.id, name: workspace.name });
+                          }}
+                          className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-card-hover hover:text-primary"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </Hint>
                     </div>
                   </div>
                 ))}

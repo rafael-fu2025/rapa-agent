@@ -3,6 +3,11 @@ import App from "./app/App.tsx";
 import "katex/dist/katex.min.css";
 import "./styles/index.css";
 import { ErrorBoundary } from "./app/components/error-boundary.tsx";
+import { applyStoredAppearance } from "./lib/appearance.ts";
+
+// Restore the stored accent / text size / density before the first
+// render so the tokens theme.css consumes are already in place.
+applyStoredAppearance();
 
 createRoot(document.getElementById("root")!).render(
   <ErrorBoundary>

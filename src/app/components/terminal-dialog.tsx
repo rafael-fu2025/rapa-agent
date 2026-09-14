@@ -3,6 +3,7 @@ import { SquareTerminal, Loader2, FolderOpen, Plus, X, Minimize2 } from "lucide-
 import { TerminalView } from "./terminal-view";
 import { getActiveWorkspace, type Workspace } from "../../lib/workspace-api";
 import { cn } from "../../lib/utils";
+import { Hint } from "./ui/tooltip";
 
 type TerminalDialogProps = {
   open: boolean;
@@ -288,7 +289,6 @@ export function TerminalDialog({ open, minimized, onMinimize, onRestore, convers
           aria-valuenow={panelHeight}
           aria-valuemin={MIN_TERMINAL_HEIGHT}
           aria-valuemax={Math.round(window.innerHeight * MAX_TERMINAL_HEIGHT)}
-          title="Drag to resize"
         >
           <div className={cn(
             "h-1.5 rounded-full transition-all duration-150 ease-out",
@@ -326,9 +326,11 @@ export function TerminalDialog({ open, minimized, onMinimize, onRestore, convers
                     <span className="rounded border border-border/30 bg-card-3 px-1 py-px text-[8px]">
                       pty
                     </span>
-                    <span className="truncate max-w-[300px]" title={workspacePath}>
-                      {workspacePath}
-                    </span>
+                    <Hint label={workspacePath}>
+                      <span className="truncate max-w-[300px]">
+                        {workspacePath}
+                      </span>
+                    </Hint>
                   </>
                 ) : (
                   <span>No workspace</span>
@@ -338,14 +340,15 @@ export function TerminalDialog({ open, minimized, onMinimize, onRestore, convers
           </div>
 
           <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={onMinimize}
-              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground/50 transition-colors hover:text-foreground hover:bg-accent/20"
-              title="Minimize"
-            >
-              <Minimize2 className="h-3 w-3" />
-            </button>
+            <Hint label="Minimize">
+              <button
+                type="button"
+                onClick={onMinimize}
+                className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground/50 transition-colors hover:text-foreground hover:bg-accent/20"
+              >
+                <Minimize2 className="h-3 w-3" />
+              </button>
+            </Hint>
           </div>
         </div>
 
@@ -398,40 +401,41 @@ export function TerminalDialog({ open, minimized, onMinimize, onRestore, convers
           {tabs.length > 0 && (
             <div className="flex w-10 flex-col items-center border-l border-border/30 bg-card-3/30 py-1.5 gap-1">
               {tabs.map((tab) => (
-                <div
-                  key={tab.id}
-                  onClick={() => setActiveTabId(tab.id)}
-                  title={tab.label}
-                  className={cn(
-                    "group relative flex h-8 w-8 items-center justify-center rounded cursor-pointer transition-colors select-none",
-                    tab.id === activeTabId
-                      ? "bg-accent/50 border border-border/40 text-foreground"
-                      : "text-muted-foreground/50 hover:text-foreground hover:bg-accent/20"
-                  )}
-                >
-                  <SquareTerminal className="h-3.5 w-3.5" />
-                  {tabs.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        closeTab(tab.id);
-                      }}
-                      className="absolute -top-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded bg-card border border-border/40 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-accent-red/60 hover:text-background"
-                    >
-                      <X className="h-2 w-2" />
-                    </button>
-                  )}
-                </div>
+                <Hint key={tab.id} label={tab.label}>
+                  <div
+                    onClick={() => setActiveTabId(tab.id)}
+                    className={cn(
+                      "group relative flex h-8 w-8 items-center justify-center rounded cursor-pointer transition-colors select-none",
+                      tab.id === activeTabId
+                        ? "bg-accent/50 border border-border/40 text-foreground"
+                        : "text-muted-foreground/50 hover:text-foreground hover:bg-accent/20"
+                    )}
+                  >
+                    <SquareTerminal className="h-3.5 w-3.5" />
+                    {tabs.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          closeTab(tab.id);
+                        }}
+                        className="absolute -top-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded bg-card border border-border/40 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-accent-red/60 hover:text-background"
+                      >
+                        <X className="h-2 w-2" />
+                      </button>
+                    )}
+                  </div>
+                </Hint>
               ))}
-              <button
-                type="button"
-                onClick={addTab}
-                className="mt-1 flex h-8 w-8 items-center justify-center rounded text-muted-foreground/40 transition-colors hover:text-foreground hover:bg-accent/20"
-                title="New terminal"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
+              <Hint label="New terminal">
+                <button
+                  type="button"
+                  onClick={addTab}
+                  className="mt-1 flex h-8 w-8 items-center justify-center rounded text-muted-foreground/40 transition-colors hover:text-foreground hover:bg-accent/20"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+              </Hint>
             </div>
           )}
         </div>

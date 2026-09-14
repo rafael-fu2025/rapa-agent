@@ -102,6 +102,71 @@ function dedupeAndSort(ids: string[]): string[] {
   return Array.from(new Set(ids)).sort((a, b) => a.localeCompare(b));
 }
 
+// ─── Per-model reasoning metadata ────────────────────────────────────────────
+//
+// Some providers' /models endpoints carry per-model capability metadata
+// (notably OpenRouter: supported_parameters + reasoning config). When
+// present, it is the most honest source for WHICH effort levels a model
+// accepts — better than any hardcoded pattern table. The extraction is
+// deliberately defensive: unknown shapes return undefined, never throw.
+
+/**
+ * Best-effort extraction of per-model reasoning-effort levels from a
+ * `/models` list item. Recognized shapes:
+ *   - { supported_parameters: [..., "reasoning", ...], reasoning_config: { effort_levels: [...] } }
+ *   - { reasoning_effort_levels: [...] }
+ *   - { reasoning: { effort_levels: [...] } }
+ * Returns raw string values (normalized separately — see
+ * reasoning-capabilities.ts levelsFromUpstreamValues).
+ */
+export function extractReasoningLevels(item: unknown): string[] | undefined {
+  if (!item || typeof item !== "object") return undefined;
+  const record = item as Record<string, unknown>;
+
+  const fromConfig = (config: unknown): string[] | undefined => {
+    if (!config || typeof config !== "object") return undefined;
+    const levels = (config as Record<string, unknown>).effort_levels;
+    return Array.isArray(levels) ? levels.filter((v): v is string => typeof v === "string") : undefined;
+  };
+
+  // Only trust level lists on entries that advertise reasoning support at
+  // all (when the field exists) — prevents picking up unrelated arrays.
+  const supported = record.supported_parameters;
+  if (Array.isArray(supported) && !supported.some((p) => p === "reasoning" || p === "reasoning_effort")) {
+    return undefined;
+  }
+
+  return fromConfig(record.reasoning_config)
+    ?? fromConfig(record.reasoning)
+    ?? (Array.isArray(record.reasoning_effort_levels)
+      ? record.reasoning_effort_levels.filter((v): v is string => typeof v === "string")
+      : undefined);
+}
+
+/**
+ * Parse a /models response into model-id → reasoning-levels pairs for
+ * every item that carries metadata.
+ */
+export function parseReasoningMetadata(raw: unknown): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  const items: unknown[] = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === "object"
+      ? [
+          ...((raw as Record<string, unknown>).data as unknown[] ?? []),
+          ...((raw as Record<string, unknown>).models as unknown[] ?? [])
+        ]
+      : [];
+  for (const item of items) {
+    const id = extractModelId(item);
+    const levels = extractReasoningLevels(item);
+    if (id && levels && levels.length > 0) {
+      result.set(id, levels);
+    }
+  }
+  return result;
+}
+
 /**
  * Compute the diff between the fetched models and the existing saved list.
  * Used by the route to surface what changed in the toast/UI.

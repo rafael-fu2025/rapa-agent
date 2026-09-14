@@ -45,7 +45,7 @@ const chatSchema = z.object({
   // Reasoning / thinking-mode depth. Translated to the right parameter
   // shape for the active provider (see server/src/lib/agent/reasoning-translator.ts).
   // "off" suppresses the setting entirely so the provider uses its own default.
-  reasoningEffort: z.enum(["off", "low", "medium", "high", "max"]).optional()
+  reasoningEffort: z.enum(["off", "low", "medium", "high", "xhigh", "max", "ultra", "on"]).optional()
 });
 
 type ChatRequestPayload = z.infer<typeof chatSchema>;

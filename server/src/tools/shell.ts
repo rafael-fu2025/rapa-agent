@@ -363,6 +363,26 @@ function spawnNativeShellSession(sessionId: string, cwd: string, ownerId: string
     updatedAt: Date.now()
   };
 
+  // Spawn failures (missing shell executable, deleted cwd) surface
+  // asynchronously as an 'error' event on the child process. With no
+  // listener Node re-throws it as an uncaught exception and kills the
+  // whole server, so a dead workspace directory must never reach an
+  // unguarded spawn — but when it does, degrade to a closed session
+  // with a readable message instead of crashing.
+  child.on("error", (error: NodeJS.ErrnoException) => {
+    session.closed = true;
+    if (error.code === "ENOENT") {
+      // The cached shell may have gone stale (e.g. pwsh uninstalled or
+      // the cwd no longer exists) — drop the cache so the next session
+      // re-probes what is actually available.
+      cachedShell = undefined;
+    }
+    const reason = error.code === "ENOENT"
+      ? `${shell} could not be started (missing executable or working directory no longer exists).`
+      : error.message;
+    appendToSessionBuffer(session, `\r\n\x1b[31m[terminal error] ${reason}\x1b[0m\r\n`);
+  });
+
   processLike.onData((data) => {
     appendToSessionBuffer(session, data);
   });

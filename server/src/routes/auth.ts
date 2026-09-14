@@ -63,6 +63,33 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     return { user: request.user };
   });
 
+  // One-click sign-in for the single-user local deployment. This is a
+  // personal-machine app bound to loopback by default; a password prompt
+  // for the sole account is pure friction there (audit R2-1). The route
+  // is strictly loopback-gated: when the API is exposed to the LAN
+  // (HOST=0.0.0.0), remote callers get 403 and must use the password
+  // flow. An XSS on any localhost page could already read the token from
+  // localStorage, so this does not widen the browser threat model.
+  app.post("/auth/login-local", async (request, reply) => {
+    const isLoopback =
+      request.ip === "127.0.0.1" || request.ip === "::1" || request.ip === "::ffff:127.0.0.1";
+    if (!isLoopback) {
+      return reply.code(403).send({ message: "Local sign-in is only available from this machine" });
+    }
+
+    const localEmail = "local@localhost.com";
+    let user = await prisma.appUser.findUnique({ where: { email: localEmail } });
+    if (!user) {
+      user = await prisma.appUser.create({ data: { email: localEmail } });
+    }
+
+    const token = app.jwt.sign(
+      { id: user.id, email: user.email },
+      { expiresIn: "7d" }
+    );
+    return { token, user: { id: user.id, email: user.email } };
+  });
+
   app.post("/auth/refresh", { preValidation: [app.authenticate] }, async (request) => {
     const user = request.user as { id: string; email: string };
     const token = app.jwt.sign(

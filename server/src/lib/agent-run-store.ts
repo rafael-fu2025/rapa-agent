@@ -47,7 +47,7 @@ export type PersistAgentRunParams = {
   /// Per-run reasoning / thinking-mode depth. Persisted on the run
   /// record so the agent history view can show what effort was used
   /// and resume replays the same setting.
-  reasoningEffort?: "off" | "low" | "medium" | "high" | "max";
+  reasoningEffort?: "off" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | "on";
 };
 
 function truncateText(value: string, limit = PREVIEW_CHAR_LIMIT) {
@@ -253,7 +253,7 @@ export async function startAgentRun(params: {
   model: string;
   mode?: "agent" | "plan";
   prompt: string;
-  reasoningEffort?: "off" | "low" | "medium" | "high" | "max";
+  reasoningEffort?: "off" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | "on";
 }): Promise<string> {
   await prisma.agentRun.updateMany({
     where: { conversationId: params.conversationId, status: "running" },

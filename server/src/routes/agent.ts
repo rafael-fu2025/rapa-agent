@@ -61,7 +61,7 @@ import {
   loadLatestResumableRun
 } from "./agent/resume.js";
 
-import { handleToolApproval, pendingToolApprovals } from "./agent/approval.js";
+import { handleToolApproval, pendingToolApprovals, listPendingApprovals } from "./agent/approval.js";
 import { resolveAgentWorkspace, resolveWorkspaceForUser } from "./agent/workspace.js";
 import {
   resolveCheckpointRestorePath,
@@ -97,7 +97,7 @@ type PreparedAgentRequest = {
   /// provider's native field shape by
   /// `server/src/lib/agent/reasoning-translator.ts`. "off" suppresses
   /// the setting entirely so the provider uses its own default.
-  reasoningEffort?: "off" | "low" | "medium" | "high" | "max";
+  reasoningEffort?: "off" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | "on";
 };
 
 async function runShellToolCommand(params: {
@@ -963,6 +963,25 @@ export async function registerAgentRoutes(app: FastifyInstance) {
     return { skill };
   });
 
+  // DELETE /agent/skills/:id — removes a stored skill/override entirely.
+  // "Use Built-In" on the specialists page deletes the override row instead
+  // of saving enabled:false, which previously left a zombie row and a
+  // permanently wrong stale-override badge (audit M3).
+  app.delete("/agent/skills/:id", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ message: "Invalid params", issues: params.error.issues });
+    }
+
+    const user = await getLocalUser();
+    if (!(await isOwnedByUser("agentSkill", params.data.id, user.id))) {
+      return reply.code(404).send({ message: "Skill not found" });
+    }
+
+    await prisma.agentSkill.delete({ where: { id: params.data.id } });
+    return { ok: true };
+  });
+
   app.get("/agent/mcp/servers", async () => {
     const user = await getLocalUser();
     const servers = await prisma.agentMcpServer.findMany({
@@ -1534,6 +1553,22 @@ export async function registerAgentRoutes(app: FastifyInstance) {
       approvalId: parsed.data.approvalId,
       approved: parsed.data.approved
     };
+  });
+
+  // Pending approvals for the current user (optionally scoped to a
+  // conversation). The frontend polls this when a conversation loads so a
+  // page reload mid-approval re-presents the prompt instead of orphaning
+  // the blocked run (audit M2.2).
+  app.get("/agent/approvals/pending", async (request, reply) => {
+    const schema = z.object({ conversationId: z.string().min(1).optional() });
+    const parsed = schema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ message: "Invalid query", issues: parsed.error.issues });
+    }
+
+    const user = await getLocalUser();
+    const approvals = listPendingApprovals(user.id, parsed.data.conversationId);
+    return { approvals };
   });
 
   // Auto-approve pattern management routes

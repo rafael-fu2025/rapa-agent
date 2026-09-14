@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import "@fastify/websocket";
+import { stat } from "node:fs/promises";
 import { z } from "zod";
 
 import { getLocalUser, prisma } from "../lib/db.js";
@@ -123,6 +124,22 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
         return;
       }
       effectiveCwd = resolved;
+    }
+
+    // A workspace directory that was deleted or moved (e.g. an unmounted
+    // OneDrive folder) passes the traversal/symlink checks but makes any
+    // spawn fail with ENOENT. Validate existence up front and tell the
+    // user what to do instead of surfacing a spawn error.
+    try {
+      const cwdStat = await stat(effectiveCwd);
+      if (!cwdStat.isDirectory()) throw new Error("not a directory");
+    } catch {
+      socket.send(JSON.stringify({
+        type: "error",
+        message: "The terminal working directory no longer exists on disk. Re-create the folder or switch to another workspace, then reopen the terminal."
+      }));
+      socket.close();
+      return;
     }
 
     const sessionId = buildSessionId(user.id, workspace.path, parsedQuery.data.conversationId, parsedQuery.data.sessionId, effectiveCwd);

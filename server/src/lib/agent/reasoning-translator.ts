@@ -3,8 +3,11 @@
 // Different providers expose chain-of-thought control under different
 // parameter names and with different value spaces. This module is the
 // single place that turns the agent's normalized "reasoning effort"
-// setting (`"off" | "low" | "medium" | "high" | "max"`) into the
-// right request-body field(s) for the target provider.
+// setting (`"off" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"`)
+// into the right request-body field(s) for the target provider — clamping
+// PER MODEL so a request never carries a value the model would 400 on.
+// The set of levels a model actually supports lives in
+// reasoning-capabilities.ts (single source of truth, shared with the UI).
 //
 // Why a dedicated module:
 //   1. The `llm-client.ts` file is already large; this concern is small
@@ -16,17 +19,17 @@
 //      chat route or the agent route, so it lives below the route layer
 //      and is shared by both.
 //
-// Sources used to derive the mapping (see docs/REASONING_PROVIDERS.md):
+// Sources used to derive the mapping:
 //   - OpenAI o-series / GPT-5.x docs — `reasoning_effort: low|medium|high`
-//     (GPT-5.1+ also accepts `none` / `xhigh`; we keep the closed set
-//     that every supported model accepts).
+//     (GPT-5.1+ also accepts `none` / `xhigh` — "none" == our "off",
+//     which omits the parameter entirely).
 //   - DeepSeek Reasoner / R1 — `reasoning_effort: high|max` (low/medium
 //     silently ignored, but we still forward them for symmetry).
 //   - Anthropic Claude 3.7–4.5 — `thinking: { type: "enabled", budget_tokens: N }`.
 //   - Anthropic Claude Opus 4.7+ — `thinking: { type: "adaptive" }` +
 //     top-level `effort: low|medium|high` (budget_tokens REMOVED in 4.7).
 //   - Google Gemini 2.5/3.x — `thinking_budget: N` (integer tokens;
-//     `0` = off, `-1` = dynamic).
+//     `0` = off, `-1` = dynamic). Per-model caps: Flash 24576, Pro 32768.
 //   - OpenRouter — unified `reasoning: { effort, max_tokens? }` (or
 //     `reasoning_effort` as a shortcut).
 //   - Ollama — `think: true|false` (boolean). There is no per-tier
@@ -40,15 +43,16 @@
 //     by default (`reasoning_effort`) which works for the OpenAI /
 //     DeepSeek / OpenRouter upstream vendors it proxies.
 
-export type ReasoningEffort = "low" | "medium" | "high" | "max";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
-export type ReasoningBudgetLevel = "off" | "low" | "medium" | "high" | "max";
+export type ReasoningBudgetLevel = "off" | ReasoningEffort | "on";
 
 /**
  * The canonical user-facing setting. `"off"` means "do not request
  * reasoning / thinking" (providers that always reason will still
  * reason a little; this is the best we can do without provider-level
- * opt-out support).
+ * opt-out support). `"on"` is the binary tier used by switch-style
+ * models (MiniMax M3, Ollama).
  */
 export type ReasoningSetting = ReasoningBudgetLevel;
 
@@ -79,47 +83,45 @@ const CLAUDE_ADAPTIVE_EFFORT_PATTERN =
   /claude-(?:opus)-(?:4-(?:7|8|9|10|11|12)|[5-9]\d*)(?:-|$)/i;
 
 /**
- * Map our 5-tier `ReasoningSetting` to a Claude `budget_tokens`
- * integer. The defaults are conservative — 1024 / 4096 / 16384 / 32768
- * — matching common community guidance. `max` doubles `high` because
- * the legacy shape had no native `max`; we don't want to silently
- * spend the user's full context budget on thinking.
+ * Map our effort tiers to a Claude `budget_tokens` integer. The defaults
+ * are conservative — 1024 / 4096 / 16384 / 32768 — matching common
+ * community guidance. Everything above high maps to 32768 because the
+ * legacy shape had no native max; we don't want to silently spend the
+ * user's full context budget on thinking.
  */
 function claudeBudgetFromLevel(level: Exclude<ReasoningSetting, "off">): number {
   switch (level) {
     case "low":    return 1024;
     case "medium": return 4096;
     case "high":   return 16384;
-    case "max":    return 32768;
+    case "xhigh":
+    case "max":
+    case "ultra":
+    case "on":     return 32768;
   }
 }
 
 /**
- * Map our 5-tier `ReasoningSetting` to a Gemini `thinking_budget`
- * integer. Gemini accepts:
- *   - `0`  → thinking disabled (where supported)
- *   - `N`  → max N tokens used for thinking
- *   - `-1` → dynamic / "let the model decide"
- *
- * We use:
- *   - off    → 0
- *   - low    → 1024
- *   - medium → 8192
- *   - high   → 24576
- *   - max    → 65536
- *
- * (Gemini 2.5+ tops out at 24576 for Flash and 32768 for Pro; we
- * clamp by passing these values — the provider returns 400 if the
- * model-specific max is exceeded. Callers can override per-model by
- * passing a different `thinkingBudget` if/when we expose that.)
+ * Map our effort tiers to a Gemini `thinking_budget` integer, respecting
+ * the model's per-family cap: Flash models top out at 24576 tokens and
+ * Pro / 3.x at 32768. Requesting more than the cap returns a 400 — the
+ * old flat map sent 65536 for "max", which failed on EVERY Gemini 2.5
+ * model.
  */
-function geminiBudgetFromLevel(level: ReasoningSetting): number {
+function geminiBudgetFromLevel(level: ReasoningSetting, model: string): number {
+  const isFlash = /gemini-(?:2\.5|3)[^/]*-flash/i.test(model ?? "");
+  const cap = isFlash ? 24_576 : 32_768;
   switch (level) {
     case "off":    return 0;
     case "low":    return 1024;
     case "medium": return 8192;
-    case "high":   return 24576;
-    case "max":    return 65536;
+    case "high":   return 24_576;
+    case "xhigh":
+    case "max":
+    case "ultra":  return cap;
+    // Binary "on" (switch-style models never reach this translator —
+    // only Gemini models do, which have no binary mode) — treat as high.
+    case "on":     return 24_576;
   }
 }
 
@@ -169,22 +171,26 @@ export function translateReasoning(
       // for unknown models. The standard OpenAI-compatible shape is
       // `{ reasoning_effort: "low"|"medium"|"high" }`.
       //
-      // NOTE: deepseek only honors "high" and "max" — low/medium are
-      // silently dropped. That's fine: it degrades gracefully.
-      // "max" is NOT part of the standard enum — clamp to "high" so
-      // strict providers don't 400 the whole request.
-      return { reasoning_effort: setting === "max" ? "high" : setting };
+      // GPT-5.1+ also accepts "xhigh" — forward it for those models and
+      // clamp everything above high down for the rest, so strict
+      // providers never see a value outside their enum.
+      // (deepseek only honors "high" — lower tiers degrade gracefully.)
+      const supportsXhigh = /gpt-5\.[1-9]/i.test(normalizedModel);
+      const clamped = setting === "low" || setting === "medium" || setting === "high"
+        ? setting
+        : supportsXhigh ? "xhigh" : "high";
+      return { reasoning_effort: clamped };
     }
 
     case "anthropic":
     case "claude": {
       // Two shapes depending on model version:
-      //   - Claude 4.7+ and 5.x → adaptive + effort
+      //   - Claude 4.7+ and 5.x → adaptive + effort (low/medium/high only)
       //   - Claude 3.7 – 4.5  → enabled + budget_tokens
       if (CLAUDE_ADAPTIVE_EFFORT_PATTERN.test(normalizedModel)) {
         return {
           thinking: { type: "adaptive" },
-          effort: setting === "max" ? "high" : setting
+          effort: setting === "low" || setting === "medium" ? setting : "high"
         };
       }
       return {
@@ -196,18 +202,11 @@ export function translateReasoning(
     }
 
     case "gemini": {
-      // Gemini is special: its OpenAI-compat endpoint accepts an
-      // `extra_body` style for `thinking_budget`. Most OpenAI-compat
-      // proxies for Gemini (including Google's own
-      // `generativelanguage.googleapis.com/v1beta/openai` endpoint)
-      // accept the parameter as a top-level body field rather than
-      // wrapping it in `extra_body`.
-      //
-      // The base URL used in this codebase is the official
-      // `.../v1beta/openai` endpoint, so a top-level field is the
-      // right place. If a future proxy rejects this shape, callers
-      // can override by extending this switch.
-      return { thinking_budget: geminiBudgetFromLevel(setting) };
+      // Gemini's OpenAI-compat endpoint accepts `thinking_budget` as a
+      // top-level body field (the official .../v1beta/openai endpoint).
+      // Budgets are capped per model family — Flash 24576, Pro/3.x
+      // 32768 — via geminiBudgetFromLevel(level, model).
+      return { thinking_budget: geminiBudgetFromLevel(setting, normalizedModel) };
     }
 
     case "ollama": {
@@ -220,12 +219,13 @@ export function translateReasoning(
 
     case "openrouter": {
       // OpenRouter's unified `reasoning` envelope. The `effort` field
-      // accepts `low` / `medium` / `high` for most models. We pass
-      // through `max` for vendors that recognize it (DeepSeek); the
-      // envelope degrades to a no-op on providers that don't.
+      // accepts `low` / `medium` / `high` for most models and `xhigh`
+      // on routes that support it (GPT-5.1). We pass through up to
+      // `max` for vendors that recognize it (DeepSeek); `ultra` clamps
+      // to `xhigh` — the envelope's documented ceiling.
       return {
         reasoning: {
-          effort: setting
+          effort: setting === "ultra" ? "xhigh" : setting
         }
       };
     }
@@ -236,9 +236,13 @@ export function translateReasoning(
       // unknown body fields to the upstream, so `reasoning_effort`
       // is the safest universal shape (works for the OpenAI /
       // DeepSeek / OpenRouter upstreams Puter serves).
-      // Clamp "max" → "high": the upstreams Puter serves reject
-      // non-enum values.
-      return { reasoning_effort: setting === "max" ? "high" : setting };
+      // Clamp everything above high → high: the upstreams Puter serves
+      // reject non-enum values.
+      return {
+        reasoning_effort: setting === "low" || setting === "medium" || setting === "high"
+          ? setting
+          : "high"
+      };
     }
 
     case "minimax": {
@@ -284,68 +288,16 @@ export function translateReasoning(
   }
 }
 
-/**
- * Static capability map for the UI: which providers + model-prefixes
- * have meaningful reasoning-control support. This is intentionally
- * coarse-grained — the actual per-model decision is in
- * `translateReasoning()`. The UI uses this list to decide whether to
- * show the effort dropdown at all (e.g. hide it for MiniMax since
- * we don't actually wire a setting, hide it for Hugging Face
- * because most hosted models don't honor the param).
- */
-export const REASONING_CAPABLE_PROVIDERS = new Set<string>([
-  "openai",
-  "azure-openai",
-  "deepseek",
-  "nvidia",
-  "anthropic",
-  "claude",
-  "gemini",
-  "ollama",
-  "openrouter",
-  "puter",
-  // MiniMax M3 supports the `thinking: { type: "disabled" | "adaptive" }`
-  // control. M2.x is intentionally not separately gated here — see the
-  // `MINIMAX_NO_REASONING_CONTROL` pattern below, which hides the
-  // dropdown for M2.x models because they can't actually disable
-  // thinking (the API silently ignores the field).
-  "minimax"
-]);
+// ─── Capability map ─────────────────────────────────────────────────────────
+//
+// The provider set, model denylist, per-model effort profiles, and the
+// snap-to-nearest ladder live in reasoning-capabilities.ts — the single
+// source of truth shared by the translator, the /reasoning-profile
+// endpoint, and the frontend picker. Re-exported here so existing imports
+// (llm-client tests, the frontend mirror being deleted) keep working.
 
-/**
- * Test/model-prefix patterns that the UI uses to hide the reasoning
- * dropdown even for a normally-capable provider. e.g. regular
- * `gpt-4o` and `gemini-2.0-flash` are not reasoning models — they
- * ignore reasoning_effort and don't emit thinking tokens.
- */
-export const NON_REASONING_MODEL_PATTERNS: RegExp[] = [
-  /^gpt-4o(?!-mini)/i,                 // gpt-4o, gpt-4o-2024-… (no mini)
-  /^gpt-4(?!-turbo|-o|-5)/i,           // plain gpt-4
-  /^gemini-2\.0-/i,                    // gemini-2.0 family
-  /^gemini-1\./i,                      // legacy
-  /^claude-(?:3-(?:opus|sonnet|haiku)|3-5-sonnet)$/i,  // pre-3.7
-  /^text-embedding-/i,
-  /^claude-fable-/i,                   // not always a reasoning model
-  // MiniMax M2.x family — per the API docs these models "cannot
-  // disable thinking" and the `thinking: { type: "disabled" }` field
-  // is accepted but silently ignored. We hide the dropdown for them
-  // rather than expose a setting that doesn't work.
-  /^MiniMax-M2(?:\.\d+)?(?:-highspeed)?$/i
-];
-
-/**
- * Decide whether a (provider, model) pair should surface the
- * reasoning-effort control. This is a soft check — the dropdown is
- * still safe to show for non-reasoning models (they will just
- * ignore the parameter), but hiding it makes the UI less noisy.
- */
-export function isReasoningCapable(provider: string, model: string): boolean {
-  const normalizedProvider = provider.toLowerCase();
-  if (!REASONING_CAPABLE_PROVIDERS.has(normalizedProvider)) {
-    return false;
-  }
-  if (NON_REASONING_MODEL_PATTERNS.some((pattern) => pattern.test(model))) {
-    return false;
-  }
-  return true;
-}
+export {
+  REASONING_CAPABLE_PROVIDERS,
+  NON_REASONING_MODEL_PATTERNS,
+  isReasoningCapable
+} from "./reasoning-capabilities.js";

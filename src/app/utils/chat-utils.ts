@@ -130,7 +130,11 @@ export function extractInteractivePayload(metadata: ConversationMessage["metadat
         multiSelect: boolean;
       } => Boolean(q));
     if (questions.length === 0) return undefined;
-    return { type: "ask_user", questions };
+    // The answered flag is written by PATCH /conversations/:id/messages/:messageId
+    // when the user submits answers — reloaded cards render as answered
+    // instead of re-asking (audit M3).
+    const answered = payload.answered === true || (payload as { answered?: unknown }).answered === true;
+    return { type: "ask_user", questions, ...(answered ? { answered: true } : {}) };
   }
 
   if (payload.type === "mode_switch") {
@@ -246,12 +250,17 @@ export function mapConversationToMessages(rows: ConversationMessage[]): ChatMess
 
       stats: row.role === "assistant"
         ? {
+            // Restored history has no live rate; the UI hides a 0 rate and
+            // marks estimated token counts with ≈ (audit M3).
             tokensPerSec: 0,
             totalTokens: getRealOrEstimatedTokenCount(row.content, tokenUsage),
+            tokensEstimated: !tokenUsage,
             elapsedMs
           }
         : undefined,
-      interactive: extractInteractivePayload(row.metadata)
+      interactive: extractInteractivePayload(row.metadata),
+      // Restore the reasoning effort the last turn used (audit M3).
+      reasoningEffort: row.reasoningEffort as ChatMessage["reasoningEffort"]
     };
   });
 }

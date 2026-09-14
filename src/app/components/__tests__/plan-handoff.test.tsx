@@ -76,10 +76,13 @@ describe("plan→agent handoff button", () => {
 
     fireEvent.click(button);
     expect(onSetMode).toHaveBeenCalledWith("agent");
+    // The handoff must carry an explicit agent-mode override — without it
+    // submitPrompt reads the stale plan-mode closure (audit M1.1).
     expect(onSubmit).toHaveBeenCalledWith(
-      expect.stringContaining("Execute the following plan from the previous Plan-mode run")
+      expect.stringContaining("Execute the following plan from the previous Plan-mode run"),
+      { mode: "agent" }
     );
-    expect(onSubmit).toHaveBeenCalledWith(expect.stringContaining("# Implementation Plan"));
+    expect(onSubmit).toHaveBeenCalledWith(expect.stringContaining("# Implementation Plan"), { mode: "agent" });
   });
 
   it("does not render on agent-mode messages or while a run is active", () => {

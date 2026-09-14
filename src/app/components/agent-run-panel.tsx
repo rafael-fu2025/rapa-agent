@@ -3,6 +3,7 @@ import { CheckCircle2, ChevronDown, ChevronUp, GitBranch, LoaderCircle, RotateCc
 
 import { getAgentRun, restoreAgentCheckpoint, type AgentCheckpoint, type AgentRunDetail } from "../../lib/agent-api";
 import { cn } from "../../lib/utils";
+import { Hint } from "./ui/tooltip";
 
 type AgentRunPanelProps = {
   agentRunId?: string;
@@ -45,9 +46,11 @@ function CheckpointRow({
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <code className="truncate rounded border border-border/40 bg-card-3/30 px-1.5 py-0.5 font-mono-tech text-[9px] text-foreground" title={checkpoint.path}>
-              {checkpoint.path}
-            </code>
+            <Hint label={checkpoint.path}>
+              <code className="truncate rounded border border-border/40 bg-card-3/30 px-1.5 py-0.5 font-mono-tech text-[9px] text-foreground">
+                {checkpoint.path}
+              </code>
+            </Hint>
             <span className={cn("rounded border px-1.5 py-0.5 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em] leading-none", statusClassName(checkpoint.status))}>
               {checkpoint.status}
             </span>
@@ -60,16 +63,17 @@ function CheckpointRow({
           ) : null}
           {checkpoint.restoreNote ? <div className="mt-1.5 font-mono-tech text-[9px] text-muted-foreground">{checkpoint.restoreNote}</div> : null}
         </div>
-        <button
-          type="button"
-          disabled={!canRestore || busy}
-          onClick={() => onRestore(checkpoint)}
-          className="inline-flex items-center gap-1 rounded border border-border/40 bg-card-3/30 px-2 py-1 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em] text-foreground transition-colors hover:border-border hover:bg-card-3 disabled:cursor-not-allowed disabled:opacity-45"
-          title={canRestore ? "Restore this checkpoint" : "This checkpoint cannot be restored"}
-        >
-          {busy ? <LoaderCircle className="h-2.5 w-2.5 animate-spin" /> : <RotateCcw className="h-2.5 w-2.5" />}
-          Restore
-        </button>
+        <Hint label={canRestore ? "Restore this checkpoint" : "This checkpoint cannot be restored"}>
+          <button
+            type="button"
+            disabled={!canRestore || busy}
+            onClick={() => onRestore(checkpoint)}
+            className="inline-flex items-center gap-1 rounded border border-border/40 bg-card-3/30 px-2 py-1 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em] text-foreground transition-colors hover:border-border hover:bg-card-3 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {busy ? <LoaderCircle className="h-2.5 w-2.5 animate-spin" /> : <RotateCcw className="h-2.5 w-2.5" />}
+            Restore
+          </button>
+        </Hint>
       </div>
     </div>
   );
@@ -80,6 +84,11 @@ export function AgentRunPanel({ agentRunId, className, onError }: AgentRunPanelP
   const [loading, setLoading] = useState(false);
   const [busyCheckpointIds, setBusyCheckpointIds] = useState<string[]>([]);
   const [showRawResult, setShowRawResult] = useState(false);
+  // Destructive-restore typed-phrase confirmation (replaces the old
+  // native window.prompt — audit M2.1).
+  const [pendingConfirm, setPendingConfirm] = useState<{ checkpointId: string; phrase: string } | null>(null);
+  const [confirmInput, setConfirmInput] = useState("");
+  const [confirmError, setConfirmError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!agentRunId) {
@@ -125,36 +134,43 @@ export function AgentRunPanel({ agentRunId, className, onError }: AgentRunPanelP
     } catch (error) {
       // The `requiresConfirmation` field is appended to the thrown Error
       // by the API client for destructive checkpoints. The UI surfaces
-      // a typed-confirmation prompt and retries with the phrase.
+      // a typed-confirmation card and retries with the phrase.
       const err = error as Error & { requiresConfirmation?: boolean; expectedConfirmation?: string };
       if (err.requiresConfirmation) {
-        const phrase = err.expectedConfirmation ?? "RESTORE";
-        const typed = typeof window === "undefined" ? phrase : window.prompt(
-          `Restoring this checkpoint will discard current file content. Type ${phrase} to confirm.`
-        );
-        if (typed === phrase) {
-          try {
-            const restored = await restoreAgentCheckpoint(checkpoint.id, { confirmation: phrase });
-            setRun((current) => current
-              ? {
-                  ...current,
-                  checkpoints: current.checkpoints.map((item) => item.id === checkpoint.id
-                    ? { ...item, ...restored.checkpoint, canRestore: false }
-                    : item)
-                }
-              : current);
-            return;
-          } catch (retryError) {
-            onError?.(retryError instanceof Error ? retryError.message : "Failed to restore checkpoint");
-            return;
-          }
-        }
-        onError?.("Restore cancelled — confirmation phrase did not match.");
+        setPendingConfirm({ checkpointId: checkpoint.id, phrase: err.expectedConfirmation ?? "RESTORE" });
         return;
       }
       onError?.(error instanceof Error ? error.message : "Failed to restore checkpoint");
     } finally {
       setBusyCheckpointIds((prev) => prev.filter((item) => item !== checkpoint.id));
+    }
+  };
+
+  const handleConfirmRestore = async () => {
+    if (!pendingConfirm) return;
+    const { checkpointId, phrase } = pendingConfirm;
+    if (confirmInput.trim() !== phrase) {
+      setConfirmError("Confirmation phrase did not match.");
+      return;
+    }
+    setBusyCheckpointIds((prev) => (prev.includes(checkpointId) ? prev : [...prev, checkpointId]));
+    try {
+      const restored = await restoreAgentCheckpoint(checkpointId, { confirmation: phrase });
+      setRun((current) => current
+        ? {
+            ...current,
+            checkpoints: current.checkpoints.map((item) => item.id === checkpointId
+              ? { ...item, ...restored.checkpoint, canRestore: false }
+              : item)
+          }
+        : current);
+      setPendingConfirm(null);
+      setConfirmInput("");
+      setConfirmError(null);
+    } catch (retryError) {
+      onError?.(retryError instanceof Error ? retryError.message : "Failed to restore checkpoint");
+    } finally {
+      setBusyCheckpointIds((prev) => prev.filter((item) => item !== checkpointId));
     }
   };
 
@@ -205,7 +221,9 @@ export function AgentRunPanel({ agentRunId, className, onError }: AgentRunPanelP
           </div>
           <div className="panel-card rounded px-2 py-1.5">
             <div className="text-muted-foreground">Completed</div>
-            <div className="mt-1 truncate text-foreground" title={formatDate(run.completedAt)}>{formatDate(run.completedAt)}</div>
+            <Hint label={formatDate(run.completedAt)}>
+              <div className="mt-1 truncate text-foreground">{formatDate(run.completedAt)}</div>
+            </Hint>
           </div>
         </div>
 
@@ -222,6 +240,46 @@ export function AgentRunPanel({ agentRunId, className, onError }: AgentRunPanelP
               <div className="max-h-[300px] overflow-auto panel-card rounded px-2 py-1.5 font-mono-tech text-[9px] leading-4 text-foreground">
                 {run.runSummary}
               </div>
+            )}
+          </div>
+        ) : null}
+
+        {pendingConfirm ? (
+          <div className="panel-card rounded border-accent-yellow/40 p-3">
+            <div className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.14em] text-accent-yellow">
+              Destructive restore
+            </div>
+            <p className="mt-1 font-mono-tech text-[9px] leading-4 text-muted-foreground">
+              Restoring this checkpoint will discard the current file content. Type{" "}
+              <code className="rounded border border-border/40 bg-card-3/50 px-1 py-0.5 text-foreground">{pendingConfirm.phrase}</code>{" "}
+              to confirm.
+            </p>
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                value={confirmInput}
+                onChange={(e) => { setConfirmInput(e.target.value); setConfirmError(null); }}
+                onKeyDown={(e) => { if (e.key === "Enter") { void handleConfirmRestore(); } }}
+                placeholder={pendingConfirm.phrase}
+                autoFocus
+                className="min-w-0 flex-1 rounded border border-border/50 bg-card px-2 py-1 font-mono-tech text-[10px] text-foreground focus:border-accent-blue/60 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => { void handleConfirmRestore(); }}
+                className="rounded border border-accent-yellow/40 bg-accent-yellow/10 px-2 py-1 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em] text-accent-yellow transition-colors hover:bg-accent-yellow/20"
+              >
+                Confirm
+              </button>
+              <button
+                type="button"
+                onClick={() => { setPendingConfirm(null); setConfirmInput(""); setConfirmError(null); }}
+                className="rounded border border-border/40 px-2 py-1 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em] text-muted-foreground transition-colors hover:bg-accent/30"
+              >
+                Cancel
+              </button>
+            </div>
+            {confirmError && (
+              <p className="mt-1 font-mono-tech text-[9px] text-accent-red">{confirmError}</p>
             )}
           </div>
         ) : null}
@@ -247,7 +305,9 @@ export function AgentRunPanel({ agentRunId, className, onError }: AgentRunPanelP
               <div key={session.id} className="panel-card rounded p-3">
                 <div className="flex items-center gap-2 font-mono-tech text-[9px] text-foreground">
                   <Terminal className="h-3 w-3 text-muted-foreground" />
-                  <code className="min-w-0 flex-1 truncate" title={session.command}>{session.command}</code>
+                  <Hint label={session.command}>
+                    <code className="min-w-0 flex-1 truncate">{session.command}</code>
+                  </Hint>
                   <span className={cn("rounded border px-1.5 py-0.5 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em] leading-none", statusClassName(session.status))}>{session.status}</span>
                 </div>
                 {(session.outputSummary || session.stderrPreview) ? (

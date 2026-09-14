@@ -1,40 +1,29 @@
 // Appearance settings page — controls the UI theme, accent color, and
 // message-density. Persists each setting in localStorage and applies it
-// immediately so changes are visible without a page reload.
+// immediately so changes are visible without a page reload. The token
+// application lives in lib/appearance.ts (shared with the app boot).
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Check, Monitor, Moon, Palette, Sparkles, Sun, Type } from "lucide-react";
 import { toast } from "sonner";
 import { useTheme, type ResolvedTheme, type ThemeMode } from "../hooks/use-theme";
+import {
+  ACCENT_PRESETS as ACCENTS,
+  APPEARANCE_STORAGE_KEYS,
+  applyAccent,
+  applyDensity,
+  applyFontSize,
+  type AccentColor,
+  type AccentPreset,
+  type Density,
+  type FontSize
+} from "../../lib/appearance";
 import { Switch } from "./ui/switch";
+import { Hint } from "./ui/tooltip";
 
-const STORAGE_DENSITY = "rapa_density";
-const STORAGE_ACCENT = "rapa_accent";
-const STORAGE_FONT_SIZE = "rapa_font_size";
-
-type Density = "comfortable" | "compact";
-type FontSize = "small" | "medium" | "large";
-type AccentColor = "indigo" | "blue" | "emerald" | "rose" | "amber" | "violet";
-
-type AccentPreset = {
-  id: AccentColor;
-  label: string;
-  /** Swatch color used for the picker dot. */
-  hex: string;
-  /** Preview text color when this accent is active. */
-  textClass: string;
-  /** Preview border color when this accent is active. */
-  borderClass: string;
-};
-
-const ACCENTS: AccentPreset[] = [
-  { id: "indigo",  label: "Indigo",  hex: "#6366F1", textClass: "text-[#6366F1]", borderClass: "border-[#6366F1]" },
-  { id: "blue",    label: "Blue",    hex: "#3B82F6", textClass: "text-[#3B82F6]", borderClass: "border-[#3B82F6]" },
-  { id: "emerald", label: "Emerald", hex: "#10B981", textClass: "text-[#10B981]", borderClass: "border-[#10B981]" },
-  { id: "rose",    label: "Rose",    hex: "#F43F5E", textClass: "text-[#F43F5E]", borderClass: "border-[#F43F5E]" },
-  { id: "amber",   label: "Amber",   hex: "#F59E0B", textClass: "text-[#F59E0B]", borderClass: "border-[#F59E0B]" },
-  { id: "violet",  label: "Violet",  hex: "#8B5CF6", textClass: "text-[#8B5CF6]", borderClass: "border-[#8B5CF6]" }
-];
+const STORAGE_DENSITY = APPEARANCE_STORAGE_KEYS.density;
+const STORAGE_ACCENT = APPEARANCE_STORAGE_KEYS.accent;
+const STORAGE_FONT_SIZE = APPEARANCE_STORAGE_KEYS.fontSize;
 
 function readStored<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -43,34 +32,6 @@ function readStored<T extends string>(key: string, allowed: readonly T[], fallba
     if (v && (allowed as readonly string[]).includes(v)) return v as T;
   } catch { /* ignore */ }
   return fallback;
-}
-
-function applyAccent(accent: AccentColor) {
-  if (typeof document === "undefined") return;
-  const root = document.documentElement;
-  // Wipe any previous custom accent properties.
-  root.style.removeProperty("--accent-color");
-  const preset = ACCENTS.find((a) => a.id === accent);
-  if (preset) root.style.setProperty("--accent-color", preset.hex);
-  root.dataset.accent = accent;
-}
-
-function applyFontSize(size: FontSize) {
-  if (typeof document === "undefined") return;
-  const root = document.documentElement;
-  // Map to a multiplier applied to the base 16px font size.
-  const scale = size === "small" ? 0.9375 : size === "large" ? 1.0625 : 1;
-  root.style.setProperty("--font-size-multiplier", String(scale));
-  root.dataset.fontSize = size;
-}
-
-function applyDensity(density: Density) {
-  if (typeof document === "undefined") return;
-  const root = document.documentElement;
-  root.dataset.density = density;
-  // Compact mode: tightening padding on message rows. The actual spacing is
-  // picked up by the components that respect `data-density="compact"`.
-  root.style.setProperty("--density-row-gap", density === "compact" ? "8px" : "16px");
 }
 
 /* ------------------------------------------------------------------ */
@@ -186,30 +147,31 @@ function ThemePreview({ mode, active, onSelect }: { mode: ThemeMode; active: boo
 
 function AccentSwatch({ accent, active, onSelect }: { accent: AccentPreset; active: boolean; onSelect: () => void }) {
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={
-        "sidebar-panel group relative flex h-12 w-full items-center justify-center overflow-hidden rounded transition-all " +
-        (active ? "" : "hover:border-muted-foreground/30")
-      }
-      title={accent.label}
-      aria-label={accent.label}
-      style={active ? { borderColor: "var(--accent-color, #6366F1)", boxShadow: "0 0 0 1px var(--accent-color, #6366F1)" } : undefined}
-    >
-      <span
-        className="h-6 w-6 rounded-full shadow-sm transition-transform group-hover:scale-110"
-        style={{ backgroundColor: accent.hex }}
-      />
-      {active && (
+    <Hint label={accent.label}>
+      <button
+        type="button"
+        onClick={onSelect}
+        className={
+          "sidebar-panel group relative flex h-12 w-full items-center justify-center overflow-hidden rounded transition-all " +
+          (active ? "" : "hover:border-muted-foreground/30")
+        }
+        aria-label={accent.label}
+        style={active ? { borderColor: "var(--accent-color, #6366F1)", boxShadow: "0 0 0 1px var(--accent-color, #6366F1)" } : undefined}
+      >
         <span
-          className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full text-white"
+          className="h-6 w-6 rounded-full shadow-sm transition-transform group-hover:scale-110"
           style={{ backgroundColor: accent.hex }}
-        >
-          <Check size={10} strokeWidth={3} />
-        </span>
-      )}
-    </button>
+        />
+        {active && (
+          <span
+            className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full text-white"
+            style={{ backgroundColor: accent.hex }}
+          >
+            <Check size={10} strokeWidth={3} />
+          </span>
+        )}
+      </button>
+    </Hint>
   );
 }
 
@@ -219,7 +181,7 @@ function Toggle({ checked, onChange, label, description }: { checked: boolean; o
       <div className="flex-1 min-w-0">
         {/* Header — uppercase tracking-wider label, like a chat bubble header */}
         <div className="border-b border-border/30 px-4 py-1.5 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/60">
-          Toggle
+          Setting
         </div>
         {/* Content — same monospace tech font + leading as chat bubbles */}
         <div className="px-4 py-2.5">

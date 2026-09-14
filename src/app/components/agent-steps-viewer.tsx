@@ -6,13 +6,18 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 
-import { getAgentRun, type AgentApprovalData, type AgentLiveToolCall, type AgentStep, type AgentToolResult } from "../../lib/agent-api";
+import { getAgentRun, upsertAutoApprovePattern, type AgentApprovalData, type AgentLiveToolCall, type AgentStep, type AgentToolResult } from "../../lib/agent-api";
 
 import { cn } from "../../lib/utils";
+import { Hint } from "./ui/tooltip";
 import { computeDiffStats, extractDiffFromResult } from "./diff-view";
 import { TaskList, extractTasks } from "./task-list";
 
 const DiffDialog = lazy(() => import("./diff-dialog").then(m => ({ default: m.DiffDialog })));
+const FilePresentationCard = lazy(() => import("./file-presentation-card").then(m => ({ default: m.FilePresentationCard })));
+const WidgetRenderer = lazy(() => import("./widget-renderer").then(m => ({ default: m.WidgetRenderer })));
+import type { PresentedFile } from "./file-presentation-card";
+import type { AgentWidget } from "./widget-renderer";
 type AgentStepsViewerProps = {
   steps: AgentStep[];
   liveToolCalls?: AgentLiveToolCall[];
@@ -330,6 +335,29 @@ function isContextSearchResult(result?: AgentToolResult): boolean {
   return Array.isArray(d.matches) && typeof d.contextLines === "number" && (d.contextLines as number) > 0;
 }
 
+/* present_file / render_widget payloads (server-side conventions the
+   viewer historically never rendered — audit M1.7). */
+
+function getPresentedFiles(result?: AgentToolResult): unknown[] | null {
+  if (!result?.data || typeof result.data !== "object" || Array.isArray(result.data)) return null;
+  const files = (result.data as Record<string, unknown>).presentedFiles;
+  return Array.isArray(files) && files.length > 0 ? files : null;
+}
+
+function getWidgetPayload(result?: AgentToolResult): { title: string; html: string; data?: unknown; sanitized?: string[] } | null {
+  if (!result?.data || typeof result.data !== "object" || Array.isArray(result.data)) return null;
+  const widget = (result.data as Record<string, unknown>).widget;
+  if (!widget || typeof widget !== "object" || Array.isArray(widget)) return null;
+  const w = widget as Record<string, unknown>;
+  if (typeof w.title !== "string" || typeof w.html !== "string") return null;
+  return {
+    title: w.title,
+    html: w.html,
+    ...(w.data !== undefined ? { data: w.data } : {}),
+    ...(Array.isArray(w.sanitized) ? { sanitized: w.sanitized as string[] } : {})
+  };
+}
+
 function extractToolFileMetadata({
   name,
   parameters,
@@ -436,7 +464,9 @@ function ToolTraceCard({
   const isApprovalBusy = approvalId ? approvalBusyIds.includes(approvalId) : false;
 
   const hasParams = Object.keys(safeParams).length > 0;
-  const hasSpecializedContent = isImageResult(result) || isProcessedFetchResult(result) || isContextSearchResult(result);
+  const hasSpecializedContent =
+    isImageResult(result) || isProcessedFetchResult(result) || isContextSearchResult(result) ||
+    getPresentedFiles(result) !== null || getWidgetPayload(result) !== null;
   const canExpand = hasParams || Boolean(preview) || Boolean(fileMeta) || hasSpecializedContent;
 
   // Contextual one-liner: prefer shell command > file path
@@ -450,6 +480,8 @@ function ToolTraceCard({
   // ── Diff summary for edit tools ──────────────────────────────
   const isEditTool = EDIT_TOOL_NAMES.has(name);
   const [diffDialogOpen, setDiffDialogOpen] = useState(false);
+  // Progressive-trust opt-in for the inline approval prompt.
+  const [alwaysAllow, setAlwaysAllow] = useState(false);
   const diffEntry = isEditTool && status === "completed" && result?.data
     ? extractDiffFromResult(result.data as Record<string, unknown>, name, 0)
     : null;
@@ -474,12 +506,25 @@ function ToolTraceCard({
       }}
     >
       {/* ── Compact header (always visible) ────────────────────────── */}
-      <button
-        type="button"
+      {/* A div with button semantics, not a <button>: the header contains
+          nested interactive controls (diff path, Review Changes, badges)
+          that cannot legally nest inside a button (audit M1.5). */}
+      <div
+        role="button"
+        tabIndex={canExpand ? 0 : -1}
+        aria-expanded={canExpand ? isOpen : undefined}
+        aria-label={`${name} — ${getPhaseLabel(name, status)}`}
         onClick={() => canExpand && setIsOpen((v) => !v)}
+        onKeyDown={(event) => {
+          if (!canExpand) return;
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setIsOpen((v) => !v);
+          }
+        }}
         className={cn(
-          "flex w-full items-center gap-2.5 px-3 py-2 text-left",
-          canExpand && "cursor-pointer hover:bg-card-hover/40",
+          "flex w-full items-center gap-2.5 px-3 py-2 text-left outline-none",
+          canExpand && "cursor-pointer hover:bg-card-hover/40 focus-visible:bg-card-hover/40",
           !canExpand && "cursor-default"
         )}
       >
@@ -492,14 +537,15 @@ function ToolTraceCard({
 
         {inlinePreview ? (
           hasDiffBadges && pathPreview && !commandPreview ? (
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); setDiffDialogOpen(true); }}
-              className="min-w-0 flex-1 truncate text-left font-mono-tech text-[10px] text-muted-foreground/70 transition-colors hover:text-accent-blue cursor-pointer"
-              title={`View changes to ${pathPreview}`}
-            >
-              {inlinePreview}
-            </button>
+            <Hint label={`View changes to ${pathPreview}`}>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setDiffDialogOpen(true); }}
+                className="min-w-0 flex-1 truncate text-left font-mono-tech text-[10px] text-muted-foreground/70 transition-colors hover:text-accent-blue cursor-pointer"
+              >
+                {inlinePreview}
+              </button>
+            </Hint>
           ) : (
             <span className="min-w-0 flex-1 truncate font-mono-tech text-[10px] text-muted-foreground/70">
               {commandPreview ? <span className="text-muted-foreground/40 select-none">$ </span> : null}
@@ -535,12 +581,12 @@ function ToolTraceCard({
 
         {/* ── Diff summary badges (edit tools, completed) ──────── */}
         {hasDiffBadges && diffStats && diffEntry && (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); setDiffDialogOpen(true); }}
-            className="flex shrink-0 items-center gap-1"
-            title={`View changes to ${diffEntry.path}`}
-          >
+          <Hint label={`View changes to ${diffEntry.path}`}>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setDiffDialogOpen(true); }}
+              className="flex shrink-0 items-center gap-1"
+            >
             {isNewFile ? (
               <span className="inline-flex items-center gap-0.5 rounded border border-accent-green/30 bg-accent-green/10 px-1.5 py-0.5 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em] text-accent-green">
                 New
@@ -563,19 +609,21 @@ function ToolTraceCard({
                 )}
               </>
             )}
-          </button>
+            </button>
+          </Hint>
         )}
 
         {canExpand && (
           <ChevronRight
             size={13}
+            aria-hidden="true"
             className={cn(
               "shrink-0 text-muted-foreground/40 transition-transform duration-200",
               isOpen && "rotate-90"
             )}
           />
         )}
-      </button>
+      </div>
 
       {/* ── Running shimmer bar ───────────────────────────────────── */}
       {isRunning && (
@@ -608,11 +656,35 @@ function ToolTraceCard({
               {commandPreview}
             </code>
           )}
+          <label className="mt-2 flex cursor-pointer items-center gap-1.5 select-none">
+            <input
+              type="checkbox"
+              checked={alwaysAllow}
+              onChange={(e) => setAlwaysAllow(e.target.checked)}
+              className="h-3 w-3 cursor-pointer accent-[var(--accent-blue)]"
+            />
+            <span className="font-mono-tech text-[9px] text-muted-foreground">
+              Always allow {commandPreview ? `"${commandPreview.trim().split(/\s+/)[0] ?? ""} …"` : approvalToolName} without asking
+            </span>
+          </label>
           <div className="mt-2 flex gap-2">
             <button
               type="button"
               disabled={isApprovalBusy}
-              onClick={() => void onToolApproval(approvalId, true)}
+              onClick={() => {
+                // Progressive trust: persist an auto-approve pattern when
+                // the user opts in, then approve this call. Destructive
+                // commands are still gated server-side by the severity
+                // check, which overrides saved patterns.
+                if (alwaysAllow) {
+                  const firstToken = commandPreview?.trim().split(/\s+/)[0];
+                  const pattern = firstToken
+                    ? { name: `${name}: ${firstToken}`, pattern: firstToken, matchType: "prefix" as const, toolName: name }
+                    : { name, pattern: name, matchType: "exact" as const, toolName: name };
+                  void upsertAutoApprovePattern(pattern).catch(() => undefined);
+                }
+                void onToolApproval(approvalId, true);
+              }}
               className="rounded border border-accent-green/40 bg-accent-green/10 px-2.5 py-1 font-mono-tech text-[10px] font-medium uppercase tracking-wider text-accent-green transition-colors hover:bg-accent-green/20 disabled:opacity-40"
             >
               {isApprovalBusy ? "..." : "Approve"}
@@ -620,7 +692,7 @@ function ToolTraceCard({
             <button
               type="button"
               disabled={isApprovalBusy}
-              onClick={() => void onToolApproval(approvalId, false)}
+              onClick={() => { setAlwaysAllow(false); void onToolApproval(approvalId, false); }}
               className="rounded border border-accent-red/30 bg-accent-red/[0.06] px-2.5 py-1 font-mono-tech text-[10px] font-medium uppercase tracking-wider text-accent-red transition-colors hover:bg-accent-red/15 disabled:opacity-40"
             >
               Reject
@@ -632,6 +704,30 @@ function ToolTraceCard({
       {/* ── Expandable details panel ──────────────────────────────── */}
       {canExpand && isOpen && (
         <div className="border-t border-border/50">
+          {/* Specialized: present_file cards */}
+          {getPresentedFiles(result) && (
+            <div className="border-b border-border/30 px-3 py-2.5 last:border-b-0">
+              <div className="mb-1.5 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/50">
+                Presented Files
+              </div>
+              <Suspense fallback={null}>
+                <FilePresentationCard files={getPresentedFiles(result) as PresentedFile[]} />
+              </Suspense>
+            </div>
+          )}
+
+          {/* Specialized: render_widget sandboxed visualization */}
+          {getWidgetPayload(result) && (
+            <div className="border-b border-border/30 px-3 py-2.5 last:border-b-0">
+              <div className="mb-1.5 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/50">
+                Widget
+              </div>
+              <Suspense fallback={null}>
+                <WidgetRenderer widget={getWidgetPayload(result) as AgentWidget} />
+              </Suspense>
+            </div>
+          )}
+
           {/* Specialized: read_image preview */}
           {result?.data != null && typeof result.data === "object" && !Array.isArray(result.data) &&
             typeof (result.data as Record<string, unknown>).mediaType === "string" &&
@@ -713,7 +809,8 @@ function ToolTraceCard({
               </pre>
             </div>
           )}
-          {preview && !isImageResult(result) && !isProcessedFetchResult(result) && !isContextSearchResult(result) && (
+          {preview && !isImageResult(result) && !isProcessedFetchResult(result) && !isContextSearchResult(result) &&
+            getPresentedFiles(result) === null && getWidgetPayload(result) === null && (
             <div className="border-b border-border/30 px-3 py-2.5 last:border-b-0">
               <div className="mb-1.5 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/50">
                 {isFailed ? "Error" : "Output"}
@@ -741,9 +838,11 @@ function ToolTraceCard({
                   <span className="text-muted-foreground/40">{fileMeta.lineRange}</span>
                 )}
               </div>
-              <div className="mt-0.5 truncate font-mono-tech text-[9px] text-muted-foreground/40" title={fileMeta.fullPath}>
-                {fileMeta.fullPath}
-              </div>
+              <Hint label={fileMeta.fullPath}>
+                <div className="mt-0.5 truncate font-mono-tech text-[9px] text-muted-foreground/40">
+                  {fileMeta.fullPath}
+                </div>
+              </Hint>
             </div>
           )}
         </div>

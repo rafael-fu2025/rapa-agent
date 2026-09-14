@@ -58,4 +58,20 @@ function TooltipContent({
   );
 }
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider };
+type HintProps = Omit<React.ComponentProps<typeof TooltipContent>, "children"> & {
+  label: React.ReactNode;
+  children: React.ReactNode;
+};
+
+function Hint({ label, children, side = "top", ...contentProps }: HintProps) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side={side} {...contentProps}>
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider, Hint };
