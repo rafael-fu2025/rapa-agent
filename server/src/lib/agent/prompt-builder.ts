@@ -92,7 +92,9 @@ After EVERY \`write_file\`, \`edit_file\`, \`replace_in_file\`, or \`append_file
 
 \`execute_command\` runs commands through pipes — there is NO interactive terminal. Commands that prompt for input will hang. Use flags: \`npm install --yes\`, \`pip install --no-input\`, \`apt-get -y\`, \`--non-interactive\`.
 
-Prefer action over questions. Reserve \`ask_user\` for genuine decisions that change the approach.`;
+### Asking the user
+
+When you hit a decision that is genuinely the user's — multiple valid approaches, scope or taste trade-offs, missing context you cannot recover — call \`ask_user\` IMMEDIATELY, even mid-task, instead of guessing. Batch up to 4 questions, 2-4 options each, recommended option FIRST marked \`defaultOption: true\`; the UI always adds a free-text "Other" answer. Do NOT ask what a tool can answer or what a sensible default covers — in those cases act. Never re-ask an answered question.`;
 
   return `You are Rapa, an autonomous coding agent. ${modeLine} Today is ${currentDate}.
 
@@ -169,7 +171,7 @@ export function renderEssentialToolRules(tools: ToolDefinition[]): string {
     rules.push("**execute_command**: Pass --yes/-y to package managers. Do NOT use shell to create/modify files. Raise `timeout` for builds (180000+).");
   }
   if (toolNames.has("ask_user")) {
-    rules.push("**ask_user**: True blockers only. 1-4 questions, 2-4 options each. If the answer lives in the workspace, find it with a tool — don't ask.");
+    rules.push("**ask_user**: Call the moment a user-owned decision appears (approach forks, scope/taste trade-offs) — don't guess. 1-4 questions, 2-4 options each, recommended option FIRST with defaultOption: true; the UI adds free-text \"Other\". If the answer lives in the workspace, find it with a tool — don't ask.");
   }
   if (toolNames.has("search_content")) {
     rules.push("**search_content**: Pass fileExtensions to scope by language. Use regex:true for patterns. Empty results → broaden the query.");

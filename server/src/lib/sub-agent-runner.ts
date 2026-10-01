@@ -47,6 +47,42 @@ export const CHILD_SAFE_TOOLS: ReadonlySet<string> = new Set([
   "read_lints"
 ]);
 
+/** Per-breadth sweep guidance baked into the explore child's system prompt. */
+const EXPLORE_BREADTH_GUIDE: Record<string, string> = {
+  quick: "QUICK breadth — spot check. 1-3 tool calls, then report. Prefer list_directory + one targeted read.",
+  medium: "MEDIUM breadth — standard sweep. Map the relevant area, then answer; stop as soon as you can.",
+  very_thorough: "VERY THOROUGH breadth — exhaustive sweep. Cover every plausible area (directories, search passes, git history if useful) before reporting."
+};
+
+export function buildChildSystemPrompt(handle: ChildAgentHandle, matched: { name: string; instructions: string } | null): string {  if (handle.agentType === "explore") {
+    return [
+      "You are an isolated EXPLORE child agent spawned by a parent agent for ONE bounded codebase-analysis task.",
+      `Breadth: ${EXPLORE_BREADTH_GUIDE[handle.breadth] ?? EXPLORE_BREADTH_GUIDE.medium}`,
+      "",
+      "Method:",
+      "- Locate, don't audit. Find where things live and how they connect. Read excerpts and signatures, not whole files, unless the task demands it.",
+      "- Cite evidence. Every claim carries a path — file.ts:line when you know the line, bare path otherwise. No uncited assertions.",
+      "- Report conclusions, not process. Outcome first, then key findings as a compact list, then assumptions. No narration of what you are about to do.",
+      "- Read-only: never modify files. You cannot ask the user questions — make reasonable assumptions and note them.",
+      `- Stay within ${handle.maxIterations} iterations. Finish with the report, not with tool calls. The parent sees ONLY your final answer — make it self-contained.`
+    ].join("\n");
+  }
+
+  return [
+    "You are an isolated child agent spawned by a parent agent to complete ONE bounded task.",
+    matched
+      ? `Operating mode — ${matched.name}:\n\n${matched.instructions}`
+      : "",
+    [
+      "Rules:",
+      "- Your tools are READ-ONLY. Report what you find; never modify files.",
+      "- You cannot ask the user questions — make reasonable assumptions and note them.",
+      `- The parent sees ONLY your final answer. Make it a self-contained report: outcome, key findings, file paths, and any assumptions.`,
+      `- Stay within ${handle.maxIterations} iterations. Finish with the report, not with tool calls.`
+    ].join("\n")
+  ].filter(Boolean).join("\n\n");
+}
+
 export type ChildAgentRunOutcome = {
   status: "completed" | "failed" | "cancelled";
   report: string;
@@ -126,32 +162,31 @@ export async function runChildAgent(
     };
   }
 
-  // Specialist selection: matched by task content, defaulting to the
-  // research specialist's methodology for unmatched tasks.
+  // Specialist selection: general runs match a specialist by task content
+  // (defaulting to the research specialist's methodology); explore runs skip
+  // specialists entirely — they have their own locate-and-cite methodology.
+  const isExplore = handle.agentType === "explore";
   const specialists = resolveSpecialistDefinitions();
-  const matched = classifySpecialistMode(handle.task, specialists)
-    ?? specialists.find((s) => s.name === "research_specialist")
-    ?? null;
-  const allowedToolNames = deriveAllowedTools(matched?.suggestedTools);
+  const matched = isExplore
+    ? null
+    : classifySpecialistMode(handle.task, specialists)
+      ?? specialists.find((s) => s.name === "research_specialist")
+      ?? null;
+  const allowedToolNames = isExplore
+    ? [...CHILD_SAFE_TOOLS]
+    : deriveAllowedTools(matched?.suggestedTools);
 
   const seedHistory: AgentMessage[] = [];
-  const workspaceInstructions = await loadWorkspaceInstructionsSystemMessage(parentContext.workspaceRoot);
-  if (workspaceInstructions) seedHistory.push(workspaceInstructions);
+  // Explore skips workspace instruction files (AGENTS.md/CLAUDE.md) — the
+  // same speed/cost tradeoff ZCode's Explore agent makes; locating code does
+  // not need them and they can be large.
+  if (!isExplore) {
+    const workspaceInstructions = await loadWorkspaceInstructionsSystemMessage(parentContext.workspaceRoot);
+    if (workspaceInstructions) seedHistory.push(workspaceInstructions);
+  }
   seedHistory.push({
     role: "system",
-    content: [
-      "You are an isolated child agent spawned by a parent agent to complete ONE bounded task.",
-      matched
-        ? `Operating mode — ${matched.name}:\n\n${matched.instructions}`
-        : "",
-      [
-        "Rules:",
-        "- Your tools are READ-ONLY. Report what you find; never modify files.",
-        "- You cannot ask the user questions — make reasonable assumptions and note them.",
-        `- The parent sees ONLY your final answer. Make it a self-contained report: outcome, key findings, file paths, and any assumptions.`,
-        `- Stay within ${handle.maxIterations} iterations. Finish with the report, not with tool calls.`
-      ].join("\n")
-    ].filter(Boolean).join("\n\n")
+    content: buildChildSystemPrompt(handle, matched)
   });
 
   const childConfig = parentConfig
@@ -202,12 +237,21 @@ export async function runChildAgent(
         : "completed";
 
   const reportBody = doneEvent?.response ?? "";
+  // A "completed" child that never called a tool answered from imagination,
+  // not evidence — flag it so the parent (and user) can't mistake it for a
+  // grounded report. Live runs showed weak models doing exactly this.
+  const ungrounded = status === "completed" && toolCallCount === 0;
   const report = [
+    ungrounded
+      ? "WARNING: this child agent completed WITHOUT calling any tools — its findings are unverified inference, not grounded evidence. Re-spawn with a more explicit task or verify the claims yourself."
+      : "",
     reportBody || (errorMessage ? `Child agent failed: ${errorMessage}` : "Child agent produced no final report."),
     "",
     "--- child agent summary ---",
     `task: ${handle.task.slice(0, 200)}`,
-    `mode: ${matched?.name ?? "research_specialist"}`,
+    handle.agentType === "explore"
+      ? `mode: explore (${handle.breadth})`
+      : `mode: ${matched?.name ?? "research_specialist"}`,
     `iterations: ${steps.length}/${handle.maxIterations}, tool calls: ${toolCallCount}`,
     filesExamined.size > 0
       ? `paths examined: ${[...filesExamined].slice(0, 20).join(", ")}`

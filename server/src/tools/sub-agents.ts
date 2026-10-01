@@ -7,12 +7,25 @@ import { activateSpecialistMode } from "../lib/sub-agents.js";
 
 export type ChildAgentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
+/**
+ * Typed child agents, mirroring ZCode/Claude Code's built-in agent types:
+ *   - "explore": read-only codebase ANALYSIS agent — locates code, maps
+ *     structure, cites file paths; fast, conclusions-only.
+ *   - "general": open-ended read-only research with the specialist
+ *     methodology (the historical spawn_agent behavior).
+ */
+export type ChildAgentType = "explore" | "general";
+/** Explore thoroughness — drives the child's iteration budget and sweep depth. */
+export type ExploreBreadth = "quick" | "medium" | "very_thorough";
+
 export type ChildAgentHandle = {
   id: string;
   parentConversationId: string;
   parentRunId: string;
   task: string;
   taskContext?: string;
+  agentType: ChildAgentType;
+  breadth: ExploreBreadth;
   status: ChildAgentStatus;
   result?: string;
   error?: string;
@@ -34,6 +47,8 @@ class ChildAgentRegistry {
     parentRunId: string;
     task: string;
     taskContext?: string;
+    agentType?: ChildAgentType;
+    breadth?: ExploreBreadth;
     maxIterations?: number;
   }): ChildAgentHandle {
     const id = `child-agent-${this.nextId++}-${Date.now().toString(36)}`;
@@ -43,6 +58,8 @@ class ChildAgentRegistry {
       parentRunId: params.parentRunId,
       task: params.task,
       taskContext: params.taskContext,
+      agentType: params.agentType ?? "general",
+      breadth: params.breadth ?? "medium",
       status: "pending",
       createdAt: new Date(),
       toolCallCount: 0,
@@ -155,7 +172,10 @@ export class DelegateTaskTool extends Tool {
 export class SpawnAgentTool extends Tool {
   definition: ToolDefinition = {
     name: "spawn_agent",
-    description: "Spawn an isolated child agent with a FRESH context and a read-only toolset to research one bounded task, then return its report as this tool's result. The child cannot see this conversation, cannot modify files, and cannot ask the user questions. Use it to investigate codebases, trace bugs, or gather evidence without flooding your own context — the parent only pays for the final report.",
+    description: `Spawn an isolated child agent with a FRESH context and a read-only toolset to complete one bounded task, then return its report as this tool's result. The child cannot see this conversation, cannot modify files, and cannot ask the user questions. Use it to investigate codebases, trace bugs, or gather evidence without flooding your own context — the parent only pays for the final report. Dispatch several spawn_agent calls in one turn to research independent questions in parallel.
+Agent types:
+- "explore" — codebase ANALYSIS: locate where things live, map structure, trace a code path, answer "how/where does X work". Returns concise conclusions with file paths (cite paths as file:line where possible). Reads excerpts, not whole files — it locates code, it does not review or audit it. Pick breadth: "quick" for a spot check, "medium" (default) for a standard sweep, "very_thorough" for an exhaustive multi-area sweep.
+- "general" — open-ended research with the specialist methodology (research/debugging/planning lenses) for questions that need reasoning beyond locating code.`,
     category: "code",
     riskLevel: "read",
     requiresApproval: false,
@@ -165,6 +185,18 @@ export class SpawnAgentTool extends Tool {
         description: "A clear, self-contained task description for the child agent. Include all necessary context since the child has no access to the parent conversation.",
         required: true
       },
+      agentType: {
+        type: "string",
+        description: "\"explore\" for codebase analysis (locations, structure, code paths) or \"general\" for open-ended research. Defaults to \"general\".",
+        enum: ["explore", "general"],
+        required: false
+      },
+      breadth: {
+        type: "string",
+        description: "Only for agentType \"explore\": \"quick\", \"medium\", or \"very_thorough\". Controls how deep the sweep goes (and the default iteration budget: 5/10/20).",
+        enum: ["quick", "medium", "very_thorough"],
+        required: false
+      },
       taskContext: {
         type: "string",
         description: "Optional additional context, constraints, or background information for the child agent.",
@@ -172,7 +204,7 @@ export class SpawnAgentTool extends Tool {
       },
       maxIterations: {
         type: "number",
-        description: "Maximum number of agent loop iterations (default: 15, max: 30). Keep bounded to prevent runaway agents.",
+        description: "Maximum number of agent loop iterations. Defaults: general 15, explore 5/10/20 by breadth. Max 30.",
         required: false
       }
     }
@@ -181,9 +213,20 @@ export class SpawnAgentTool extends Tool {
   async execute(params: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
     const task = typeof params.task === "string" ? params.task.trim() : "";
     const taskContext = typeof params.taskContext === "string" ? params.taskContext.trim() : undefined;
+    const agentType: ChildAgentType = params.agentType === "explore" ? "explore" : "general";
+    const breadth: ExploreBreadth = params.breadth === "quick" || params.breadth === "very_thorough"
+      ? params.breadth
+      : "medium";
+    // Breadth-driven default budgets for explore runs (general keeps 15).
+    const EXPLORE_BREADTH_BUDGET: Record<ExploreBreadth, number> = {
+      quick: 5,
+      medium: 10,
+      very_thorough: 20
+    };
+    const defaultIterations = agentType === "explore" ? EXPLORE_BREADTH_BUDGET[breadth] : 15;
     const maxIterations = typeof params.maxIterations === "number"
       ? Math.max(1, Math.min(30, Math.floor(params.maxIterations)))
-      : 15;
+      : defaultIterations;
 
     if (!task) {
       return { success: false, error: "A task description is required" };
@@ -201,6 +244,8 @@ export class SpawnAgentTool extends Tool {
       parentRunId: context.runId ?? context.conversationId,
       task,
       taskContext,
+      agentType,
+      breadth,
       maxIterations
     });
 
@@ -334,6 +379,8 @@ export class GetAgentStatusTool extends Tool {
           agents: agents.map((a) => ({
             id: a.id,
             status: a.status,
+            agentType: a.agentType,
+            breadth: a.breadth,
             task: a.task.slice(0, 200) + (a.task.length > 200 ? "..." : ""),
             iterations: a.iterationCount,
             maxIterations: a.maxIterations,
@@ -360,6 +407,8 @@ export class GetAgentStatusTool extends Tool {
       data: {
         id: handle.id,
         status: handle.status,
+        agentType: handle.agentType,
+        breadth: handle.breadth,
         task: handle.task,
         taskContext: handle.taskContext,
         iterations: handle.iterationCount,

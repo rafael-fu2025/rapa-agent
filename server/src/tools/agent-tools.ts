@@ -219,7 +219,9 @@ export class ThinkTool extends Tool {
 export class AskUserTool extends Tool {
   definition: ToolDefinition = {
     name: "ask_user",
-    description: `Ask the user one or more structured clarifying questions (1-4 questions per call). Each question needs a short header chip (max 12 chars), a full question, 2-4 options with label/description/preview, and a multiSelect flag. Use this when you need user input, when the request is ambiguous, or to confirm your understanding before significant action.`,
+    description: `Ask the user one or more structured clarifying questions (1-4 questions per call). Call this the MOMENT you hit a decision that is genuinely the user's to make — multiple valid approaches, scope or taste trade-offs, or missing context you cannot recover — even mid-task. The run pauses, the user picks answers, and you continue next turn with their choices.
+Do NOT ask when a sensible default exists, when the answer is verifiable from the request or the workspace, or merely to announce progress — act instead. But do not stall and guess either: a wrong guess on an approach-level fork wastes far more of the user's time than one well-formed question.
+Each question: a short header chip (max 12 chars), the full question, 2-4 options (label 1-5 words + one-line description). Put the RECOMMENDED option first and mark it defaultOption: true. The UI always offers a free-text "Other" answer, so options never need to be exhaustive. Use preview only to contrast concrete artifacts (mockup, snippet, config) and only on single-select questions.`,
     category: "system",
     riskLevel: "none",
     parameters: {
@@ -239,13 +241,13 @@ export class AskUserTool extends Tool {
                 description: "A selectable option",
                 properties: {
                   label: { type: "string", description: "Short button text (1-5 words, max 80 chars)" },
-                  description: { type: "string", description: "One-line explanation of what this option means" },
-                  preview: { type: "string", description: "Optional larger preview (e.g. code snippet) shown when expanded" },
-                  defaultOption: { type: "boolean", description: "Set to true to mark this option as the recommended/default choice" }
+                  description: { type: "string", description: "One-line explanation of what this option means or what happens if chosen" },
+                  preview: { type: "string", description: "Optional larger preview (e.g. code snippet, mockup, config example) shown when expanded — single-select questions only" },
+                  defaultOption: { type: "boolean", description: "Set to true to mark this option as the recommended/default choice. The recommended option must be listed FIRST." }
                 }
               }
             },
-            multiSelect: { type: "boolean", description: "Set to true to allow the user to select multiple options" }
+            multiSelect: { type: "boolean", description: "Set to true to allow the user to select multiple options (e.g. 'which features do you want?'). Previews are ignored on multi-select questions." }
           }
         },
         description: `An array of ${MIN_QUESTIONS}-${MAX_QUESTIONS} structured questions. Each question must have 2-${MAX_OPTIONS} options.`,
