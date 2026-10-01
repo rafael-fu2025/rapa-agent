@@ -121,6 +121,7 @@ function buildPuterCallBody(openaiBody: Record<string, unknown>, authToken: stri
 type PuterCompleteResult = {
   message?: {
     content?: string | Array<{ type?: string; text?: string }>;
+    reasoning?: string;
     tool_calls?: unknown[];
     role?: string;
   };
@@ -142,6 +143,12 @@ function puterResultToOpenAICompletion(result: PuterCompleteResult): Record<stri
     role: "assistant",
     content: flattenPuterContent(result.message)
   };
+  // Extended-thinking output on normalized responses arrives as
+  // `message.reasoning`; surface it under the DeepSeek-convention field the
+  // stream parsers already understand.
+  if (typeof result.message?.reasoning === "string" && result.message.reasoning) {
+    message.reasoning_content = result.message.reasoning;
+  }
   if (Array.isArray(result.message?.tool_calls) && result.message.tool_calls.length > 0) {
     message.tool_calls = result.message.tool_calls;
   }
@@ -182,6 +189,7 @@ function puterNdjsonToSse(upstreamBody: ReadableStream<Uint8Array>): ReadableStr
         let parsed: {
           type?: string;
           text?: string;
+          reasoning?: string;
           id?: string;
           name?: string;
           input?: unknown;
@@ -200,11 +208,18 @@ function puterNdjsonToSse(upstreamBody: ReadableStream<Uint8Array>): ReadableStr
               emitDelta({ content: parsed.text });
             }
             break;
-          case "reasoning":
-            if (typeof parsed.text === "string" && parsed.text) {
-              emitDelta({ reasoning_content: parsed.text });
+          case "reasoning": {
+            // Reasoning chunks carry their text in `reasoning` (verified
+            // live against qwen3-*-thinking via the ai-chat dispatch);
+            // fall back to `text` in case a vendor uses it.
+            const reasoningDelta = (typeof parsed.reasoning === "string" && parsed.reasoning)
+              ? parsed.reasoning
+              : (typeof parsed.text === "string" ? parsed.text : "");
+            if (reasoningDelta) {
+              emitDelta({ reasoning_content: reasoningDelta });
             }
             break;
+          }
           case "tool_use":
             if (typeof parsed.name === "string" && parsed.name) {
               emitDelta({
