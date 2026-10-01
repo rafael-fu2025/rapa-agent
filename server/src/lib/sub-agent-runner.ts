@@ -80,6 +80,13 @@ export function buildChildConfig(
     model: llm?.model ?? "",
     baseUrl: llm?.baseUrl ?? "",
     apiKey: llm?.apiKey ?? "ollama",
+    // resolveKeysToTry() only admits the primary key when primaryApiKeyId is
+    // set. Without it the child had zero usable keys and every LLM call
+    // failed with "LLM call failed: no keys available" (the parent works
+    // because createAgent always sets the id). These ids are bookkeeping
+    // only — the child has no onApiKeySwitch handler, so nothing persists.
+    primaryApiKeyId: llm?.apiKey ? `${handle.id}-primary` : undefined,
+    primaryApiKeyName: llm?.apiKey ? "inherited from parent" : undefined,
     fallbackApiKeys: llm?.fallbackApiKeys?.map((key) => ({
       apiKeyEncrypted: key.apiKeyEncrypted,
       id: key.id,

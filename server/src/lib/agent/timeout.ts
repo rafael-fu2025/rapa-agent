@@ -33,7 +33,14 @@ export const DEFAULT_TOOL_TIMEOUTS_MS: Record<string, number> = {
   // Slow operations
   execute_command: 120_000,
   read_lints: 30_000,
-  run_tests: 300_000
+  run_tests: 300_000,
+  // spawn_agent runs a whole child agent loop synchronously. The child
+  // enforces its own wall-clock budget (CHILD_RUN_TIMEOUT_MS = 5 min) and
+  // returns a structured report when it fires — this outer timeout only
+  // exists as a safety net, so it must sit ABOVE the child's budget, never
+  // inside it. At the 30s fallback the tool-level kill truncated healthy
+  // child runs mid-flight and discarded their report.
+  spawn_agent: 330_000
 };
 
 export const FALLBACK_TOOL_TIMEOUT_MS = 30_000;
