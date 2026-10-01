@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./db.js";
+import { fetchLlmUpstream } from "./llm-upstream.js";
 import type { AgentStep } from "./agent.js";
 
 const RECENT_MESSAGE_LIMIT = 12;
@@ -318,7 +319,7 @@ export function buildAgentRulesMessage(rules: Array<{ name: string; content: str
 
 
 async function requestSummary(baseUrl: string, apiKey: string, model: string, prompt: string) {
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
+  const response = await fetchLlmUpstream(undefined, `${baseUrl.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     // Bound the summary call — a stalled provider would otherwise leave this
     // voided promise hanging forever.

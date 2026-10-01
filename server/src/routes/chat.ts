@@ -17,6 +17,7 @@ import {
 import { getDefaultBaseUrl, getDefaultModels } from "../lib/constants.js";
 
 import { decryptText, encryptText } from "../lib/crypto.js";
+import { fetchLlmUpstream } from "../lib/llm-upstream.js";
 import { prisma, getLocalUser } from "../lib/db.js";
 import { loadWorkspaceInstructionsSystemMessage } from "../lib/workspace-instructions.js";
 import { recordUsage } from "../lib/usage.js";
@@ -277,12 +278,12 @@ function isTimeoutError(error: unknown): error is Error {
   return error instanceof Error && error.message.startsWith("LLM call timed out after");
 }
 
-async function fetchWithLlmTimeout(url: string, init: RequestInit, timeoutMs: number) {
+async function fetchWithLlmTimeout(provider: string | undefined, url: string, init: RequestInit, timeoutMs: number) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await fetchLlmUpstream(provider, url, { ...init, signal: controller.signal });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error(`LLM call timed out after ${timeoutMs}ms`, { cause: error });
@@ -769,7 +770,7 @@ async function generateConversationTitle(params: {
   model: string;
 }): Promise<string> {
   try {
-    const response = await fetch(`${params.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+    const response = await fetchLlmUpstream(undefined, `${params.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -988,7 +989,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
 
       let candidate: Response;
       try {
-        candidate = await fetchWithLlmTimeout(`${settings.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+        candidate = await fetchWithLlmTimeout(payload.provider, `${settings.baseUrl.replace(/\/$/, "")}/chat/completions`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -1338,7 +1339,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
 
       let candidate: Response;
       try {
-        candidate = await fetchWithLlmTimeout(`${settings.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+        candidate = await fetchWithLlmTimeout(payload.provider, `${settings.baseUrl.replace(/\/$/, "")}/chat/completions`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -1366,7 +1367,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
         const retryBody = { ...requestBody };
         delete (retryBody as { stream_options?: unknown }).stream_options;
         try {
-          candidate = await fetchWithLlmTimeout(`${settings.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+          candidate = await fetchWithLlmTimeout(payload.provider, `${settings.baseUrl.replace(/\/$/, "")}/chat/completions`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",

@@ -3,6 +3,7 @@
 // owns the HTTP layer and key rotation logic.
 
 import { decryptText } from "../crypto.js";
+import { fetchLlmUpstream } from "../llm-upstream.js";
 import { toolRegistry } from "../../tools/index.js";
 import type { AgentExecutionMode, ToolDefinition } from "../tools.js";
 import {
@@ -521,7 +522,7 @@ export class LLMClient {
           console.log(`[${tag}] Request to ${this.config.baseUrl}/chat/completions`);
           console.log(`[${tag}] Body (${bodyStr.length} chars): ${bodyStr.slice(0, 2000)}${bodyStr.length > 2000 ? "…" : ""}`);
         }
-        response = await fetch(`${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+        response = await fetchLlmUpstream(this.config.provider, `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -624,7 +625,7 @@ export class LLMClient {
         const retryController = new AbortController();
         const retryTimeout = setTimeout(() => retryController.abort(), timeoutMs);
         try {
-          response = await fetch(`${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+          response = await fetchLlmUpstream(this.config.provider, `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -920,7 +921,7 @@ export class LLMClient {
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const response = await fetch(`${baseUrl}/chat/completions`, {
+      const response = await fetchLlmUpstream(this.config.provider, `${baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

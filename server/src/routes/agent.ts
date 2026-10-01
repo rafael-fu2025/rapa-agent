@@ -21,6 +21,7 @@ import {
   getBuiltinSpecialists
 } from "../lib/sub-agents.js";
 import { retrieveRelevantContext, formatRetrievedContext } from "../lib/agent/context-retrieval.js";
+import { fetchLlmUpstream } from "../lib/llm-upstream.js";
 import { getDefaultBaseUrl, getDefaultModels } from "../lib/constants.js";
 
 import { decryptText } from "../lib/crypto.js";
@@ -651,7 +652,7 @@ async function generateConversationTitle(params: {
   model: string;
 }): Promise<string> {
   try {
-    const response = await fetch(`${params.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+    const response = await fetchLlmUpstream(undefined, `${params.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

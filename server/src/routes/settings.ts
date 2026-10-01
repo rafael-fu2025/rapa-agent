@@ -6,6 +6,7 @@ import { getDefaultBaseUrl, getDefaultModels, DEFAULT_MODELS_BY_PROVIDER } from 
 
 import { prisma, getLocalUser } from "../lib/db.js";
 import { decryptText, encryptText } from "../lib/crypto.js";
+import { puterKeyTestUrl } from "../lib/llm-upstream.js";
 import { diffModelLists, parseModelsResponse, parseReasoningMetadata } from "../lib/provider-models.js";
 import { getReasoningProfile, levelsFromUpstreamValues } from "../lib/agent/reasoning-capabilities.js";
 
@@ -577,13 +578,19 @@ export async function registerSettingsRoutes(app: FastifyInstance) {
     }
 
     const baseUrl = setting?.baseUrl ?? getDefaultBaseUrl(parsed.data.provider);
-    const upstream = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
+    // Puter has no `{base}/models` endpoint (its OpenAI-compatible surface is
+    // paid-only and 404s on the catalog path), so the token is validated
+    // against `GET /whoami`, which requires auth.
+    const testUrl = parsed.data.provider === "puter"
+      ? puterKeyTestUrl(baseUrl)
+      : `${baseUrl.replace(/\/$/, "")}/models`;
+    const upstream = await fetch(testUrl, {
       method: "GET",
       headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined
     });
 
     app.log.info({
-      url: `${baseUrl.replace(/\/$/, "")}/models`,
+      url: testUrl,
       status: upstream.status,
       statusText: upstream.statusText,
       ok: upstream.ok

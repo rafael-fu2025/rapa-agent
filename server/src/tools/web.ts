@@ -6,6 +6,7 @@ import { Tool, type ToolDefinition, type ToolResult, type ToolExecutionContext }
 import { Suggest } from "../lib/suggestions.js";
 import { prisma, getLocalUser } from "../lib/db.js";
 import { decryptText } from "../lib/crypto.js";
+import { fetchLlmUpstream } from "../lib/llm-upstream.js";
 
 // Maximum characters to return in raw body before truncation
 const FETCH_URL_MAX_CHARS = 80_000;
@@ -163,7 +164,7 @@ async function processWithLlm(
 
   const userMessage = `URL: ${url}\n\nPrompt: ${prompt}\n\n--- Fetched Content ---\n${truncated.text}\n--- End Content${truncated.truncated ? " (truncated)" : ""} ---`;
 
-  const response = await fetch(`${llm.baseUrl}/chat/completions`, {
+  const response = await fetchLlmUpstream(undefined, `${llm.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
