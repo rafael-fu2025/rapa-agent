@@ -7,6 +7,7 @@ import { isDangerousCommand, diagnoseAndFixCommand } from "../../tools/shell.js"
 import { hasTestInfrastructure, resolveTypecheckCommand } from "../../tools/diagnostics.js";
 import { analyseCommandRisk, type CommandRiskAssessment } from "../safety/dangerous-patterns.js";
 import { detectPromptInjection, wrapUntrustedContent } from "../safety/prompt-injection.js";
+import { redact } from "../crypto.js";
 import type {
   AgentExecutionMode,
   ToolDefinition,
@@ -90,6 +91,27 @@ const UNTRUSTED_INPUT_TOOLS = new Set([
   "web_search",
   "search_files"
 ]);
+
+/**
+ * Field sets the injection scanner and the secret redactor both walk.
+ * read_file returns data.content, fetch_url returns data.body, read_image
+ * returns data.textContent, web_search returns data.results[] entries.
+ */
+const REDACT_DATA_STRING_FIELDS = ["content", "body", "textContent"] as const;
+const REDACT_RESULT_ENTRY_FIELDS = ["title", "snippet", "content"] as const;
+
+/**
+ * Apply secret redaction unless the string is a data URI. `redact()`'s
+ * generic base64 pattern ([a-zA-Z0-9+/]{40,}) false-positives on inline
+ * base64 images (screenshots, read_image output), so those pass through
+ * untouched.
+ */
+function redactUnlessDataUri(value: string): string {
+  if (value.slice(0, 10).toLowerCase() === "data:image") {
+    return value;
+  }
+  return redact(value);
+}
 
 const CHAT_MODE_RESTRICTED_CATEGORIES: ToolDefinition["category"][] = [
   "filesystem",
@@ -289,7 +311,11 @@ export class ToolOrchestrator {
       call,
       definition,
       conversationId: this.context.conversationId,
-      workspaceRoot: this.context.workspaceRoot
+      workspaceRoot: this.context.workspaceRoot,
+      // Ride the classifier config to the approval layer so
+      // handleToolApproval can consult the LLM classifier without routes
+      // needing to thread AgentConfig through every call site.
+      autoApproveClassifier: this.config.autoApproveClassifier
     });
   }
 
@@ -560,6 +586,71 @@ export class ToolOrchestrator {
   }
 
   /**
+   * Secret redaction in the tool-result pipeline. Applied to every result
+   * BEFORE truncation/eviction/dedup so a leaked key can never reach the
+   * provider history, the eviction store on disk, or the AgentToolCall row.
+   * Always on (no config gate) — secrets must never persist.
+   *
+   * Walks the same field set as the prompt-injection scanner: `output`,
+   * `data.content|body|textContent`, and `data.results[].title|snippet|content`.
+   * Strings that start with "data:image" are skipped (base64-image false
+   * positive in redact()'s generic base64 pattern).
+   */
+  private redactToolResult(result: ToolResult): ToolResult {
+    if ((!result.output || typeof result.output !== "string") && !result.data) return result;
+
+    const output = typeof result.output === "string" && result.output.length > 0
+      ? redactUnlessDataUri(result.output)
+      : result.output;
+
+    let data = result.data;
+    if (typeof data === "string") {
+      data = redactUnlessDataUri(data);
+    } else if (typeof data === "object" && data !== null && !Array.isArray(data)) {
+      const record = { ...(data as Record<string, unknown>) };
+      let changed = false;
+      for (const key of REDACT_DATA_STRING_FIELDS) {
+        const value = record[key];
+        if (typeof value === "string" && value.length > 0) {
+          const redactedValue = redactUnlessDataUri(value);
+          if (redactedValue !== value) {
+            record[key] = redactedValue;
+            changed = true;
+          }
+        }
+      }
+      if (Array.isArray(record.results)) {
+        let resultsChanged = false;
+        const redactedResults = record.results.map((entry) => {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+          const entryRecord = { ...(entry as Record<string, unknown>) };
+          let entryChanged = false;
+          for (const key of REDACT_RESULT_ENTRY_FIELDS) {
+            const value = entryRecord[key];
+            if (typeof value === "string" && value.length > 0) {
+              const redactedValue = redactUnlessDataUri(value);
+              if (redactedValue !== value) {
+                entryRecord[key] = redactedValue;
+                entryChanged = true;
+              }
+            }
+          }
+          if (entryChanged) resultsChanged = true;
+          return entryChanged ? entryRecord : entry;
+        });
+        if (resultsChanged) {
+          record.results = redactedResults;
+          changed = true;
+        }
+      }
+      if (changed) data = record;
+    }
+
+    if (output === result.output && data === result.data) return result;
+    return { ...result, output, data };
+  }
+
+  /**
    * P2-D: Tool result truncation. After a tool call returns, bound the
    * size of any string fields so a single noisy tool (e.g. `cat`-ing a
    * megabyte log) doesn't blow the LLM's context window. The default
@@ -727,6 +818,9 @@ export class ToolOrchestrator {
           }
           this.onToolStart?.(calls[i]);
           results[i] = await this.executeToolCall(calls[i], { approved: approval.approved });
+          // Secret redaction runs BEFORE truncation/eviction so no leaked key
+          // reaches the history, the eviction store, or the database.
+          results[i] = this.redactToolResult(results[i]!);
           // P2-D: bound the size of every tool result before it lands in the
           // history. Truncation is non-destructive — the full result stays in the
           // `AgentToolCall` row in the database.
@@ -762,6 +856,8 @@ export class ToolOrchestrator {
 
         this.onToolStart?.(calls[i]);
         let result = await this.executeToolCall(calls[i], { approved: approval.approved });
+        // Secret redaction before truncation/eviction (see redactToolResult).
+        result = this.redactToolResult(result);
         result = this.truncateToolResult(result, calls[i]);
         result = await this.evictIfNeeded(result, calls[i]);
         results[i] = result;
@@ -800,7 +896,8 @@ export class ToolOrchestrator {
           const retryResult = await this.retryToolCall(calls[i], result);
           if (retryResult) {
             const truncated = this.truncateToolResult(retryResult, calls[i]);
-            results[i] = await this.evictIfNeeded(truncated, calls[i]);
+            // Redact after re-truncation, before eviction (secrets never persist).
+            results[i] = await this.evictIfNeeded(this.redactToolResult(truncated), calls[i]);
           }
         }
       }

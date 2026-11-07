@@ -114,6 +114,12 @@ export type ToolExecutionContext = {
   agentDepth?: number;
   llm?: ToolLlmContext;
   /**
+   * Sandbox strategy for shell execution ("native" | "docker" | "off").
+   * Populated from AgentConfig by the agent bootstrap; tools fall back to
+   * the RAPA_SANDBOX_MODE env var, then "native". See lib/sandbox/index.ts.
+   */
+  sandboxMode?: import("./sandbox/types.js").SandboxMode;
+  /**
    * Aborted when the run is cancelled (client disconnect, exit hatch).
    * Long-running tools (execute_command pipe mode) forward it to their
    * child process so an aborted run doesn't leave orphans running to

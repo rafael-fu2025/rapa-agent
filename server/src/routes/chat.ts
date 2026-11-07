@@ -21,6 +21,7 @@ import { fetchLlmUpstream } from "../lib/llm-upstream.js";
 import { prisma, getLocalUser } from "../lib/db.js";
 import { loadWorkspaceInstructionsSystemMessage } from "../lib/workspace-instructions.js";
 import { recordUsage } from "../lib/usage.js";
+import { estimateCallCost } from "../lib/run-limits.js";
 import { resolveSseAllowOrigin } from "../lib/cors-origins.js";
 import { providerAllowsKeylessAccess } from "../lib/providers.js";
 import { translateReasoning } from "../lib/agent/reasoning-translator.js";
@@ -1296,6 +1297,17 @@ export async function registerChatRoutes(app: FastifyInstance) {
     let upstream: Response | undefined;
     let lastFailure = "";
 
+    // Done-event contract (parity with agent runs): context-window usage +
+    // estimated cost. Chat has no shared compaction-budget helper, so the
+    // context percent is an APPROXIMATION: the outgoing message array's
+    // character size vs a flat 120k-char budget (the agent path's default
+    // budget), tokens at the same 4 chars/token heuristic. Cost uses the
+    // same per-model price table as the agent path, and both fields are
+    // omitted when the provider reports no usage.
+    const CHAT_CONTEXT_CHAR_BUDGET = 120_000;
+    const CHAT_CHARS_PER_TOKEN = 4;
+    let chatContextChars = 0;
+
     for (let i = 0; i < keysToTry.length; i += 1) {
       const current = keysToTry[i];
       const apiKey = current.apiKeyEncrypted
@@ -1327,6 +1339,10 @@ export async function registerChatRoutes(app: FastifyInstance) {
         // Reasoning / thinking-mode control — see reasoning-translator.ts.
         ...translateReasoning(payload.provider, model, payload.reasoningEffort)
       };
+
+      // Context pressure snapshot for the done event (approximation — the
+      // message array's serialized size, matching what the provider sees).
+      chatContextChars = JSON.stringify(requestBody.messages).length;
 
       app.log.info({
         model,
@@ -1633,6 +1649,28 @@ export async function registerChatRoutes(app: FastifyInstance) {
           model,
           content: assistantContent,
           tokenUsage: streamTokenUsage,
+          // Honest values only: contextUsage is the serialized-history
+          // approximation described above; estimatedCostUsd uses the
+          // shared per-model price table and is omitted when the provider
+          // reported no usage.
+          ...(chatContextChars > 0
+            ? {
+                contextUsage: {
+                  percent: Math.min(100, Math.round((chatContextChars / CHAT_CONTEXT_CHAR_BUDGET) * 100)),
+                  usedTokens: Math.round(chatContextChars / CHAT_CHARS_PER_TOKEN),
+                  budgetTokens: Math.round(CHAT_CONTEXT_CHAR_BUDGET / CHAT_CHARS_PER_TOKEN)
+                }
+              }
+            : {}),
+          ...(streamTokenUsage
+            ? {
+                estimatedCostUsd: estimateCallCost(
+                  model,
+                  streamTokenUsage.promptTokens ?? 0,
+                  streamTokenUsage.completionTokens ?? 0
+                )
+              }
+            : {}),
           apiKeySwitch
         })}\n\n`
 

@@ -1,9 +1,11 @@
 // Tool registration and initialization
 //
-// Registers all native tools with the global tool registry. MCP tools
-// (§3.1) are NOT registered here — they're added dynamically per-agent
-// via `getAgentMcpToolsForUser()`. Plan mode + chat mode pick the right
-// subset via `listForMode()`.
+// Registers all native tools with the global tool registry. MCP servers
+// are reached through the passthrough trio (`mcp_list_servers`,
+// `mcp_search_tools`, `mcp_call_tool`) rather than per-tool
+// registrations — discovery is lazy so full tool schemas never enter
+// the model's context. Plan mode + chat mode pick the right subset via
+// `listForMode()`.
 
 import { toolRegistry } from "../lib/tools.js";
 import { AppendFileTool, EditFileTool } from "./edit-file.js";
@@ -55,7 +57,7 @@ import {
   BrowserTypeTool
 } from "./browser.js";
 import { SendEmailTool } from "./email.js";
-import { McpCallTool, McpListServersTool } from "./mcp-passthrough.js";
+import { McpCallTool, McpListServersTool, McpSearchToolsTool } from "./mcp-passthrough.js";
 
 let registered = false;
 
@@ -146,6 +148,7 @@ export function registerAllTools(): void {
   toolRegistry.register(new SendEmailTool());
   // §3.1 MCP
   toolRegistry.register(new McpListServersTool());
+  toolRegistry.register(new McpSearchToolsTool());
   toolRegistry.register(new McpCallTool());
 
   registered = true;

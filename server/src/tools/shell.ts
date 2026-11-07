@@ -1,16 +1,24 @@
 // Shell execution tools and terminal session management
 
-import { exec, execSync, spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import os from "node:os";
 import { resolve } from "node:path";
-import { promisify } from "node:util";
 
 import { Tool, type ToolDefinition, type ToolExecutionContext, type ToolResult } from "../lib/tools.js";
 import { Suggest } from "../lib/suggestions.js";
+import {
+  acknowledgeNativeFallback,
+  isNativeFallbackAcknowledged,
+  resolveSandboxBackend,
+  resolveSandboxMode,
+  SandboxUnavailableError,
+  spawnTreeKillable,
+  terminateProcessTree,
+  type SandboxMode
+} from "../lib/sandbox/index.js";
 import { isWithinWorkspaceSymlinkSafe, resolveWorkspacePath, toWorkspaceRelativePath } from "./filesystem.js";
 
 
-const execAsync = promisify(exec);
 const MAX_BUFFER = 1024 * 1024 * 2;
 
 type SessionMode = "pty" | "shell" | "pipe";
@@ -335,7 +343,7 @@ function spawnNativeShellSession(sessionId: string, cwd: string, ownerId: string
       child.stdin.write(data);
     },
     kill: () => {
-      child.kill();
+      void terminateProcessTree(child.pid);
     },
     resize: () => {
       // Resize is not supported for the native shell fallback.
@@ -409,6 +417,7 @@ async function getOrCreateSession(sessionId: string, cwd: string, ownerId: strin
     if (resolve(existing.cwd) !== resolve(cwd)) {
       existing.closed = true;
       existing.process.kill();
+      void terminateProcessTree(existing.process.pid);
       sessions.delete(sessionId);
     } else if (existing.ownerId !== ownerId) {
       // Client-supplied session ids must not let one user adopt another
@@ -640,6 +649,21 @@ const INLINE_CODE_EXECUTION_PATTERNS: RegExp[] = [
   /\bcmd\b\s+\/c\b/i,
 ];
 
+/**
+ * Sandbox policy gate (native + docker modes): privilege-escalation commands
+ * are never executed when a sandbox is active. Matching mirrors the privilege
+ * section of `isDangerousCommand` so both layers agree on what counts.
+ */
+export function isPrivilegeEscalationCommand(command: string): boolean {
+  const lowerCmd = command.trim().toLowerCase();
+  for (const blocked of BLOCKED_PRIVILEGE_COMMANDS) {
+    if (lowerCmd.startsWith(blocked)) return true;
+    if (lowerCmd.includes(` ${blocked}`) || lowerCmd.includes(`\t${blocked}`)) return true;
+    if (lowerCmd.includes(`&${blocked}`) || lowerCmd.includes(`|${blocked}`)) return true;
+  }
+  return false;
+}
+
 export function isDangerousCommand(command: string): boolean {
   const normalized = command.trim();
 
@@ -658,13 +682,9 @@ export function isDangerousCommand(command: string): boolean {
     if (pattern.test(normalized)) return true;
   }
 
-  const lowerCmd = normalized.toLowerCase();
-  for (const blocked of BLOCKED_PRIVILEGE_COMMANDS) {
-    if (lowerCmd.startsWith(blocked)) return true;
-    if (lowerCmd.includes(` ${blocked}`) || lowerCmd.includes(`\t${blocked}`)) return true;
-    if (lowerCmd.includes(`&${blocked}`) || lowerCmd.includes(`|${blocked}`)) return true;
-  }
+  if (isPrivilegeEscalationCommand(normalized)) return true;
 
+  const lowerCmd = normalized.toLowerCase();
   const firstWord = lowerCmd.split(/\s+/)[0] ?? "";
   if (!firstWord) return false;
 
@@ -684,6 +704,154 @@ export function isDangerousCommand(command: string): boolean {
   return true;
 }
 
+
+// ---------------------------------------------------------------------------
+// PIPE-mode command runner.
+//
+// Replaces `promisify(exec)` with an explicit `spawn(..., { shell: true })`
+// so the child's pid is captured and the WHOLE process tree can be killed on
+// timeout or run-abort (exec only signalled the direct child, orphaning
+// npm/script grandchildren). Output aggregation, maxBuffer, exit-code and
+// error-shape semantics mirror exec's contract so downstream handling is
+// unchanged.
+// ---------------------------------------------------------------------------
+
+const PIPE_MAX_BUFFER = 1024 * 1024 * 10; // 10MB — matches the previous exec options
+
+type PipedCommandFailure = {
+  message: string;
+  /** Exit code when the child exited; string errno (e.g. "ENOENT") on spawn errors. */
+  code?: number | string | null;
+};
+
+type PipedCommandOutcome = {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  /** Present when the command did not complete normally. */
+  failure?: PipedCommandFailure;
+};
+
+async function runPipedCommand(command: string, options: {
+  cwd: string;
+  timeoutMs: number;
+  signal?: AbortSignal;
+}): Promise<PipedCommandOutcome> {
+  if (options.signal?.aborted) {
+    return {
+      stdout: "",
+      stderr: "",
+      exitCode: null,
+      failure: { message: "The operation was aborted", code: null }
+    };
+  }
+
+  const child = spawnTreeKillable(command, {
+    cwd: options.cwd,
+    env: getSanitizedEnv()
+  });
+
+  let stdout = "";
+  let stderr = "";
+  let bufferOverflowStream: "stdout" | "stderr" | undefined;
+
+  const collect = (isStdout: boolean) => (chunk: Buffer | string) => {
+    const text = String(chunk);
+    const current = isStdout ? stdout : stderr;
+    const room = PIPE_MAX_BUFFER - current.length;
+    if (room <= 0) {
+      bufferOverflowStream ??= isStdout ? "stdout" : "stderr";
+      return;
+    }
+    if (text.length > room) {
+      bufferOverflowStream ??= isStdout ? "stdout" : "stderr";
+    }
+    if (isStdout) stdout += text.slice(0, room);
+    else stderr += text.slice(0, room);
+  };
+  child.stdout?.on("data", collect(true));
+  child.stderr?.on("data", collect(false));
+
+  let timedOut = false;
+  let aborted = false;
+  let killedForOverflow = false;
+
+  const killTree = () => {
+    void terminateProcessTree(child.pid);
+  };
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    killTree();
+  }, options.timeoutMs);
+
+  const onAbort = () => {
+    aborted = true;
+    killTree();
+  };
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    let spawnError: NodeJS.ErrnoException | undefined;
+    const exitCode = await new Promise<number | null>((resolve) => {
+      let settled = false;
+      const finish = (code: number | null) => {
+        if (settled) return;
+        settled = true;
+        resolve(code);
+      };
+      child.once("close", (code) => finish(code));
+      // Spawn-time failures (missing shell executable, ...) may never reach
+      // 'close' with a meaningful code — surface them as exec-style errors.
+      child.once("error", (error: NodeJS.ErrnoException) => {
+        spawnError = error;
+        finish(null);
+      });
+    });
+    clearTimeout(timer);
+
+    if (timedOut) {
+      return {
+        stdout,
+        stderr,
+        exitCode,
+        failure: { message: `Command timed out after ${options.timeoutMs}ms`, code: null }
+      };
+    }
+    if (aborted) {
+      return {
+        stdout,
+        stderr,
+        exitCode,
+        failure: { message: "The operation was aborted", code: null }
+      };
+    }
+    if (spawnError) {
+      return {
+        stdout,
+        stderr,
+        exitCode,
+        failure: { message: spawnError.message, code: spawnError.code ?? null }
+      };
+    }
+    if (bufferOverflowStream) {
+      if (!killedForOverflow) {
+        killedForOverflow = true;
+        killTree();
+      }
+      return {
+        stdout,
+        stderr,
+        exitCode,
+        failure: { message: `${bufferOverflowStream} maxBuffer length exceeded`, code: null }
+      };
+    }
+    return { stdout, stderr, exitCode };
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
+  }
+}
 
 function getCommandError(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
@@ -805,6 +973,10 @@ export function closeTerminalSession(sessionId: string, ownerId: string) {
   session.closed = true;
   touchSession(session);
   session.process.kill();
+  // Tree-kill best effort: child.kill() alone orphans grandchildren
+  // (npm run scripts, spawned dev servers). terminateProcessTree never
+  // throws and treats a vanished pid as "already gone".
+  void terminateProcessTree(session.process.pid);
   sessions.delete(sessionId);
   return true;
 }
@@ -892,6 +1064,19 @@ export class ExecuteCommandTool extends Tool {
     }
     const sessionId = getProcessSessionId(context, params.sessionId as string | undefined, cwdInfo.cwd);
 
+    // Sandbox policy gate (native + docker modes): privilege-escalation
+    // commands never execute while a sandbox is active. The check runs on the
+    // EFFECTIVE command (post Windows rewrite) and covers every execution
+    // strategy below. "off" disables the gate entirely (legacy behavior).
+    const sandboxMode = resolveSandboxMode(context);
+    if (sandboxMode !== "off" && isPrivilegeEscalationCommand(command)) {
+      return {
+        success: false,
+        error: "Blocked by sandbox policy: privilege escalation",
+        errorCategory: "validation"
+      };
+    }
+
     // Background mode: start and return immediately
     if (background) {
       try {
@@ -929,51 +1114,68 @@ export class ExecuteCommandTool extends Tool {
 
     if (!usePty) {
       // ── PIPE mode (primary path) ──────────────────────────────────────
-      // Uses child_process.exec with stdout/stderr pipes. No PTY means:
+      // Uses spawn(shell: true) with stdout/stderr pipes. No PTY means:
       // - No command echo pollution
       // - No ANSI escape codes (tools auto-detect non-terminal via isatty())
       // - No shell prompts (PS C:\...>)
       // - Clean output suitable for LLM consumption
       // - Completion detected by process exit (no marker scanning needed)
-      try {
-        const input = params.input as string | undefined;
-        const cmdToRun = input ? `echo ${JSON.stringify(input)} | ${command}` : command;
+      // - The child pid is captured so timeout/abort kills the whole tree.
+      const input = params.input as string | undefined;
+      const cmdToRun = input ? `echo ${JSON.stringify(input)} | ${command}` : command;
 
-        const { stdout, stderr } = await execAsync(cmdToRun, {
-          cwd: cwdInfo.cwd,
-          timeout,
-          maxBuffer: 1024 * 1024 * 10, // 10MB
-          env: getSanitizedEnv(),
-          // Run-abort kills the child instead of orphaning it to `timeout`.
-          signal: context.signal
-        });
-
-        let output = [stdout, stderr].filter(Boolean).join("\n").trim();
-        // Still strip ANSI in case any tool forces color despite non-terminal
-        output = stripAnsi(output);
-
-        return {
-          success: true,
-          output: headTailTruncate(output),
-          data: {
-            sessionId,
-            cwd: cwdInfo.cwd,
-            relativeCwd: cwdInfo.relativeCwd,
-            mode: "pipe" as SessionMode,
-            shell: getShell(),
-            platform: os.platform(),
-            diagnostic
+      // Docker sandbox wrapping. On an unavailable backend, surface the
+      // validation error once (never silently bypass); afterwards the native
+      // fallback is acknowledged and commands run natively with policy.
+      let effectiveCommand = cmdToRun;
+      if (sandboxMode === "docker" && !isNativeFallbackAcknowledged()) {
+        const backend = resolveSandboxBackend("docker");
+        if (backend) {
+          try {
+            const prepared = await backend.prepare(cmdToRun, {
+              workspaceRoot: context.workspaceRoot,
+              cwd: cwdInfo.cwd,
+              timeoutMs: timeout
+            });
+            effectiveCommand = prepared.command;
+          } catch (error) {
+            if (error instanceof SandboxUnavailableError) {
+              acknowledgeNativeFallback();
+              return {
+                success: false,
+                error: "Docker sandbox unavailable — approve to run natively. Re-run the command; it will now execute natively with the privilege-escalation policy still enforced.",
+                errorCategory: "validation",
+                data: {
+                  sandboxUnavailable: true,
+                  fallbackMode: "native" satisfies SandboxMode,
+                  command
+                }
+              };
+            }
+            throw error;
           }
-        };
-      } catch (error) {
-        // execAsync throws on non-zero exit codes, attaching stdout/stderr
-        const execError = error as { stdout?: string; stderr?: string; message: string; code?: number };
-        const output = stripAnsi([execError.stdout, execError.stderr].filter(Boolean).join("\n")).trim();
-        const exitCode = execError.code;
+        }
+      }
 
+      const outcome = await runPipedCommand(effectiveCommand, {
+        cwd: cwdInfo.cwd,
+        timeoutMs: timeout,
+        signal: context.signal
+      });
+
+      let output = [outcome.stdout, outcome.stderr].filter(Boolean).join("\n").trim();
+      // Still strip ANSI in case any tool forces color despite non-terminal
+      output = stripAnsi(output);
+
+      if (outcome.failure) {
+        const exitCode = outcome.exitCode;
         if (output || exitCode !== undefined) {
           const baseResult: ToolResult = {
             success: exitCode === 0,
+            // Surface WHY the command failed (timeout, abort, spawn error,
+            // maxBuffer) — the exit code alone is ambiguous when a signal
+            // kill reports a non-zero code on Windows.
+            error: outcome.failure.message,
             output: headTailTruncate(output),
             data: {
               sessionId,
@@ -988,7 +1190,7 @@ export class ExecuteCommandTool extends Tool {
           };
           // Attach recovery suggestions based on the error shape.
           if (exitCode !== 0) {
-            const errMsg = execError.message ?? "";
+            const errMsg = outcome.failure.message ?? "";
             if (/timed out|ETIMEDOUT|timeout/i.test(errMsg)) {
               return Suggest.shellTimeout(baseResult, command);
             }
@@ -1002,7 +1204,7 @@ export class ExecuteCommandTool extends Tool {
           return baseResult;
         }
 
-        const fallbackMessage = getCommandError(error, "Command execution failed");
+        const fallbackMessage = outcome.failure.message || "Command execution failed";
         if (/timed out|ETIMEDOUT|timeout/i.test(fallbackMessage)) {
           return Suggest.shellTimeout({ success: false, error: fallbackMessage }, command);
         }
@@ -1017,6 +1219,35 @@ export class ExecuteCommandTool extends Tool {
           error: fallbackMessage
         };
       }
+
+      const exitCode = outcome.exitCode;
+      const baseResult: ToolResult = {
+        success: exitCode === 0,
+        output: headTailTruncate(output),
+        data: {
+          sessionId,
+          cwd: cwdInfo.cwd,
+          relativeCwd: cwdInfo.relativeCwd,
+          mode: "pipe" as SessionMode,
+          shell: getShell(),
+          platform: os.platform(),
+          ...(exitCode === 0 ? {} : { exitCode }),
+          diagnostic
+        }
+      };
+      if (exitCode !== 0) {
+        // exec surfaced non-zero exits as "Command failed: <cmd>\n<stderr>";
+        // match suggestions against the same shape so "not recognized" and
+        // friends still attach.
+        const errMsg = `Command failed: ${command}\n${outcome.stderr}`;
+        if (/command not found|not recognized|ENOENT/i.test(errMsg)) {
+          return Suggest.commandNotFound(baseResult, command);
+        }
+        if (/EACCES|permission denied/i.test(errMsg)) {
+          return Suggest.permissionDenied(baseResult, command);
+        }
+      }
+      return baseResult;
     }
 
     // ── PTY mode (only when persistent session is explicitly requested) ──

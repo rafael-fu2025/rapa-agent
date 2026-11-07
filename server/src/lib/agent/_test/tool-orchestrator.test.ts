@@ -42,6 +42,52 @@ class LongOutputTool extends Tool {
   }
 }
 
+class LeakyTool extends Tool {
+  definition: ToolDefinition = {
+    name: "leaky",
+    description: "emits result shapes carrying secrets",
+    category: "system",
+    riskLevel: "read",
+    requiresApproval: false,
+    parameters: {}
+  };
+  async execute(_params: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
+    return {
+      success: true,
+      output: "run ok — api_key=sk-live-abcdef1234567890abcdef",
+      data: {
+        content: "config loaded with secret: hunter2-super-long-value",
+        body: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg==",
+        textContent: "token: ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        results: [
+          { title: "search hit", snippet: "found sk-xyz98765432109876543210 in logs", content: " Authorization: Bearer abc.def.ghi-jkl-mno-pqr-stu-vwx-yz" },
+          { title: "plain hit", snippet: "nothing sensitive here" }
+        ]
+      }
+    };
+  }
+}
+
+class LeakyWriteTool extends Tool {
+  definition: ToolDefinition = {
+    name: "leaky_write",
+    description: "emits result shapes carrying secrets on the write path",
+    category: "system",
+    riskLevel: "write",
+    requiresApproval: false,
+    parameters: {}
+  };
+  async execute(_params: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
+    return {
+      success: true,
+      output: "written — api_key=sk-live-abcdef1234567890abcdef",
+      data: {
+        content: "token: ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+      }
+    };
+  }
+}
+
 beforeEach(async () => {
   const base = await mkdtemp(join(tmpdir(), "rapa-trunc-"));
   workspaceRoot = base;
@@ -49,11 +95,15 @@ beforeEach(async () => {
   // can find them. Tear them down in `afterEach` to keep tests isolated.
   toolRegistry.register(new NoopTool());
   toolRegistry.register(new LongOutputTool());
+  toolRegistry.register(new LeakyTool());
+  toolRegistry.register(new LeakyWriteTool());
 });
 
 afterEach(() => {
   toolRegistry.unregister("noop");
   toolRegistry.unregister("long_output");
+  toolRegistry.unregister("leaky");
+  toolRegistry.unregister("leaky_write");
   vi.unstubAllEnvs();
 });
 
@@ -233,5 +283,114 @@ describe("ToolOrchestrator tool-result truncation (P2-D)", () => {
     ]);
     expect(result.success).toBe(true);
     expect(result.output).toBe("hello");
+  });
+});
+
+describe("ToolOrchestrator secret redaction", () => {
+  const makeOrchestrator = () => new ToolOrchestrator({
+    context: { workspaceRoot, userId: "u", conversationId: "c" },
+    config: { maxIterations: 1, autoApproveTools: [], provider: "p", model: "m", baseUrl: "b", apiKey: "k" }
+  });
+
+  it("redacts secrets from output and data fields on the read path", async () => {
+    const orch = makeOrchestrator();
+    const [result] = await orch.executeToolCallsInBatches([
+      { id: "l1", name: "leaky", parameters: {} }
+    ]);
+    expect(result.success).toBe(true);
+
+    const serialized = JSON.stringify(result);
+    // Secrets never survive the pipeline.
+    expect(serialized).not.toContain("sk-live-abcdef1234567890abcdef");
+    expect(serialized).not.toContain("hunter2-super-long-value");
+    expect(serialized).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+    expect(serialized).not.toContain("sk-xyz98765432109876543210");
+    expect(serialized).not.toContain("Bearer abc.def.ghi-jkl-mno-pqr-stu-vwx-yz");
+    // Redaction leaves a masked trace, not an empty string.
+    expect(result.output).toContain("api_");
+    // Non-secret structure is preserved.
+    const data = result.data as Record<string, unknown>;
+    expect(data.results).toHaveLength(2);
+    expect((data.results as Array<Record<string, unknown>>)[1]).toEqual({
+      title: "plain hit",
+      snippet: "nothing sensitive here"
+    });
+  });
+
+  it("skips strings that start with a data:image URI (base64 false positive)", async () => {
+    const orch = makeOrchestrator();
+    const [result] = await orch.executeToolCallsInBatches([
+      { id: "l1", name: "leaky", parameters: {} }
+    ]);
+    const data = result.data as Record<string, unknown>;
+    const body = data.body as string;
+    expect(body.startsWith("data:image/png;base64,iVBORw0KGgoAAAANSUhEUg")).toBe(true);
+    expect(body).toContain("iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4");
+  });
+
+  it("redacts results[] entry fields (title/snippet/content)", async () => {
+    const orch = makeOrchestrator();
+    const [result] = await orch.executeToolCallsInBatches([
+      { id: "l1", name: "leaky", parameters: {} }
+    ]);
+    const [first] = (result.data as Record<string, unknown>).results as Array<Record<string, unknown>>;
+    expect(first.title).toBe("search hit");
+    expect(first.snippet).not.toContain("sk-xyz98765432109876543210");
+    expect(first.snippet).toContain("found");
+    expect(first.content).not.toContain("Bearer abc.def");
+  });
+
+  it("redacts on the sequential write path too", async () => {
+    const orch = makeOrchestrator();
+    const [result] = await orch.executeToolCallsInBatches([
+      { id: "lw1", name: "leaky_write", parameters: {} }
+    ]);
+    expect(result.success).toBe(true);
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("sk-live-abcdef1234567890abcdef");
+    expect(serialized).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+  });
+
+  it("leaves clean results untouched (no copy churn)", async () => {
+    const orch = makeOrchestrator();
+    const [result] = await orch.executeToolCallsInBatches([
+      { id: "t1", name: "noop", parameters: { text: "just text, no secrets" } }
+    ]);
+    expect(result.output).toBe("just text, no secrets");
+  });
+});
+
+describe("ToolOrchestrator auto-approve classifier ride-through", () => {
+  it("attaches config.autoApproveClassifier to the approval request", async () => {
+    const { ExecuteCommandTool } = await import("../../../tools/shell.js");
+    toolRegistry.register(new ExecuteCommandTool());
+    const seen: Array<Record<string, unknown>> = [];
+    const orch = new ToolOrchestrator({
+      context: { workspaceRoot, userId: "u", conversationId: "c" },
+      config: {
+        maxIterations: 1,
+        autoApproveTools: [],
+        provider: "p",
+        model: "m",
+        baseUrl: "b",
+        apiKey: "k",
+        autoApproveClassifier: { enabled: true, provider: "openai", model: "gpt-test" },
+        requestToolApproval: async (request) => {
+          seen.push(request as unknown as Record<string, unknown>);
+          return { approved: true };
+        }
+      }
+    });
+
+    // execute_command is a shell tool with requiresApproval — the approval
+    // path (and therefore requestToolApproval) runs for it.
+    await orch.executeToolCallsInBatches([
+      { id: "s1", name: "execute_command", parameters: { command: "echo classifier-ride-test" } }
+    ]);
+
+    toolRegistry.unregister("execute_command");
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].autoApproveClassifier).toEqual({ enabled: true, provider: "openai", model: "gpt-test" });
   });
 });

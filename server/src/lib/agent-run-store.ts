@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 
 import type { AgentStep, AgentTokenUsage, ToolCall } from "./agent.js";
+import { discardRunWorktree, isGitRepo, parseWorktreeMetadata } from "./worktree.js";
 import type { ToolDefinition, ToolResult } from "./tools.js";
 import {
   buildAssistantMemoryText,
@@ -48,6 +49,10 @@ export type PersistAgentRunParams = {
   /// record so the agent history view can show what effort was used
   /// and resume replays the same setting.
   reasoningEffort?: "off" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | "on";
+  /// Worktree-per-run isolation (Item 3). Present when the run executed
+  /// inside a dedicated git worktree; only meaningful on the CREATE path
+  /// — the update path never overwrites the metadata written at start.
+  worktreeInfo?: { branch: string; path: string; originalRoot: string };
 };
 
 function truncateText(value: string, limit = PREVIEW_CHAR_LIMIT) {
@@ -238,6 +243,60 @@ function buildCapabilitySnapshot() {
 }
 
 /**
+ * Terminal run statuses — the pool `sweepStaleWorktrees` scans for
+ * abandoned worktrees (a terminal run never needs its worktree again;
+ * the metadata is kept so the user can still merge/discard manually
+ * within the grace window).
+ */
+const TERMINAL_RUN_STATUSES = ["completed", "max_iterations", "failed", "interrupted", "aborted"] as const;
+
+/** Runs whose worktree metadata is older than this get swept. */
+export const STALE_WORKTREE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Discard worktrees attached to TERMINAL runs older than 7 days (Item 3).
+ * Branch names carry no date, so age comes from the run rows: the
+ * worktree metadata records the run's branch/path/originalRoot and a
+ * status that only flips to "merged"/"discarded" by user action. Any
+ * terminal run still marked "active" past the grace window has its
+ * worktree removed fire-and-forget.
+ *
+ * Bounded (take 25, oldest first) so a backlog of old runs cannot turn
+ * one agent start into a long git cleanup session.
+ */
+export async function sweepStaleWorktrees(
+  maxAgeMs: number = STALE_WORKTREE_MAX_AGE_MS
+): Promise<void> {
+  const cutoff = new Date(Date.now() - maxAgeMs);
+  const staleRuns = await prisma.agentRun.findMany({
+    where: {
+      status: { in: [...TERMINAL_RUN_STATUSES] },
+      completedAt: { lt: cutoff }
+    },
+    orderBy: { completedAt: "asc" },
+    take: 25,
+    select: { id: true, worktree: true }
+  });
+
+  for (const run of staleRuns) {
+    const info = parseWorktreeMetadata(run.worktree);
+    if (!info || (info.status && info.status !== "active")) continue;
+    if (!(await isGitRepo(info.originalRoot))) continue;
+
+    const result = await discardRunWorktree(info.originalRoot, info).catch((error: unknown) => ({
+      ok: false as const,
+      message: error instanceof Error ? error.message : "discard failed"
+    }));
+    await prisma.agentRun.update({
+      where: { id: run.id },
+      data: {
+        worktree: { ...info, status: result.ok ? "discarded" : "active" }
+      }
+    }).catch(() => undefined);
+  }
+}
+
+/**
  * Create the AgentRun row at run START with status "running". The row id is
  * passed to Agent.stream() so the exit-hatch controls (pause/abort/redirect)
  * can address a LIVE run, and persistAgentRun later UPDATES this row (via
@@ -254,10 +313,20 @@ export async function startAgentRun(params: {
   mode?: "agent" | "plan";
   prompt: string;
   reasoningEffort?: "off" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | "on";
+  worktreeInfo?: { branch: string; path: string; originalRoot: string };
 }): Promise<string> {
   await prisma.agentRun.updateMany({
     where: { conversationId: params.conversationId, status: "running" },
     data: { status: "failed", errorMessage: "Run interrupted (server restart or superseded run)" }
+  });
+
+  // Item 3 — fold the stale-worktree cleanup into the stale-run sweep:
+  // fire-and-forget so git I/O never delays the run starting. Failures
+  // are logged and retried on the next run start.
+  void sweepStaleWorktrees().catch((error: unknown) => {
+    console.warn(
+      `[agent-run-store] Stale worktree sweep failed: ${error instanceof Error ? error.message : String(error)}`
+    );
   });
 
   const run = await prisma.agentRun.create({
@@ -272,10 +341,116 @@ export async function startAgentRun(params: {
       reasoningEffort: params.reasoningEffort ?? null,
       promptPreview: truncateText(params.prompt),
       capabilitySnapshot: buildCapabilitySnapshot(),
+      ...(params.worktreeInfo
+        ? { worktree: { ...params.worktreeInfo, status: "active" } }
+        : {}),
       startedAt: new Date()
     }
   });
   return run.id;
+}
+
+/**
+ * Incremental mid-run persistence (detachable agent runs): upserts ONE step
+ * (unique [runId, iteration]) plus its tool-call rows and rolls the run-row
+ * counters forward, so a run detail view / re-attach shows real progress
+ * while the run is still executing. Called fire-and-forget from the stream
+ * route on every `step` event — failures are logged by the caller and never
+ * break the stream; the final persistAgentRun pass remains the source of
+ * truth and re-creates the full history idempotently.
+ *
+ * Deliberately does NOT touch checkpoints or process sessions: those are
+ * re-created (delete-first) by the final persist, and mid-run writes would
+ * just be churn. Uses the SAME sanitizers/limits as persistAgentRun.
+ */
+export async function persistRunStepIncremental(params: {
+  runId: string;
+  /** Needed to build the same `approvalId` format the final persist writes. */
+  conversationId: string;
+  step: {
+    iteration: number;
+    reasoning?: string;
+    response?: string;
+    timestamp?: Date;
+  };
+  toolCalls: Array<{ call: ToolCall; result?: ToolResult }>;
+}): Promise<void> {
+  const { runId, conversationId, step, toolCalls } = params;
+  const timestamp = step.timestamp ?? new Date();
+  const toolFailureCount = toolCalls.filter(({ result }) => result ? !result.success : false).length;
+
+  await prisma.$transaction(async (tx) => {
+    // Upsert on the [runId, iteration] unique key — a retried or late step
+    // event for the same iteration updates the row instead of duplicating it.
+    const stepRecord = await tx.agentRunStep.upsert({
+      where: { runId_iteration: { runId, iteration: step.iteration } },
+      create: {
+        runId,
+        iteration: step.iteration,
+        reasoning: step.reasoning,
+        response: step.response,
+        responsePreview: step.response ? truncateText(step.response) : undefined,
+        toolCallCount: toolCalls.length,
+        toolFailureCount,
+        timestamp
+      },
+      update: {
+        reasoning: step.reasoning,
+        response: step.response,
+        responsePreview: step.response ? truncateText(step.response) : undefined,
+        toolCallCount: toolCalls.length,
+        toolFailureCount,
+        timestamp
+      }
+    });
+
+    // Delete-then-create (keyed off the step row) keeps retries idempotent —
+    // an upsert of tool calls is impossible without a stable per-call key
+    // that survives across persist passes.
+    await tx.agentToolCall.deleteMany({ where: { runId, stepId: stepRecord.id } });
+    for (const { call, result } of toolCalls) {
+      const definition = getToolDefinition(call);
+      const requiresApproval = definition?.requiresApproval ?? false;
+      await tx.agentToolCall.create({
+        data: {
+          runId,
+          stepId: stepRecord.id,
+          externalCallId: call.id,
+          name: call.name,
+          category: definition?.category,
+          status: getToolCallStatus(result),
+          parameters: toInputJson(call.parameters),
+          resultData: buildResultData(result),
+          outputPreview: summarizeResult(result),
+          errorMessage: result?.error ? truncateText(result.error) : undefined,
+          requiresApproval,
+          approvedByUser: requiresApproval ? !isRejectedResult(result) : undefined,
+          approvalId: requiresApproval ? `${conversationId}:${call.id}` : undefined,
+          riskLevel: requiresApproval ? "requires_approval" : undefined,
+          startedAt: timestamp,
+          completedAt: result ? timestamp : undefined
+        }
+      });
+    }
+
+    // Monotonic iteration counter + rolling response preview on the run row.
+    const run = await tx.agentRun.findUnique({
+      where: { id: runId },
+      select: { iterationCount: true }
+    });
+    if (run) {
+      await tx.agentRun.update({
+        where: { id: runId },
+        data: {
+          iterationCount: Math.max(run.iterationCount, step.iteration),
+          // Omitted when the step has no response — Prisma keeps the
+          // existing preview, matching the "?? existing" semantics.
+          ...(step.response ? { responsePreview: truncateText(step.response, 2000) } : {}),
+          updatedAt: new Date()
+        }
+      });
+    }
+  });
 }
 
 export async function persistAgentRun(params: PersistAgentRunParams) {
@@ -448,6 +623,9 @@ export async function persistAgentRun(params: PersistAgentRunParams) {
             errorMessage: params.errorMessage ? truncateText(params.errorMessage) : undefined,
             capabilitySnapshot: buildCapabilitySnapshot(),
             tokenUsage: toInputJson(params.tokenUsage),
+            ...(params.worktreeInfo
+              ? { worktree: { ...params.worktreeInfo, status: "active" } }
+              : {}),
             iterationCount: params.steps.length,
             startedAt: params.steps[0]?.timestamp ?? new Date(),
             completedAt: new Date()
@@ -470,6 +648,23 @@ export async function persistAgentRun(params: PersistAgentRunParams) {
     }
 
     return { assistantMessage, run };
+  });
+
+  // Detachable-run idempotency: while the run was live,
+  // persistRunStepIncremental already wrote steps/tool calls for completed
+  // iterations (so re-attach clients and the detail view see real progress).
+  // The pass below re-creates the full history from the authoritative
+  // in-memory steps — wipe the run's child rows first so the end state is
+  // exactly ONE copy of each step/toolcall/checkpoint/process session.
+  // Children are deleted BEFORE their parents: AgentToolCall.stepId,
+  // AgentCheckpoint.step/toolCall and AgentProcessSession.toolCall are
+  // SetNull relations, so deleting parents first would orphan rows instead
+  // of removing them.
+  await prisma.$transaction(async (tx) => {
+    await tx.agentCheckpoint.deleteMany({ where: { runId: run.id } });
+    await tx.agentProcessSession.deleteMany({ where: { runId: run.id } });
+    await tx.agentToolCall.deleteMany({ where: { runId: run.id } });
+    await tx.agentRunStep.deleteMany({ where: { runId: run.id } });
   });
 
   for (const step of params.steps) {

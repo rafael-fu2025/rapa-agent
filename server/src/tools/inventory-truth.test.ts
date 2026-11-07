@@ -10,9 +10,9 @@ beforeEach(() => {
   registerAllTools();
 });
 
-describe("tool inventory (58 after removals)", () => {
+describe("tool inventory (59 after removals)", () => {
   it("registers the expected count", () => {
-    expect(toolRegistry.list().length).toBe(58);
+    expect(toolRegistry.list().length).toBe(59);
   });
 
   it("removed the dead tools and the alias", () => {

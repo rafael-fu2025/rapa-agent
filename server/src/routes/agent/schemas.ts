@@ -22,7 +22,28 @@ export const agentRequestSchema = z.object({
   workspaceId: z.string().optional(),
   maxIterations: z.number().min(1).max(80).default(60),
   autoApproveTools: z.array(z.string()).default([]),
+  // Shell-command sandbox strategy. "native" enforces the privilege-escalation
+  // blocklist on the host; "docker" additionally runs commands inside an
+  // ephemeral network-disabled container (lib/sandbox/); "off" disables both.
+  // Threaded to tools via ToolExecutionContext.sandboxMode.
+  sandboxMode: z.enum(["native", "docker", "off"]).optional(),
+  // LLM auto-approve classifier (lib/auto-approve-classifier.ts): when
+  // enabled, shell approval requests are classified approve/deny/unsure
+  // before pattern matching. Omit to rely on the
+  // RAPA_AUTO_APPROVE_CLASSIFIER_MODEL env var.
+  autoApproveClassifier: z.object({
+    enabled: z.boolean().optional(),
+    provider: z.string().optional(),
+    model: z.string().optional()
+  }).optional(),
   attachments: z.array(attachmentSchema).optional(),
+  // Worktree-per-run isolation (Item 3). When true AND the resolved
+  // workspace is a git repository, the run executes inside a dedicated
+  // worktree (.rapa/worktrees/run-<short8>) on branch rapa/run-<short8>;
+  // afterwards the user merges or discards it from the run banner.
+  // Creation failure never fails the run — it falls back to the
+  // original checkout.
+  worktree: z.boolean().optional(),
   // Per-request reasoning depth. Translated to the provider's native
   // field shape by `server/src/lib/agent/reasoning-translator.ts`:
   //   - "off"    → don't add any reasoning parameter (provider default)
@@ -98,6 +119,29 @@ export const upsertAgentIntegrationSchema = z.object({
   metadata: z.record(z.unknown()).optional()
 });
 
+// Item 5 — lifecycle hooks. `event` mirrors the agent event-bus kinds the
+// hook layer supports; `matchTool` narrows tools/tool/* hooks to one tool.
+export const AGENT_HOOK_EVENTS = [
+  "tools/tool/call",
+  "tools/tool/result",
+  "agent/turn/end"
+] as const;
+
+export const upsertAgentHookSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().min(1),
+  event: z.enum(AGENT_HOOK_EVENTS),
+  matchTool: z.string().optional(),
+  action: z.enum(["shell", "http"]),
+  target: z.string().min(1).max(2000),
+  timeoutMs: z.number().int().min(1000).max(30000).default(5000),
+  enabled: z.boolean().default(true)
+});
+
+export const hookParamsSchema = z.object({
+  id: z.string().min(1)
+});
+
 export const approvalDecisionSchema = z.object({
   approvalId: z.string().min(1),
   approved: z.boolean(),
@@ -115,6 +159,11 @@ export const agentRunsQuerySchema = z.object({
 });
 
 export const agentRunParamsSchema = z.object({
+  id: z.string().min(1)
+});
+
+// Item 3 — POST /agent/runs/:id/worktree/{merge,discard}
+export const worktreeActionParamsSchema = z.object({
   id: z.string().min(1)
 });
 

@@ -183,6 +183,9 @@ describe("verify-before-done gate (agent loop)", () => {
     const { done } = await runAgent(llm, "just answer");
 
     expect(llm.calls.length).toBe(1);
-    expect(done?.verification).toBeUndefined();
+    // Done-event contract: `verification` is explicitly null (not undefined)
+    // when no verification ran, so consumers can distinguish "ran and
+    // passed" from "never ran".
+    expect(done?.verification).toBeNull();
   });
 });

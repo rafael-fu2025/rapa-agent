@@ -76,6 +76,7 @@ import { PlanModeState } from "./agent/plan-mode-state.js";
 import { LoopDetector } from "./agent/loop-detector.js";
 import { exitHatchRegistry } from "./exit-hatch.js";
 import { RunLimitTracker, loadDefaultRunLimits } from "./run-limits.js";
+import { dispatchHooksForEvent, type HookEventPayload } from "./hooks.js";
 
 /**
  * Per-mode defaults for `maxIterations` (research L3). Callers can still
@@ -1301,6 +1302,12 @@ export class Agent {
 
       for (const call of parsedResponse.toolCalls) {
         yield { type: "tool_call", iteration, status: "pending", call };
+        // Item 5 hooks — fire-soft "call" hook per tool invocation.
+        this.dispatchHooks("tools/tool/call", {
+          call: { id: call.id, name: call.name, parameters: call.parameters },
+          workspaceRoot: this.context.workspaceRoot,
+          conversationId: this.context.conversationId
+        });
       }
 
       // Pre-execution approval events. Two independent triggers:
@@ -1594,6 +1601,21 @@ export class Agent {
         const status = this.getToolCallStatus(result);
         yield { type: "tool_call", iteration, status, call, result: result! };
 
+        // Item 5 hooks — fire-soft "result" hook once the tool settles
+        // (requires_approval results haven't run yet, so they don't fire).
+        if (status === "completed" || status === "failed") {
+          this.dispatchHooks("tools/tool/result", {
+            call: { id: call.id, name: call.name, parameters: call.parameters },
+            result: {
+              success: result!.success,
+              ...(result!.output !== undefined ? { output: result!.output } : {}),
+              ...(result!.error !== undefined ? { error: result!.error } : {})
+            },
+            workspaceRoot: this.context.workspaceRoot,
+            conversationId: this.context.conversationId
+          });
+        }
+
         // Track file writes and command executions for progress reporting
         if (call.name === "write_file" || call.name === "edit_file" || call.name === "append_file") {
           fileWriteCount++;
@@ -1796,18 +1818,45 @@ export class Agent {
     }
   }
 
+  /**
+   * Fire user-configured lifecycle hooks (Item 5, lib/hooks.ts). Strictly
+   * fire-and-forget: dispatch runs in the background and every failure is
+   * swallowed inside hooks.ts, so hook I/O never stalls or breaks the run.
+   * Guarded on config — zero overhead when the user has no hooks.
+   */
+  private dispatchHooks(event: string, payload: HookEventPayload): void {
+    if (!this.config.hooks?.length) return;
+    void dispatchHooksForEvent(
+      this.context.userId,
+      event,
+      payload,
+      this.config.hooks
+    ).catch(() => {});
+  }
+
   private async* emitDone(
     event: AgentExecutionEvent & { type: "done" }
   ): AsyncGenerator<AgentExecutionEvent> {
     const qaIssues = this.runFinalQaCheck(event.response);
     const elapsedMs = this.runStartTime > 0 ? Date.now() - this.runStartTime : undefined;
+    // Done-event contract (Wave 1): context-window usage + estimated cost.
+    // Budget matches the compaction logic (per-call override > model-based
+    // adaptive budget); cost comes from the RunLimitTracker price table.
+    const contextUsage = this.computeContextUsage();
+    const costUsd = this.runLimits?.getUsage().costUsd;
     const enriched = {
       ...event,
       elapsedMs,
       qa: {
         issues: qaIssues,
         passed: !hasFailedRule(qaIssues)
-      }
+      },
+      // Surface the verify-before-done outcome on EVERY terminal event —
+      // most emitDone call sites don't pass it explicitly. Null when no
+      // verification ran.
+      verification: event.verification ?? this.verificationStatus,
+      ...(contextUsage ? { contextUsage } : {}),
+      ...(typeof costUsd === "number" ? { estimatedCostUsd: costUsd } : {})
     };
     // Lifecycle (Phase 1.4): turn boundary marker — emitted before
     // the enriched `done` event so consumers see `turn/end` first.
@@ -1822,6 +1871,12 @@ export class Agent {
       status: enriched.status,
       iterations: enriched.iterations,
       elapsedMs: enriched.elapsedMs
+    });
+    // Item 5 hooks — fire-soft "turn/end" hook.
+    this.dispatchHooks("agent/turn/end", {
+      status: enriched.status,
+      iterations: enriched.iterations,
+      ...(enriched.elapsedMs !== undefined ? { elapsedMs: enriched.elapsedMs } : {})
     });
 
     // Phase 2.3: exit plan mode (if active) before done.
@@ -1932,6 +1987,24 @@ export class Agent {
   }
 
   /**
+   * Context-window usage for the done event: current history char cost vs
+   * the compaction budget (same budget the mid-run compactor uses:
+   * per-call override > model-based adaptive budget). Chars convert to
+   * tokens at 4 chars/token; percent caps at 100.
+   */
+  private computeContextUsage(): { percent: number; usedTokens: number; budgetTokens: number } | undefined {
+    const budget = this.config.memoryBudget?.historyCharBudget
+      ?? computeHistoryBudget(this.config.model);
+    if (budget <= 0) return undefined;
+    const costChars = estimateHistoryChars(this.history);
+    return {
+      percent: Math.min(100, Math.round((costChars / budget) * 100)),
+      usedTokens: Math.round(costChars / CHARS_PER_TOKEN),
+      budgetTokens: Math.round(budget / CHARS_PER_TOKEN)
+    };
+  }
+
+  /**
    * Task-plan completion snapshot for the done event. Parses the counts
    * from buildTaskSummary's "(n/m completed)" header; null when no plan.
    */
@@ -2028,6 +2101,33 @@ type ToolResultShape = {
   error?: string;
   output?: string;
 };
+
+/**
+ * Chars-per-token heuristic shared with the compaction budget math
+ * (types.ts computes context budgets at 4 chars/token).
+ */
+const CHARS_PER_TOKEN = 4;
+
+/**
+ * Estimate the total character cost of a history array — mirrors the
+ * heuristic in `context-compactor.ts` (content length + 32 overhead per
+ * message, plus toolCalls/toolResults JSON) so the reported contextUsage
+ * percent lines up with when compaction actually fires.
+ */
+function estimateHistoryChars(history: AgentMessage[]): number {
+  let total = 0;
+  for (const msg of history) {
+    const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+    total += content.length + 32;
+    if (msg.toolCalls) {
+      total += JSON.stringify(msg.toolCalls).length;
+    }
+    if (msg.toolResults) {
+      total += JSON.stringify(msg.toolResults).length;
+    }
+  }
+  return total;
+}
 
 /**
  * Hash a tool call's parameters deterministically so two calls with the same

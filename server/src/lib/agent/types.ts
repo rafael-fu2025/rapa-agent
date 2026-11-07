@@ -1,6 +1,7 @@
 // Shared types, constants, and pure utility helpers for the agent loop.
 
 import { z } from "zod";
+import type { HookConfig } from "../hooks.js";
 import type {
   AgentExecutionMode,
   ToolDefinition,
@@ -206,11 +207,28 @@ export type ToolCall = {
   thoughtSignature?: string;
 };
 
+/**
+ * Configuration for the LLM-based auto-approve classifier (see
+ * `lib/auto-approve-classifier.ts`). Additive optional everywhere — absent
+ * config means the classifier is disabled unless
+ * RAPA_AUTO_APPROVE_CLASSIFIER_MODEL is set.
+ */
+export type AutoApproveClassifierConfig = {
+  enabled: boolean;
+  provider?: string;
+  model?: string;
+};
+
 export type ToolApprovalRequest = {
   call: ToolCall;
   definition: ToolDefinition;
   conversationId: string;
   workspaceRoot: string;
+  /**
+   * Rides from AgentConfig so the approval layer can consult the LLM
+   * classifier without routes needing to thread it through every call site.
+   */
+  autoApproveClassifier?: AutoApproveClassifierConfig;
 };
 
 export type ToolApprovalDecision = {
@@ -234,6 +252,12 @@ export type AgentConfig = {
   encryptionSecret?: string;
   seedHistory?: AgentMessage[];
   requestToolApproval?: (request: ToolApprovalRequest) => Promise<ToolApprovalDecision>;
+  /**
+   * LLM auto-approve classifier (additive optional). When enabled, shell
+   * approval requests are classified before pattern matching; the decision
+   * rides to the approval layer on `ToolApprovalRequest`.
+   */
+  autoApproveClassifier?: AutoApproveClassifierConfig;
   allowedToolNames?: string[];
   isNewConversation?: boolean;
   onApiKeySwitch?: (payload: { providerSettingId?: string; newKeyId: string }) => Promise<void> | void;
@@ -289,6 +313,13 @@ export type AgentConfig = {
    * known low provider-side default.
    */
   maxCompletionTokens?: number;
+  /**
+   * User-configured lifecycle hooks (Item 5, lib/hooks.ts). When present,
+   * the loop dispatches `tools/tool/call`, `tools/tool/result` and
+   * `agent/turn/end` hook events (fire-soft — hook failures never break
+   * the run). Absent/empty = zero overhead.
+   */
+  hooks?: HookConfig[];
 };
 
 export type AgentStep = {
@@ -302,7 +333,7 @@ export type AgentStep = {
 
 export type ToolCallStatus = "pending" | "running" | "completed" | "failed" | "requires_approval";
 
-export type AgentExecutionEvent =
+export type AgentExecutionEventBase =
   | {
       type: "start";
       conversationId: string;
@@ -390,12 +421,37 @@ export type AgentExecutionEvent =
       };
       /**
        * Verify-before-done result: whether the workspace's test suite and
-       * typecheck were green when the run finished. Undefined when no
+       * typecheck were green when the run finished. Null when no
        * verification ran (no files modified, or no infrastructure).
        */
       verification?: {
         testsPassed: boolean;
         typecheckPassed: boolean;
+      } | null;
+      /**
+       * Context-window usage at completion: history char cost vs the
+       * compaction budget (chars→tokens at 4 chars/token), percent capped
+       * at 100. Present on every done event.
+       */
+      contextUsage?: {
+        percent: number;
+        usedTokens: number;
+        budgetTokens: number;
+      };
+      /**
+       * Estimated dollar cost of the run, accumulated by the
+       * RunLimitTracker per-model price table. Present whenever the run
+       * tracked limits (the normal path).
+       */
+      estimatedCostUsd?: number;
+      /**
+       * Worktree-per-run isolation (Item 3). Present when the run executed
+       * inside a dedicated git worktree — the UI offers merge/discard for
+       * the branch after the run ends.
+       */
+      worktree?: {
+        branch: string;
+        path: string;
       };
       /**
        * Task-plan completion state at the end of the run. Undefined when
@@ -411,6 +467,17 @@ export type AgentExecutionEvent =
       message: string;
       iteration?: number;
     };
+
+/**
+ * Agent execution event with the broker sequence stamp (detachable agent
+ * runs). `seq` is stamped by `publishRunEvent()` in `lib/live-run-broker.ts`
+ * on the copy that goes to SSE subscribers (both the live stream and the
+ * re-attach replay) so clients can re-attach with `?since=<last seq>`.
+ * Events straight out of `Agent.stream()` carry no seq.
+ */
+export type AgentExecutionEvent = AgentExecutionEventBase & {
+  seq?: number;
+};
 
 export type ParsedAssistantResponse = {
   reasoning?: string;

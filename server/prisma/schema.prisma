@@ -27,6 +27,7 @@ model AppUser {
   agentIntegrations      AgentIntegration[]
   agentMcpServers        AgentMcpServer[]
   autoApprovePatterns    AutoApprovePattern[]
+  agentHooks             AgentHook[]
   serviceApiKeys         ServiceApiKey[]
   serviceIntegrationSettings ServiceIntegrationSetting[]
   agentTasks             AgentTask[]
@@ -164,6 +165,10 @@ model AgentRun {
   verificationStatus  String?
   verificationSummary Json?
   tokenUsage          Json?
+  /// Worktree-per-run isolation (Item 3). {branch, path, originalRoot,
+  /// status} when the run executed inside a dedicated git worktree;
+  /// null for runs in the original checkout.
+  worktree            Json?
   iterationCount      Int                   @default(0)
   startedAt           DateTime              @default(now())
   completedAt         DateTime?
@@ -555,4 +560,32 @@ model IntegrationCredential {
 
   @@unique([userId, provider, accountName])
   @@index([userId, provider, isActive])
+}
+
+// Item 5 — lifecycle hooks the user can attach to agent events. When the
+// agent emits a matching event, the hook fires a shell command or an HTTP
+// POST (fire-soft — hook failures never break the run). See lib/hooks.ts.
+model AgentHook {
+  id         String    @id @default(cuid())
+  userId     String
+  name       String
+  /// "tools/tool/call" | "tools/tool/result" | "agent/turn/end"
+  event      String
+  /// Optional tool-name filter — only fires for this tool when set.
+  matchTool  String?
+  /// "shell" | "http"
+  action     String
+  /// Shell command template (receives RAPA_HOOK_EVENT / RAPA_HOOK_PAYLOAD
+  /// env vars) or HTTP URL (receives POST {event, payload}).
+  target     String
+  timeoutMs  Int       @default(5000)
+  enabled    Boolean   @default(true)
+  useCount   Int       @default(0)
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, event, enabled])
 }

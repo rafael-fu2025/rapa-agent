@@ -173,6 +173,9 @@ export class SpawnAgentTool extends Tool {
   definition: ToolDefinition = {
     name: "spawn_agent",
     description: `Spawn an isolated child agent with a FRESH context and a read-only toolset to complete one bounded task, then return its report as this tool's result. The child cannot see this conversation, cannot modify files, and cannot ask the user questions. Use it to investigate codebases, trace bugs, or gather evidence without flooding your own context — the parent only pays for the final report. Dispatch several spawn_agent calls in one turn to research independent questions in parallel.
+Two modes:
+- Foreground (default): blocks until the child finishes and returns its report as this tool's result. Best when the next step depends on the findings.
+- Background (background: true): returns immediately with an agentId; the child keeps running and you retrieve the result later by calling get_agent_status (with that agentId, or omit agentId to list all children). Best for long-running investigations you want to overlap with other work. Always poll get_agent_status before finishing — an abandoned background agent's report is lost.
 Agent types:
 - "explore" — codebase ANALYSIS: locate where things live, map structure, trace a code path, answer "how/where does X work". Returns concise conclusions with file paths (cite paths as file:line where possible). Reads excerpts, not whole files — it locates code, it does not review or audit it. Pick breadth: "quick" for a spot check, "medium" (default) for a standard sweep, "very_thorough" for an exhaustive multi-area sweep.
 - "general" — open-ended research with the specialist methodology (research/debugging/planning lenses) for questions that need reasoning beyond locating code.`,
@@ -205,6 +208,11 @@ Agent types:
       maxIterations: {
         type: "number",
         description: "Maximum number of agent loop iterations. Defaults: general 15, explore 5/10/20 by breadth. Max 30.",
+        required: false
+      },
+      background: {
+        type: "boolean",
+        description: "Run in the background instead of blocking; poll get_agent_status for the result",
         required: false
       }
     }
@@ -248,6 +256,31 @@ Agent types:
       breadth,
       maxIterations
     });
+
+    // Background mode (Item 4): fire-and-forget. The tool returns
+    // immediately; the child keeps running and reports through the
+    // registry, where get_agent_status picks it up. The runner never
+    // throws, but the .catch guards against import-time surprises so a
+    // background failure can never reject into the tool orchestrator.
+    if (params.background === true) {
+      void (async () => {
+        const { runChildAgent } = await import("../lib/sub-agent-runner.js");
+        await runChildAgent(context, undefined, handle);
+      })().catch(() => undefined);
+
+      return {
+        success: true,
+        output: `Sub-agent started in background. Poll get_agent_status (agentId: ${handle.id}) for progress and the final report.`,
+        data: {
+          agentId: handle.id,
+          status: "running",
+          task,
+          pollWith: "get_agent_status",
+          agentType,
+          breadth
+        }
+      };
+    }
 
     // Synchronous delegation: run the child to completion here (dynamic
     // import keeps tools/sub-agents.ts out of the runner's eval-time

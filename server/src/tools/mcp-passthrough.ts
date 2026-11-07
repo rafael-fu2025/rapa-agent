@@ -6,30 +6,31 @@
 // and conflict with the static tool registry), we expose:
 //
 //   - `mcp_list_servers`     — list user's MCP servers and their tools
+//     (names + one-line descriptions only — full JSON schemas would burn
+//     the model's context; use `mcp_search_tools` to look up argument
+//     summaries by keyword)
+//   - `mcp_search_tools`     — keyword search across servers' tools,
+//     returning `name:type` argument summaries (capped) so the model
+//     learns how to call without ingesting full schemas
 //   - `mcp_call_tool`        — call a specific (server, tool) pair
-//   - `getAgentMcpToolsForUser(userId)` — returns ToolDefinition[] that
-//     can be merged into the agent's tool list. Each entry is a
-//     "synthetic" tool definition (no Tool class); the agent's tool
-//     orchestrator routes calls to these via the `mcp:` prefix in
-//     allowedToolNames.
-//
-// This keeps the change additive: existing tools work unchanged.
+// Tools are discovered lazily: `mcp_search_tools` finds tools by
+// keyword and `mcp_call_tool` executes them, so full tool schemas never
+// enter the model's context.
 
 import { Tool, type ToolDefinition, type ToolExecutionContext, type ToolResult } from "../lib/tools.js";
 import { prisma, getLocalUser } from "../lib/db.js";
 import { Suggest } from "../lib/suggestions.js";
 import {
   createMcpClientConnection,
-  type McpServerConfig,
-  type McpToolDescriptor
+  loadMcpToolsForUser,
+  type McpServerConfig
 } from "../mcp/client.js";
 
 const MAX_PARAMS_BYTES = 50_000;
-
-function sanitizeToolName(raw: string): string {
-  // Convert "MCP tool name" to a Rapa-friendly snake_case id.
-  return raw.replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 64);
-}
+// Item 12 — context-economy caps for the discovery tools.
+const MCP_SCHEMA_SUMMARY_CHARS = 500;
+const MCP_QUERY_MAX_CHARS = 200;
+const MCP_SEARCH_MATCH_LIMIT = 20;
 
 function mcpConfigFromRow(row: {
   id: string;
@@ -54,35 +55,34 @@ function mcpConfigFromRow(row: {
   };
 }
 
+
 /**
- * Build a ToolDefinition-shaped description of an MCP tool, prefixed
- * with `mcp_<sanitizedServerName>_`. The agent sees the tool with this
- * name; the orchestrator sees the `mcp:` prefix in allowedToolNames and
- * routes the call to `mcpCallToolByName` below.
+ * Render the top-level properties of an MCP tool's input schema as a
+ * compact `name:type` list, capped so a sprawling schema cannot blow up
+ * the tool result. Enough for the model to construct a call; full detail
+ * stays on the MCP server.
  */
-function mcpToolToDefinition(serverName: string, tool: McpToolDescriptor): ToolDefinition {
-  const safeServer = sanitizeToolName(serverName);
-  const safeTool = sanitizeToolName(tool.name);
-  return {
-    name: `mcp_${safeServer}__${safeTool}`,
-    description: `[MCP:${serverName}] ${tool.description || tool.name}`,
-    category: "system",
-    riskLevel: "network",
-    // The MCP tool's input schema is arbitrary JSON; we accept any object
-    // and forward it as-is to the MCP server.
-    parameters: {
-      __mcpRaw: {
-        type: "object",
-        description: "Pass-through arguments for the MCP tool. See the MCP server's tool schema for the expected shape."
-      }
-    }
-  };
+export function summarizeToolArguments(inputSchema: unknown): string {
+  const properties = inputSchema && typeof inputSchema === "object" && !Array.isArray(inputSchema)
+    ? (inputSchema as { properties?: unknown }).properties
+    : undefined;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) return "";
+  const parts = Object.entries(properties as Record<string, unknown>).map(([name, spec]) => {
+    const type = spec && typeof spec === "object" && !Array.isArray(spec) && typeof (spec as { type?: unknown }).type === "string"
+      ? (spec as { type: string }).type
+      : "any";
+    return `${name}:${type}`;
+  });
+  const summary = parts.join(", ");
+  return summary.length > MCP_SCHEMA_SUMMARY_CHARS
+    ? `${summary.slice(0, MCP_SCHEMA_SUMMARY_CHARS - 1)}…`
+    : summary;
 }
 
 export class McpListServersTool extends Tool {
   definition: ToolDefinition = {
     name: "mcp_list_servers",
-    description: "List the user's configured MCP servers along with each server's exposed tools. Use this to discover what MCP capabilities are available before calling mcp_call_tool.",
+    description: "List the user's configured MCP servers along with each server's exposed tools (names and one-line descriptions). Use this to discover what MCP capabilities are available; use mcp_search_tools to find tools by keyword and mcp_call_tool to invoke them.",
     category: "system",
     riskLevel: "read",
     parameters: {
@@ -102,7 +102,10 @@ export class McpListServersTool extends Tool {
       where: { userId: user.id, enabled: true, ...(filter ? { name: filter } : {}) }
     });
 
-    const servers: Array<{ name: string; transport: string; endpoint: string; tools: McpToolDescriptor[]; error?: string }> = [];
+    // Item 12 — context economy: names + one-line descriptions only. The
+    // full inputSchema JSON used to ride on every listing and could consume
+    // a large share of the model's context window for a single discovery call.
+    const servers: Array<{ name: string; transport: string; endpoint: string; toolCount: number; tools: Array<{ name: string; description: string }>; error?: string }> = [];
 
     for (const row of rows) {
       try {
@@ -112,7 +115,11 @@ export class McpListServersTool extends Tool {
           name: row.name,
           transport: row.transport,
           endpoint: row.endpoint,
-          tools
+          toolCount: tools.length,
+          tools: tools.map((tool) => ({
+            name: tool.name,
+            description: tool.description || ""
+          }))
         });
         await conn.close();
       } catch (err) {
@@ -120,13 +127,93 @@ export class McpListServersTool extends Tool {
           name: row.name,
           transport: row.transport,
           endpoint: row.endpoint,
+          toolCount: 0,
           tools: [],
           error: err instanceof Error ? err.message : String(err)
         });
       }
     }
 
-    return { success: true, data: { servers, count: servers.length } };
+    const hasTools = servers.some((server) => server.toolCount > 0);
+    return {
+      success: true,
+      data: {
+        servers,
+        count: servers.length,
+        ...(hasTools ? { hint: "use mcp_search_tools to find tools by keyword; call them via mcp_call_tool" } : {})
+      }
+    };
+  }
+}
+
+export class McpSearchToolsTool extends Tool {
+  definition: ToolDefinition = {
+    name: "mcp_search_tools",
+    description: "Search the user's configured MCP servers for tools matching a keyword (matches tool names and descriptions). Returns each match with an argument summary (name:type list) so you can call it via mcp_call_tool without fetching full JSON schemas.",
+    category: "system",
+    riskLevel: "read",
+    parameters: {
+      query: {
+        type: "string",
+        description: "Case-insensitive keyword to match against MCP tool names and descriptions (1-200 chars)",
+        required: true
+      }
+    }
+  };
+
+  async execute(params: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
+    const query = typeof params.query === "string" ? params.query.trim() : "";
+    if (!query) {
+      return { success: false, error: "query is required" };
+    }
+    if (query.length > MCP_QUERY_MAX_CHARS) {
+      return { success: false, error: `query must be at most ${MCP_QUERY_MAX_CHARS} characters` };
+    }
+
+    const user = await getLocalUser();
+    const servers = await loadMcpToolsForUser(user.id);
+    if (servers.length === 0) {
+      return {
+        success: true,
+        data: {
+          query,
+          matches: [],
+          count: 0,
+          message: "No MCP servers are configured. Register one via Settings → MCP Servers, or use mcp_list_servers to see what's available."
+        }
+      };
+    }
+
+    const needle = query.toLowerCase();
+    const matches: Array<{ server: string; name: string; description: string; arguments: string }> = [];
+    let total = 0;
+    for (const server of servers) {
+      for (const tool of server.tools) {
+        const name = tool.name ?? "";
+        const description = tool.description ?? "";
+        if (!name.toLowerCase().includes(needle) && !description.toLowerCase().includes(needle)) continue;
+        total += 1;
+        if (matches.length < MCP_SEARCH_MATCH_LIMIT) {
+          matches.push({
+            server: server.serverName,
+            name,
+            description,
+            arguments: summarizeToolArguments(tool.inputSchema)
+          });
+        }
+      }
+    }
+
+    return {
+      success: true,
+      data: {
+        query,
+        matches,
+        count: total,
+        returned: matches.length,
+        ...(total > matches.length ? { truncated: true } : {})
+      }
+    };
   }
 }
 
@@ -150,7 +237,7 @@ export class McpCallTool extends Tool {
       },
       arguments: {
         type: "object",
-        description: "Arguments to pass to the MCP tool. See the tool's inputSchema (from mcp_list_servers) for the expected shape.",
+        description: "Arguments to pass to the MCP tool. Use mcp_search_tools to look up the tool's argument summary (name:type list) for the expected shape.",
         required: false
       }
     }
@@ -211,39 +298,3 @@ export class McpCallTool extends Tool {
   }
 }
 
-/**
- * Return a list of synthetic ToolDefinitions for every MCP tool the user
- * has registered. The agent's tool orchestrator can merge these into
- * its available set; when the LLM calls one, the orchestrator sees the
- * `mcp:` prefix in allowedToolNames and routes through `dispatchMcpCall`.
- */
-export async function getAgentMcpToolsForUser(userId: string): Promise<ToolDefinition[]> {
-  let rows;
-  try {
-    rows = await prisma.agentMcpServer.findMany({
-      where: { userId, enabled: true }
-    });
-  } catch {
-    return [];
-  }
-  const out: ToolDefinition[] = [];
-  for (const row of rows) {
-    let tools: McpToolDescriptor[];
-    try {
-      const conn = await createMcpClientConnection(mcpConfigFromRow(row));
-      try {
-        tools = await conn.listTools();
-      } finally {
-        await conn.close();
-      }
-    } catch {
-      // Skip unreachable servers — the LLM can still call mcp_list_servers
-      // to see they're offline.
-      continue;
-    }
-    for (const t of tools) {
-      out.push(mcpToolToDefinition(row.name, t));
-    }
-  }
-  return out;
-}

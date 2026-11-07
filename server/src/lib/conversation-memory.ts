@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./db.js";
 import { fetchLlmUpstream } from "./llm-upstream.js";
+import { decryptText } from "./crypto.js";
 import type { AgentStep } from "./agent.js";
 
 const RECENT_MESSAGE_LIMIT = 12;
@@ -10,6 +11,9 @@ const SUMMARY_OUTPUT_CHAR_BUDGET = 4000;
 const MESSAGE_MEMORY_CHAR_LIMIT = 12000;
 const ATTACHMENT_TEXT_CHAR_LIMIT = 6000;
 const TOOL_OUTPUT_CHAR_LIMIT = 1200;
+// Item 13 — idle compaction: the inline summary refresh is bounded so a
+// stalled provider can never delay conversation loading beyond this.
+const IDLE_SUMMARY_REFRESH_TIMEOUT_MS = 8000;
 
 export type PersistedMessageMode = "chat" | "agent" | "plan";
 
@@ -242,15 +246,70 @@ function formatReplayMessages(records: ReplayRecord[], limit: number) {
 }
 
 
-export async function loadConversationMemory(conversationId: string): Promise<LoadedConversationMemory> {
+/** LLM credentials used for the idle (Item 13) inline summary refresh. */
+export type MemorySummaryCredentials = { baseUrl: string; apiKey: string; model: string };
+
+/**
+ * Resolve credentials for the idle summary refresh from the user's first
+ * enabled provider with an active key. Best-effort — returns null when no
+ * usable provider is configured (refresh is then skipped silently).
+ */
+async function resolveSummaryCredentials(userId: string): Promise<MemorySummaryCredentials | null> {
+  try {
+    const secret = process.env.APP_SECRET;
+    if (!secret) return null;
+    const settings = await prisma.providerSetting.findFirst({
+      where: { userId, enabled: true, apiKeys: { some: { isActive: true } } },
+      include: {
+        apiKeys: {
+          where: { isActive: true },
+          orderBy: { createdAt: "asc" },
+          take: 1
+        }
+      }
+    });
+    if (!settings || settings.apiKeys.length === 0) return null;
+    const model = ((settings.models as string[] | null) ?? [])[0];
+    if (!model) return null;
+    return {
+      baseUrl: settings.baseUrl,
+      apiKey: decryptText(settings.apiKeys[0]!.apiKeyEncrypted, secret),
+      model
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Race a promise against a hard timeout; resolves false on timeout. */
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | false> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export async function loadConversationMemory(
+  conversationId: string,
+  summaryCredentials?: MemorySummaryCredentials
+): Promise<LoadedConversationMemory> {
   const conversation = await prisma.conversation.findUnique({
     where: { id: conversationId },
     select: {
       memorySummary: true,
+      memorySummaryUpdatedAt: true,
+      userId: true,
       messages: {
         orderBy: { createdAt: "desc" },
         take: 32,
-        select: { id: true, role: true, content: true, memoryText: true }
+        select: { id: true, role: true, content: true, memoryText: true, createdAt: true }
       }
     }
   });
@@ -259,6 +318,7 @@ export async function loadConversationMemory(conversationId: string): Promise<Lo
     return { summary: null, recentMessages: [] };
   }
 
+  const createdAtById = new Map(conversation.messages.map((message) => [message.id, message.createdAt]));
   const replayable = [...conversation.messages]
     .reverse()
     .filter((message) => message.role === "user" || message.role === "assistant")
@@ -269,9 +329,48 @@ export async function loadConversationMemory(conversationId: string): Promise<Lo
     }))
     .filter((message) => message.content.length > 0);
 
+  const window = splitReplayWindow(replayable);
+
+  // Item 13 — idle compaction. When the replay window trimmed older turns
+  // but the persisted summary is missing (or predates the oldest trimmed
+  // turn), refresh it inline before returning so chat + agent both see
+  // fresh memory. Strictly best-effort: 8s timeout, silent fallback.
+  const oldestOverflow = window.overflowMessages[0];
+  if (oldestOverflow) {
+    const oldestOverflowCreatedAt = createdAtById.get(oldestOverflow.id);
+    const summaryFresh = !!conversation.memorySummary?.trim()
+      && !!conversation.memorySummaryUpdatedAt
+      && (!oldestOverflowCreatedAt || conversation.memorySummaryUpdatedAt >= oldestOverflowCreatedAt);
+    if (!summaryFresh) {
+      const credentials = summaryCredentials ?? await resolveSummaryCredentials(conversation.userId);
+      if (credentials) {
+        const refreshed = await withTimeout(
+          refreshConversationSummary({ conversationId, ...credentials }).then(() => true).catch(() => false),
+          IDLE_SUMMARY_REFRESH_TIMEOUT_MS
+        );
+        if (refreshed) {
+          const updated = await prisma.conversation.findUnique({
+            where: { id: conversationId },
+            select: { memorySummary: true }
+          }).catch(() => null);
+          const refreshedSummary = updated?.memorySummary?.trim();
+          if (refreshedSummary) {
+            return {
+              summary: refreshedSummary,
+              recentMessages: window.recentMessages.map((message) => ({
+                role: message.role,
+                content: message.content
+              }))
+            };
+          }
+        }
+      }
+    }
+  }
+
   return {
     summary: conversation.memorySummary?.trim() || null,
-    recentMessages: splitReplayWindow(replayable).recentMessages.map((message) => ({
+    recentMessages: window.recentMessages.map((message) => ({
       role: message.role,
       content: message.content
     }))

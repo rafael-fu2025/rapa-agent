@@ -26,9 +26,25 @@ import { getDefaultBaseUrl, getDefaultModels } from "../lib/constants.js";
 
 import { decryptText } from "../lib/crypto.js";
 import { prisma, getLocalUser } from "../lib/db.js";
+import { loadHooksForUser, type HookConfig } from "../lib/hooks.js";
 import { buildAgentIdentityMessage } from "../lib/agent/prompt-builder.js";
 import { loadWorkspaceInstructions, buildWorkspaceInstructionsMessage } from "../lib/workspace-instructions.js";
-import { persistAgentRun, startAgentRun } from "../lib/agent-run-store.js";
+import { persistAgentRun, persistRunStepIncremental, startAgentRun } from "../lib/agent-run-store.js";
+import {
+  closeRunEvents,
+  getRunBufferInfo,
+  publishRunEvent,
+  resolveReattachMode,
+  subscribeRunEvents
+} from "../lib/live-run-broker.js";
+import {
+  createRunWorktree,
+  isGitRepo,
+  mergeRunWorktree,
+  parseWorktreeMetadata,
+  discardRunWorktree
+} from "../lib/worktree.js";
+import { randomUUID } from "node:crypto";
 import { resolveSseAllowOrigin } from "../lib/cors-origins.js";
 import { providerAllowsKeylessAccess } from "../lib/providers.js";
 import { recordUsage } from "../lib/usage.js";
@@ -46,9 +62,12 @@ import {
   upsertAgentSkillSchema,
   upsertMcpServerSchema,
   upsertAgentIntegrationSchema,
+  upsertAgentHookSchema,
+  hookParamsSchema,
   approvalDecisionSchema,
   agentRunsQuerySchema,
   agentRunParamsSchema,
+  worktreeActionParamsSchema,
   checkpointParamsSchema,
   checkpointListSchema,
   ACTIVE_RUN_STATUSES,
@@ -93,12 +112,19 @@ type PreparedAgentRequest = {
   seedHistory: AgentMessage[];
   agentRules: Array<{ name: string; content: string; scope: string }>;
   agentSkills: Array<{ name: string; description: string; source: string }>;
+  /** Enabled lifecycle hooks (Item 5) — loaded once per request. */
+  hooks: HookConfig[];
   resumedFromRunId?: string;
   /// Reasoning / thinking-mode depth for this run. Translated to the
   /// provider's native field shape by
   /// `server/src/lib/agent/reasoning-translator.ts`. "off" suppresses
   /// the setting entirely so the provider uses its own default.
   reasoningEffort?: "off" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | "on";
+  /// Worktree-per-run isolation (Item 3). Present when the request opted
+  /// in and the workspace is a git repo; `workspacePath` above then points
+  /// INSIDE the worktree while `worktreeInfo.originalRoot` keeps the
+  /// original checkout for later merge/discard.
+  worktreeInfo?: { branch: string; path: string; originalRoot: string };
 };
 
 async function runShellToolCommand(params: {
@@ -236,7 +262,19 @@ async function prepareAgentRequest(payload: AgentRequestPayload): Promise<Prepar
     }
   });
 
-  const loadedMemory = await loadConversationMemory(conversation.id);
+  // Decrypt once — reused for the LLM config and for idle summary refresh
+  // inside loadConversationMemory (Item 13).
+  const resolvedApiKey = primaryKey ? decryptText(primaryKey.apiKeyEncrypted, secret) : "ollama";
+
+  const loadedMemory = await loadConversationMemory(conversation.id, {
+    baseUrl: settings.baseUrl,
+    apiKey: resolvedApiKey,
+    model
+  });
+
+  // Item 5 — lifecycle hooks are loaded once per request and ride the
+  // AgentConfig; the loop skips dispatch entirely when the list is empty.
+  const hooks = await loadHooksForUser(user.id);
   const seedHistoryItems = [
     buildConversationMemoryMessage(loadedMemory),
     ...loadedMemory.recentMessages
@@ -360,6 +398,32 @@ async function prepareAgentRequest(payload: AgentRequestPayload): Promise<Prepar
     content: buildAgentIdentityMessage(payload.mode ?? "agent")
   });
 
+  // Item 3 — worktree-per-run isolation. When the request opted in AND the
+  // workspace is a git repository, create a dedicated worktree and point the
+  // run at it. Placed LAST in the prepare chain: if any later step threw
+  // before this, no worktree would leak. Creation failure (or a non-git
+  // workspace) logs and falls back to the original checkout — isolation
+  // setup must never fail the run.
+  let workspacePath = workspace.path;
+  let worktreeInfo: PreparedAgentRequest["worktreeInfo"];
+  if (payload.worktree === true) {
+    try {
+      if (await isGitRepo(workspace.path)) {
+        // The AgentRun row does not exist yet at request-prepare time, so
+        // the branch name is seeded from a random token; the run row then
+        // records {branch, path, originalRoot} and merge/discard resolve
+        // via that metadata.
+        const created = await createRunWorktree(workspace.path, randomUUID());
+        worktreeInfo = { ...created, originalRoot: workspace.path };
+        workspacePath = created.path;
+      } else {
+        console.log("[agent] worktree requested but the workspace is not a git repository — running in the original checkout");
+      }
+    } catch (error) {
+      console.warn(`[agent] worktree creation failed — falling back to the original workspace: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   return {
 
     payload,
@@ -369,20 +433,22 @@ async function prepareAgentRequest(payload: AgentRequestPayload): Promise<Prepar
     providerSettingId: settings.id,
     primaryApiKeyId: primaryKey?.id ?? `${payload.provider}-direct`,
     primaryApiKeyName: primaryKey?.name ?? "Direct connection",
-    apiKey: primaryKey ? decryptText(primaryKey.apiKeyEncrypted, secret) : "ollama",
+    apiKey: resolvedApiKey,
     baseUrl: settings.baseUrl,
     fallbackApiKeys,
     encryptionSecret: secret,
     userId: user.id,
     workspaceId: workspace.id,
-    workspacePath: workspace.path,
+    workspacePath,
     conversationId: conversation.id,
     isNewConversation: !existingConversation,
     seedHistory,
     agentRules,
     agentSkills,
+    hooks,
     resumedFromRunId,
-    reasoningEffort: payload.reasoningEffort
+    reasoningEffort: payload.reasoningEffort,
+    worktreeInfo
   };
 
 }
@@ -468,6 +534,10 @@ async function storeAssistantResponse(
     elapsedMs,
     status,
     reasoningEffort: requestInfo.reasoningEffort,
+    // Worktree metadata rides to the CREATE path (the non-stream route has
+    // no startAgentRun row); the UPDATE path (streamed runs) ignores it so
+    // the start-time metadata is never clobbered.
+    worktreeInfo: requestInfo.worktreeInfo,
     existingRunId
   });
 
@@ -500,6 +570,7 @@ async function storeInterruptedRun(
     errorMessage,
     createAssistantMessage: false,
     reasoningEffort: requestInfo.reasoningEffort,
+    worktreeInfo: requestInfo.worktreeInfo,
     existingRunId
   });
 
@@ -538,6 +609,9 @@ function createAgent(
       conversationId: requestInfo.conversationId,
       mode: requestInfo.payload.mode,
       agentDepth: 0,
+      // Wave 1 — shell sandbox strategy, threaded to shell tools via
+      // ToolExecutionContext.sandboxMode. Undefined = native default.
+      ...(requestInfo.payload.sandboxMode ? { sandboxMode: requestInfo.payload.sandboxMode } : {}),
       llm: {
         provider: requestInfo.provider,
         model: requestInfo.model,
@@ -565,6 +639,25 @@ function createAgent(
       onApiKeySwitch: ({ providerSettingId, newKeyId }) => (
         providerSettingId ? persistProviderApiKeySwitch(providerSettingId, newKeyId) : undefined
       ),
+      // Wave 1 — LLM auto-approve classifier config rides on the config so
+      // the approval layer can classify shell commands before patterns.
+      // The payload field is optional; normalize to the strict config shape
+      // (omitted `enabled` resolves to false, matching resolveClassifierConfig).
+      ...(requestInfo.payload.autoApproveClassifier
+        ? {
+            autoApproveClassifier: {
+              enabled: requestInfo.payload.autoApproveClassifier.enabled ?? false,
+              ...(requestInfo.payload.autoApproveClassifier.provider !== undefined
+                ? { provider: requestInfo.payload.autoApproveClassifier.provider }
+                : {}),
+              ...(requestInfo.payload.autoApproveClassifier.model !== undefined
+                ? { model: requestInfo.payload.autoApproveClassifier.model }
+                : {})
+            }
+          }
+        : {}),
+      // Item 5 — lifecycle hooks; empty list = zero dispatch overhead.
+      hooks: requestInfo.hooks,
       // Forwarded as `reasoning_effort` to providers that honor it (OpenAI o-series,
       // DeepSeek reasoner). Undefined = let the provider default.
       reasoningEffort: requestInfo.reasoningEffort
@@ -574,7 +667,7 @@ function createAgent(
 
 
 
-function sendSseEvent(reply: FastifyReply, request: FastifyRequest, event: AgentExecutionEvent) {
+function sendSseEvent(reply: FastifyReply, request: FastifyRequest, event: AgentExecutionEvent | Record<string, unknown>) {
   // Echo the request origin ONLY when it is on the configured CORS allowlist —
   // reflecting arbitrary origins would defeat the allowlist for streaming.
   const allowOrigin = resolveSseAllowOrigin(request.headers.origin);
@@ -592,7 +685,7 @@ function sendSseEvent(reply: FastifyReply, request: FastifyRequest, event: Agent
   reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
-function writeSseEvent(reply: FastifyReply, event: AgentExecutionEvent) {
+function writeSseEvent(reply: FastifyReply, event: AgentExecutionEvent | Record<string, unknown>) {
   reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
@@ -623,7 +716,7 @@ function toHttpError(error: unknown) {
  * (previously `update({ where: { id } })` with no userId check).
  */
 async function isOwnedByUser(
-  table: "agentRule" | "agentSkill" | "agentMcpServer" | "agentIntegration" | "autoApprovePattern",
+  table: "agentRule" | "agentSkill" | "agentMcpServer" | "agentIntegration" | "autoApprovePattern" | "agentHook",
   id: string,
   userId: string
 ): Promise<boolean> {
@@ -710,6 +803,63 @@ async function assertAgentRunOwner(userId: string, runId: string) {
       conversation: { userId }
     }
   });
+}
+
+/**
+ * Shared body of POST /agent/runs/:id/worktree/{merge,discard} (Item 3).
+ * Loads the run row (ownership via the conversation relation), reads the
+ * worktree metadata, executes the git operation against the ORIGINAL
+ * checkout, and flips the stored status on success. Failures keep the
+ * status "active" so the user can retry.
+ */
+async function handleWorktreeAction(
+  app: FastifyInstance,
+  request: FastifyRequest,
+  reply: FastifyReply,
+  action: "merge" | "discard",
+  activeStatuses: Set<string>
+) {
+  const parsed = worktreeActionParamsSchema.safeParse(request.params);
+  if (!parsed.success) {
+    return reply.code(400).send({ message: "Invalid params", issues: parsed.error.issues });
+  }
+
+  const user = await getLocalUser();
+  const run = await assertAgentRunOwner(user.id, parsed.data.id);
+  if (!run) {
+    return reply.code(404).send({ message: "Agent run not found" });
+  }
+
+  const info = parseWorktreeMetadata(run.worktree);
+  if (!info) {
+    return reply.code(404).send({ message: "This run has no worktree — it executed in the original checkout" });
+  }
+  if (info.status && info.status !== "active") {
+    return reply.code(409).send({ ok: false, message: `Worktree was already ${info.status}` });
+  }
+  if (activeStatuses.has(run.status)) {
+    return reply.code(409).send({
+      ok: false,
+      message: `Run is still ${run.status} — wait for it to finish before ${action === "merge" ? "merging" : "discarding"} its worktree`
+    });
+  }
+
+  const result = action === "merge"
+    ? await mergeRunWorktree(info.originalRoot, info)
+    : await discardRunWorktree(info.originalRoot, info);
+
+  if (result.ok) {
+    await prisma.agentRun.update({
+      where: { id: run.id },
+      data: { worktree: { ...info, status: action === "merge" ? "merged" : "discarded" } }
+    }).catch((error: unknown) => {
+      app.log.warn({ err: error, runId: run.id }, `Worktree ${action} succeeded but metadata update failed`);
+    });
+  } else {
+    app.log.info({ runId: run.id, action }, `Worktree ${action} refused: ${result.message}`);
+  }
+
+  return { ok: result.ok, message: result.message };
 }
 
 
@@ -1135,7 +1285,19 @@ export async function registerAgentRoutes(app: FastifyInstance) {
       }
     });
 
-    return { runs };
+    // "Needs input" join (registry parity): a run whose conversation has a
+    // pending (unanswered) tool approval is blocked on the user. Approvals
+    // live in memory keyed by conversation, so this is a set intersection.
+    const needsInputConversations = new Set(
+      listPendingApprovals(user.id).map((approval) => approval.conversationId)
+    );
+
+    return {
+      runs: runs.map((run) => ({
+        ...run,
+        needsInput: needsInputConversations.has(run.conversationId)
+      }))
+    };
   });
 
   // ------------------------------------------------------------------------
@@ -1225,6 +1387,12 @@ export async function registerAgentRoutes(app: FastifyInstance) {
       pendingApprovalsByWorkspace.set(wsId, (pendingApprovalsByWorkspace.get(wsId) ?? 0) + 1);
     }
 
+    // Needs-input flags: an active run whose conversation holds an
+    // unanswered approval is blocked on the user. Surfaced per running
+    // agent so the registry UI can badge the exact run (not just the
+    // workspace-wide pendingApprovalCount).
+    const needsInputConversations = new Set(pendingConversationIds);
+
     const items = workspaces.map((ws) => {
       const runs = runsByWorkspace.get(ws.id) ?? [];
       return {
@@ -1246,7 +1414,8 @@ export async function registerAgentRoutes(app: FastifyInstance) {
           model: r.model,
           promptPreview: r.promptPreview,
           startedAt: r.startedAt,
-          updatedAt: r.updatedAt
+          updatedAt: r.updatedAt,
+          needsInput: needsInputConversations.has(r.conversationId)
         }))
       };
     });
@@ -1334,6 +1503,139 @@ export async function registerAgentRoutes(app: FastifyInstance) {
         }))
       }
     };
+  });
+
+  // ------------------------------------------------------------------------
+  // Detachable runs — live re-attach.
+  //
+  // GET /agent/runs/:id/stream?since=<seq> replays everything the caller
+  // missed from the live-run broker (events with seq > since) and then
+  // tails the run live. Disconnect here is CLEANUP ONLY — it never aborts
+  // the run. A run that already finished (terminal status, and its 5-minute
+  // broker buffer is empty or gone) answers 409 { code: "RUN_NOT_LIVE" } —
+  // clients should fall back to GET /agent/runs/:id for the final record.
+  // ------------------------------------------------------------------------
+  const reattachQuerySchema = z.object({
+    since: z.coerce.number().int().min(0).default(0)
+  });
+
+  app.get("/agent/runs/:id/stream", async (request, reply) => {
+    const parsedParams = agentRunParamsSchema.safeParse(request.params);
+    if (!parsedParams.success) {
+      return reply.code(400).send({ message: "Invalid params", issues: parsedParams.error.issues });
+    }
+    const parsedQuery = reattachQuerySchema.safeParse(request.query ?? {});
+    if (!parsedQuery.success) {
+      return reply.code(400).send({ message: "Invalid query", issues: parsedQuery.error.issues });
+    }
+
+    const user = await getLocalUser();
+    const run = await assertAgentRunOwner(user.id, parsedParams.data.id);
+    if (!run) {
+      return reply.code(404).send({ message: "Agent run not found" });
+    }
+
+    const bufferInfo = getRunBufferInfo(run.id);
+    const mode = resolveReattachMode(run.status, bufferInfo, ACTIVE_RUN_STATUSES);
+    if (mode === "reject") {
+      return reply.code(409).send({ code: "RUN_NOT_LIVE" });
+    }
+
+    // The handler stays blocked on this promise while it replays + tails;
+    // it resolves when the stream is over (done/error delivered, client
+    // gone, or a failed write) so Fastify's lifecycle stays correct.
+    await new Promise<void>((resolve) => {
+      let finished = false;
+      // finish() can fire while the synchronous replay inside
+      // subscribeRunEvents is still running (terminal run replaying through
+      // its done event) — BEFORE the const holding the unsubscribe function
+      // is initialized. Plain object properties (undefined until assigned)
+      // avoid that TDZ hazard.
+      const handles: { keepalive?: NodeJS.Timeout; unsubscribe?: () => void } = {};
+
+      const canWrite = () => !reply.raw.writableEnded && !reply.raw.destroyed;
+
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        if (handles.keepalive) clearInterval(handles.keepalive);
+        handles.unsubscribe?.();
+        request.raw.removeListener("close", onRequestClose);
+        reply.raw.removeListener("close", onResponseClose);
+        resolve();
+      };
+
+      // Disconnect handlers are CLEANUP ONLY — they never abort the run.
+      const onRequestClose = () => finish();
+      const onResponseClose = () => finish();
+      request.raw.once("close", onRequestClose);
+      reply.raw.once("close", onResponseClose);
+
+      // First write opens the SSE response with a re-attach marker so the
+      // client can distinguish it from the original stream's start event.
+      sendSseEvent(reply, request, {
+        type: "start",
+        runId: run.id,
+        conversationId: run.conversationId,
+        reattached: true
+      });
+
+      handles.keepalive = setInterval(() => {
+        if (canWrite()) reply.raw.write(": ping\n\n");
+      }, 25_000);
+
+      handles.unsubscribe = subscribeRunEvents(run.id, parsedQuery.data.since, (brokered) => {
+        if (finished) return;
+        if (!canWrite()) {
+          console.warn(`[agent] re-attach stream for run ${run.id}: client gone — detaching listener`);
+          finish();
+          return;
+        }
+        reply.raw.write(`data: ${JSON.stringify(brokered.event)}\n\n`);
+        // done/error are the run's terminal broker events (published by the
+        // stream route right before it closes the buffer) — end the stream
+        // after delivering one instead of hanging on keepalive pings.
+        const eventType = typeof brokered.event.type === "string" ? brokered.event.type : undefined;
+        if (eventType === "done" || eventType === "error") {
+          finish();
+        }
+      });
+      // finish() may have run during the synchronous replay above (replay
+      // hit done/error before subscribeRunEvents returned) — it could not
+      // unsubscribe then (handle not yet assigned), so do it here.
+      if (finished) handles.unsubscribe?.();
+
+      // Terminal run: end after the synchronous replay even when the buffer
+      // window did not include a done/error event (e.g. `since` beyond
+      // lastSeq, or a run that terminated before any terminal event was
+      // brokered). The client falls back to GET /agent/runs/:id.
+      if (mode === "stream-and-end" && !finished) {
+        finish();
+      }
+    });
+
+    reply.raw.end();
+    return reply;
+  });
+
+  // ------------------------------------------------------------------------
+  // Item 3 — worktree lifecycle endpoints.
+  //
+  // A run that executed inside a dedicated git worktree keeps its
+  // {branch, path, originalRoot, status} metadata on the run row. These
+  // endpoints let the user merge the branch back into the original
+  // checkout or discard the worktree entirely. Ownership follows the
+  // assertRunAccess pattern (agent-control.ts): the run row must belong
+  // to a conversation owned by the current user.
+  // ------------------------------------------------------------------------
+  const ACTIVE_RUN_STATUS_SET = new Set<string>(ACTIVE_RUN_STATUSES);
+
+  app.post("/agent/runs/:id/worktree/merge", async (request, reply) => {
+    return handleWorktreeAction(app, request, reply, "merge", ACTIVE_RUN_STATUS_SET);
+  });
+
+  app.post("/agent/runs/:id/worktree/discard", async (request, reply) => {
+    return handleWorktreeAction(app, request, reply, "discard", ACTIVE_RUN_STATUS_SET);
   });
 
   // ------------------------------------------------------------------------
@@ -1717,6 +2019,83 @@ export async function registerAgentRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // ------------------------------------------------------------------------
+  // Item 5 — lifecycle hook management. Hooks fire shell commands / HTTP
+  // POSTs on agent events (tools/tool/call, tools/tool/result,
+  // agent/turn/end). Dispatch itself is fire-soft (lib/hooks.ts).
+  // ------------------------------------------------------------------------
+  app.get("/agent/hooks", async () => {
+    const user = await getLocalUser();
+    const hooks = await prisma.agentHook.findMany({
+      where: { userId: user.id },
+      orderBy: [{ createdAt: "asc" }]
+    });
+    return { hooks };
+  });
+
+  app.post("/agent/hooks", async (request, reply) => {
+    const parsed = upsertAgentHookSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ message: "Invalid payload", issues: parsed.error.issues });
+    }
+
+    const user = await getLocalUser();
+    const data = parsed.data;
+
+    if (data.id && !(await isOwnedByUser("agentHook", data.id, user.id))) {
+      return reply.code(404).send({ message: "Hook not found" });
+    }
+
+    const hookData = {
+      name: data.name,
+      event: data.event,
+      matchTool: data.matchTool ?? null,
+      action: data.action,
+      target: data.target,
+      timeoutMs: data.timeoutMs,
+      enabled: data.enabled
+    };
+
+    const hook = data.id
+      ? await prisma.agentHook.update({
+          where: { id: data.id },
+          data: hookData
+        })
+      : await prisma.agentHook.create({
+          data: {
+            userId: user.id,
+            ...hookData
+          }
+        });
+
+    return { hook };
+  });
+
+  app.delete("/agent/hooks/:id", async (request, reply) => {
+    const parsed = hookParamsSchema.safeParse(request.params ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ message: "Invalid parameters" });
+    }
+
+    const user = await getLocalUser();
+    const hook = await prisma.agentHook.findFirst({
+      where: {
+        id: parsed.data.id,
+        userId: user.id
+      }
+    });
+
+    if (!hook) {
+      return reply.code(404).send({ message: "Hook not found" });
+    }
+
+    await prisma.agentHook.delete({
+      where: { id: parsed.data.id }
+    });
+
+    return { ok: true };
+  });
+
   app.post("/agent/execute", async (request, reply) => {
     const parsed = agentRequestSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
@@ -1804,14 +2183,25 @@ export async function registerAgentRoutes(app: FastifyInstance) {
     let agent: Agent | undefined;
     let finalResultPersisted = false;
     let agentRunId: string | undefined;
-    // Client-disconnect abort: cancels in-flight LLM fetches so a dead client
-    // can't leave the run burning tokens to a closed socket.
-    const clientAbort = new AbortController();
-    const onClientDisconnect = () => clientAbort.abort();
+    // Detachable runs: a client disconnect does NOT abort the run — it
+    // detaches. The run keeps executing server-side, persists each step
+    // incrementally (persistRunStepIncremental), keeps streaming into the
+    // live-run broker, and can be re-attached later via
+    // GET /agent/runs/:id/stream?since=<seq>. Explicit aborts go through
+    // the exit-hatch (agent-control routes) — those still terminate
+    // detached runs. No disconnect signal is passed to agent.stream().
+    let clientAttached = true;
+    const onClientDisconnect = () => {
+      clientAttached = false;
+      console.warn(`[agent] client detached from run ${agentRunId ?? "(unassigned)"} — run continues in background`);
+    };
     request.raw.once("close", onClientDisconnect);
     // SSE keepalive: agent runs can be silent for minutes during tool
     // execution; without pings, proxies and browsers kill the connection.
     let keepalive: NodeJS.Timeout | undefined;
+    // Every SSE write is guarded: a detached client's socket must never be
+    // written to (the run itself continues regardless).
+    const canWriteToClient = () => clientAttached && !reply.raw.writableEnded && !reply.raw.destroyed;
 
     try {
       requestInfo = await prepareAgentRequest(parsed.data);
@@ -1825,7 +2215,8 @@ export async function registerAgentRoutes(app: FastifyInstance) {
         model: currentRequestInfo.model,
         mode: currentRequestInfo.payload.mode,
         prompt: currentRequestInfo.payload.prompt,
-        reasoningEffort: currentRequestInfo.reasoningEffort
+        reasoningEffort: currentRequestInfo.reasoningEffort,
+        worktreeInfo: currentRequestInfo.worktreeInfo
       }).catch((error) => {
         app.log.warn({ err: error }, "Failed to create run row at start; controls will 409 for this run");
         return undefined;
@@ -1854,15 +2245,54 @@ export async function registerAgentRoutes(app: FastifyInstance) {
       })();
 
       for await (const event of agent.stream(promptContent, {
-        runId: agentRunId,
-        signal: clientAbort.signal
+        runId: agentRunId
       })) {
+        // Broker first: buffer the event (with its seq) BEFORE any SSE write
+        // so a re-attach replay never misses what live clients saw. The done
+        // event is published later — enriched with the persisted message/run
+        // ids — right before its final write below.
+        let seq: number | undefined;
+        if (agentRunId && event.type !== "done") {
+          seq = publishRunEvent(agentRunId, event);
+        }
+
+        if (event.type === "step" && agentRunId && requestInfo) {
+          // Incremental persistence — fire-and-forget: a failed mid-run
+          // write must never break the stream; the final persistAgentRun
+          // pass remains the source of truth. The step event carries the
+          // full step (tool calls + results in index order), so it is the
+          // single source for the incremental pass.
+          const runIdForPersist: string = agentRunId;
+          const conversationIdForPersist: string = requestInfo.conversationId;
+          const { step } = event;
+          persistRunStepIncremental({
+            runId: runIdForPersist,
+            conversationId: conversationIdForPersist,
+            step: {
+              iteration: step.iteration,
+              reasoning: step.reasoning,
+              response: step.response,
+              timestamp: step.timestamp
+            },
+            toolCalls: step.toolCalls.map((call, index) => ({
+              call,
+              result: step.toolResults[index]
+            }))
+          }).catch((persistError) => {
+            console.warn(
+              `[agent] incremental step persist failed for run ${runIdForPersist}: ${persistError instanceof Error ? persistError.message : String(persistError)}`
+            );
+          });
+        }
+
         if (!started) {
-          sendSseEvent(reply, request, event);
           started = true;
           keepalive = setInterval(() => {
-            reply.raw.write(": ping\n\n");
+            if (canWriteToClient()) reply.raw.write(": ping\n\n");
           }, 25_000);
+          if (canWriteToClient()) {
+            sendSseEvent(reply, request, seq !== undefined ? { ...event, seq } : event);
+          }
           continue;
         }
 
@@ -1871,15 +2301,21 @@ export async function registerAgentRoutes(app: FastifyInstance) {
           continue;
         }
 
-        writeSseEvent(reply, event);
+        if (canWriteToClient()) {
+          writeSseEvent(reply, seq !== undefined ? { ...event, seq } : event);
+        }
       }
 
       if (!started) {
-        sendSseEvent(reply, request, {
-          type: "start",
-          conversationId: requestInfo.conversationId,
-          model: requestInfo.model
-        });
+        // Zero events yielded — still announce the conversation so the
+        // client can correlate (guarded; the error path reports the rest).
+        if (canWriteToClient()) {
+          sendSseEvent(reply, request, {
+            type: "start",
+            conversationId: requestInfo.conversationId,
+            model: requestInfo.model
+          });
+        }
       }
 
       if (!finalEvent) {
@@ -1912,23 +2348,47 @@ export async function registerAgentRoutes(app: FastifyInstance) {
       const persistedFinalEvent: AgentExecutionEvent = {
         ...finalEvent,
         agentRunId: persisted.run.id,
-        assistantMessageId: persisted.assistantMessage.id
+        assistantMessageId: persisted.assistantMessage.id,
+        // Item 3 — surface the run's worktree so the UI can offer
+        // merge/discard/open. Kept on the run row too (never auto-removed).
+        ...(requestInfo.worktreeInfo
+          ? { worktree: { branch: requestInfo.worktreeInfo.branch, path: requestInfo.worktreeInfo.path } }
+          : {})
       };
 
       if (requestInfo.isNewConversation) {
         queueConversationTitleGeneration(app, requestInfo);
       }
       queueConversationSummaryRefresh(app, requestInfo);
-      writeSseEvent(reply, persistedFinalEvent);
+      // Publish the ENRICHED done event (with the persisted ids and its seq)
+      // so a re-attach replay ends with the same final event live clients
+      // received, then close the run's buffer after the write attempt.
+      const doneSeq = agentRunId ? publishRunEvent(agentRunId, persistedFinalEvent) : undefined;
+      if (canWriteToClient()) {
+        writeSseEvent(reply, doneSeq !== undefined ? { ...persistedFinalEvent, seq: doneSeq } : persistedFinalEvent);
+      }
+      if (agentRunId) closeRunEvents(agentRunId);
 
 
     } catch (error) {
+      // Re-attached clients learn about the failure through the broker even
+      // when no SSE write is possible (client gone / headers not sent), and
+      // the buffer close lets re-attach replays terminate.
+      const errorMessage = error instanceof Error ? error.message : "Stream failed";
+      if (agentRunId) {
+        const errorSeq = publishRunEvent(agentRunId, { type: "error", message: errorMessage });
+        if (reply.raw.headersSent && canWriteToClient()) {
+          writeSseEvent(reply, { type: "error", message: errorMessage, seq: errorSeq });
+        }
+        closeRunEvents(agentRunId);
+      }
+
       if (!finalResultPersisted && requestInfo && userPromptMessage) {
         await storeInterruptedRun(
           requestInfo,
           userPromptMessage.id,
           agent?.getSteps() ?? [],
-          error instanceof Error ? error.message : "Stream failed",
+          errorMessage,
           agentRunId
         ).catch((persistError) => {
           app.log.warn({ err: persistError, conversationId: requestInfo?.conversationId }, "Failed to persist interrupted streamed agent run");
@@ -1938,18 +2398,14 @@ export async function registerAgentRoutes(app: FastifyInstance) {
         const httpError = toHttpError(error);
         return reply.code(httpError.statusCode).send({
           message: httpError.message,
-          error: error instanceof Error ? error.message : "Unknown error"
+          error: errorMessage
         });
       }
-
-      const event: AgentExecutionEvent = {
-        type: "error",
-        message: error instanceof Error ? error.message : "Stream failed"
-      };
-      writeSseEvent(reply, event);
     } finally {
       if (keepalive) clearInterval(keepalive);
       request.raw.removeListener("close", onClientDisconnect);
+      // Idempotent: a no-op when the done/catch path already closed it.
+      if (agentRunId) closeRunEvents(agentRunId);
     }
 
     reply.raw.end();

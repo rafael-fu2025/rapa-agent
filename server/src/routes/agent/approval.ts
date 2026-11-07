@@ -8,8 +8,12 @@
 
 import type { ToolApprovalDecision, ToolApprovalRequest } from "../../lib/agent.js";
 import { shouldAutoApprove } from "../../lib/auto-approve.js";
+import { classifyAutoApproval, resolveClassifierConfig } from "../../lib/auto-approve-classifier.js";
 import { analyseCommandRisk } from "../../lib/safety/dangerous-patterns.js";
 import { APPROVAL_TIMEOUT_MS } from "./schemas.js";
+
+/** Shell tools whose approval requests are routed through the LLM classifier. */
+const CLASSIFIER_ELIGIBLE_TOOLS = new Set(["execute_command", "start_process"]);
 
 export type PendingToolApproval = {
   userId: string;
@@ -116,12 +120,47 @@ export async function handleToolApproval(
     // Severity gate FIRST — the documented contract (dangerous-patterns.ts):
     // a "destructive"/"irreversible" finding always goes to the human and
     // overrides any stored auto-approve pattern. Previously a saved wildcard
-    // pattern could silently auto-approve `rm -rf /`.
+    // pattern could silently auto-approve `rm -rf /`. The LLM classifier
+    // below runs only AFTER this gate, so it can never approve a
+    // destructive/irreversible command.
     const risk = analyseCommandRisk(command);
     const severityForcesHuman =
       risk.severity === "destructive" || risk.severity === "irreversible";
 
     if (!severityForcesHuman) {
+      // LLM classifier (opt-in): classify the command BEFORE pattern matching.
+      //   approve → resolve as approved (autoApproved)
+      //   deny    → resolve as denied with the classifier's reason
+      //   unsure  → continue to stored patterns + human prompt as before.
+      // The classifier config rides on the approval request (populated by
+      // ToolOrchestrator from AgentConfig.autoApproveClassifier); when absent,
+      // RAPA_AUTO_APPROVE_CLASSIFIER_MODEL opts it in.
+      if (CLASSIFIER_ELIGIBLE_TOOLS.has(request.call.name)) {
+        const classifierConfig = resolveClassifierConfig(request.autoApproveClassifier);
+        if (classifierConfig.enabled) {
+          const verdict = await classifyAutoApproval({
+            command,
+            toolName: request.call.name,
+            userId,
+            classifier: classifierConfig
+          });
+          if (verdict.decision === "approve") {
+            return {
+              approved: true,
+              message: `Auto-approved by classifier: ${verdict.reason}`,
+              autoApproved: true
+            };
+          }
+          if (verdict.decision === "deny") {
+            return {
+              approved: false,
+              message: `Denied by classifier: ${verdict.reason}`
+            };
+          }
+          // "unsure" — fall through to pattern matching + human prompt.
+        }
+      }
+
       const autoApproveResult = await shouldAutoApprove({
         userId,
         command,
