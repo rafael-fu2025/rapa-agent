@@ -127,11 +127,12 @@ const SidebarItem = ({ icon, label, shortcut, active, to, collapsed = false, onC
   return collapsed ? <Hint label={label}>{item}</Hint> : item;
 };
 
-const LogoutConfirmDialog = ({ children, onConfirm }: { children: React.ReactNode, onConfirm: () => void }) => (
+// The trigger node must render the AlertDialogTrigger itself (see the
+// call sites) — AlertDialogTrigger's `asChild` requires a DOM element
+// as its direct child, so it cannot wrap the Hint tooltip component.
+const LogoutConfirmDialog = ({ trigger, onConfirm }: { trigger: React.ReactNode; onConfirm: () => void }) => (
   <AlertDialog>
-    <AlertDialogTrigger asChild>
-      {children}
-    </AlertDialogTrigger>
+    {trigger}
     <AlertDialogContent className="dialog-panel rounded-lg text-foreground">
       <AlertDialogHeader>
         <AlertDialogTitle className="text-[11px] font-semibold uppercase tracking-[0.1em]">Log out of Rapa?</AlertDialogTitle>
@@ -680,16 +681,21 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                 active={location.pathname === "/settings"}
                 collapsed={collapsed}
               />
-              <LogoutConfirmDialog onConfirm={logout}>
-                <Hint label="Log out">
-                  <button
-                    className="flex w-full items-center justify-center rounded-lg px-2 py-2.5 text-muted-foreground transition-colors hover:bg-muted hover:text-destructive"
-                    type="button"
-                  >
-                    <Power size={18} />
-                  </button>
-                </Hint>
-              </LogoutConfirmDialog>
+              <LogoutConfirmDialog
+                onConfirm={logout}
+                trigger={
+                  <Hint label="Log out">
+                    <AlertDialogTrigger asChild>
+                      <button
+                        className="flex w-full items-center justify-center rounded-lg px-2 py-2.5 text-muted-foreground transition-colors hover:bg-muted hover:text-destructive"
+                        type="button"
+                      >
+                        <Power size={18} />
+                      </button>
+                    </AlertDialogTrigger>
+                  </Hint>
+                }
+              />
             </div>
           </>
         ) : (
@@ -737,16 +743,21 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                   </Link>
                 </Hint>
                 <span className="mx-1 h-5 w-px bg-card-hover" />
-                <LogoutConfirmDialog onConfirm={logout}>
-                  <Hint label="Log out">
-                    <button
-                      className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
-                      type="button"
-                    >
-                      <Power size={16} />
-                    </button>
-                  </Hint>
-                </LogoutConfirmDialog>
+                <LogoutConfirmDialog
+                  onConfirm={logout}
+                  trigger={
+                    <Hint label="Log out">
+                      <AlertDialogTrigger asChild>
+                        <button
+                          className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
+                          type="button"
+                        >
+                          <Power size={16} />
+                        </button>
+                      </AlertDialogTrigger>
+                    </Hint>
+                  }
+                />
               </div>
 
               {!isSettingsRoute ? (

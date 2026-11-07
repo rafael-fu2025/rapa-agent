@@ -212,9 +212,9 @@ export function WorkspaceSelector({ variant = "default", className }: WorkspaceS
 
     <>
       <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
-        <DropdownMenuTrigger asChild>
-          {isIconTrigger ? (
-            <Hint label={activeWorkspace ? `Open workspace (${activeWorkspace.name})` : "Open workspace"}>
+        {isIconTrigger ? (
+          <Hint label={activeWorkspace ? `Open workspace (${activeWorkspace.name})` : "Open workspace"}>
+            <DropdownMenuTrigger asChild>
               <button
                 type="button"
                 className={cn(
@@ -225,8 +225,10 @@ export function WorkspaceSelector({ variant = "default", className }: WorkspaceS
               >
                 {activeWorkspace ? <FolderOpen className="h-4 w-4" /> : <Folder className="h-4 w-4" />}
               </button>
-            </Hint>
-          ) : (
+            </DropdownMenuTrigger>
+          </Hint>
+        ) : (
+          <DropdownMenuTrigger asChild>
             <Button
               variant="outline"
               className={cn("gap-2 border-border bg-card text-foreground hover:bg-card-2", className)}
@@ -243,8 +245,8 @@ export function WorkspaceSelector({ variant = "default", className }: WorkspaceS
                 </>
               )}
             </Button>
-          )}
-        </DropdownMenuTrigger>
+          </DropdownMenuTrigger>
+        )}
         <DropdownMenuContent
           side={isIconTrigger ? "right" : "bottom"}
           align="start"

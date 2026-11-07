@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Eye, EyeOff, Save, Plus, Trash2, Edit2, X, Check, Loader2, Globe, KeyRound, RotateCcw, Copy } from "lucide-react";
+import { Eye, EyeOff, Save, Plus, Trash2, Edit2, X, Check, Loader2, Globe, KeyRound, RotateCcw, Copy, Download } from "lucide-react";
 import { toast } from "sonner";
 import {
   getServiceKeys,
@@ -58,6 +58,10 @@ export const ServiceKeysSettings = ({ service = "serper" }: ServiceKeysSettingsP
   const [viewingValue, setViewingValue] = useState("");
   const [loadingKeyId, setLoadingKeyId] = useState<string | null>(null);
   const [deletingKeyId, setDeletingKeyId] = useState<string | null>(null);
+
+  // Export state
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   // Accordion state
   const [accordionOpen, setAccordionOpen] = useState(false);
@@ -208,6 +212,61 @@ export const ServiceKeysSettings = ({ service = "serper" }: ServiceKeysSettingsP
     }
   };
 
+  const formatTimestamp = (value: string) => {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  };
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      // Resolve each key's full value through the decrypt endpoint; a
+      // failed decryption becomes an inline warning instead of aborting
+      // the whole export so one broken key can't block the backup.
+      const lines: string[] = [
+        "# Rapa — API Keys Export",
+        "",
+        `- **Exported:** ${new Date().toLocaleString()}`,
+        `- **Service:** ${meta.label} (\`${service}\`)`,
+        `- **Integration status:** ${enabled ? "enabled" : "paused"}`,
+        `- **Automatic fallback:** ${autoSwitch ? "on" : "off"}`,
+        `- **Keys:** ${keys.length}`,
+        "",
+        "> ⚠️ This file contains **plaintext API keys**. Store it securely and delete it once it is no longer needed.",
+        ""
+      ];
+      for (let i = 0; i < keys.length; i++) {
+        const item = keys[i];
+        lines.push(`## ${i + 1}. ${item.name}${item.isActive ? " — `active`" : ""}`);
+        lines.push("");
+        try {
+          const { apiKey } = await decryptServiceKey(item.id);
+          lines.push(`- **API Key:** \`${apiKey}\``);
+        } catch (err) {
+          lines.push(`- **API Key:** ⚠️ decryption failed${err instanceof Error ? ` — ${err.message}` : ""}`);
+        }
+        lines.push(`- **Masked:** \`${item.maskedKey}\``);
+        lines.push(`- **Created:** ${formatTimestamp(item.createdAt)}`);
+        lines.push("");
+      }
+
+      const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `rapa-api-keys-${service}-${new Date().toISOString().slice(0, 10)}.md`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      toast.success("API keys exported as Markdown");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to export keys");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const inputCls = "w-full panel-card rounded border-border/60 px-3 py-2 font-mono-tech text-[10px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-ring";
 
   const renderKeyCard = (item: ServiceApiKeyRef) => {
@@ -322,15 +381,15 @@ export const ServiceKeysSettings = ({ service = "serper" }: ServiceKeysSettingsP
               </button>
             </Hint>
             <AlertDialog open={deletingKeyId === item.id} onOpenChange={(open) => setDeletingKeyId(open ? item.id : null)}>
-              <AlertDialogTrigger asChild>
-                <Hint label="Delete key">
+              <Hint label="Delete key">
+                <AlertDialogTrigger asChild>
                   <button
                     className="p-1.5 text-muted-foreground hover:text-accent-red transition-colors"
                   >
                     <Trash2 size={13} strokeWidth={2.5} />
                   </button>
-                </Hint>
-              </AlertDialogTrigger>
+                </AlertDialogTrigger>
+              </Hint>
               <AlertDialogContent className="bg-card-3 border-card-hover text-primary">
                 <AlertDialogHeader>
                   <AlertDialogTitle className="font-mono-tech text-[11px] font-semibold uppercase tracking-[0.16em]">Delete API Key</AlertDialogTitle>
@@ -387,12 +446,45 @@ export const ServiceKeysSettings = ({ service = "serper" }: ServiceKeysSettingsP
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-accent-orange/15 text-accent-orange">
               <KeyRound size={14} />
             </div>
-            <div>
+            <div className="min-w-0 flex-1">
               <h2 className="panel-title">{meta.label} API Keys</h2>
               <p className="panel-desc mt-0.5">
                 Saved keys stay hidden. Pick the active key manually or let the app rotate on failures.
               </p>
             </div>
+            <AlertDialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
+              <Hint label="Export keys as Markdown">
+                <AlertDialogTrigger asChild>
+                  <button
+                    disabled={loading || keys.length === 0 || exporting}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded panel-badge px-3 py-1.5 font-mono-tech text-[10px] font-semibold uppercase tracking-[0.12em] cursor-pointer hover:bg-accent/30 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {exporting ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+                    Export
+                  </button>
+                </AlertDialogTrigger>
+              </Hint>
+              <AlertDialogContent className="bg-card-3 border-card-hover text-primary">
+                <AlertDialogHeader>
+                  <AlertDialogTitle className="font-mono-tech text-[11px] font-semibold uppercase tracking-[0.16em]">Export API Keys</AlertDialogTitle>
+                  <AlertDialogDescription className="font-mono-tech text-[10px]">
+                    Export all {keys.length} saved {meta.label} key{keys.length !== 1 ? "s" : ""} to a Markdown file. The file will contain full key values in plaintext — store it securely and delete it when you no longer need it.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel className="bg-transparent border-card-hover font-mono-tech text-[10px] text-primary hover:bg-card-4 hover:text-primary">
+                    Cancel
+                  </AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={() => void handleExport()}
+                    disabled={exporting}
+                    className="bg-accent-green font-mono-tech text-[10px] font-semibold uppercase tracking-[0.12em] hover:bg-accent-green/80 disabled:opacity-50"
+                  >
+                    Export
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
 
           <div className="space-y-4">

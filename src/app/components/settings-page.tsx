@@ -15,7 +15,8 @@ import {
   HelpCircle,
   Plug,
   RefreshCw,
-  Copy
+  Copy,
+  Download
 } from "lucide-react";
 import { Switch as ToggleSwitch } from "./ui/switch";
 import { toast } from "sonner";
@@ -86,6 +87,10 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
   const [newModel, setNewModel] = useState("");
   const [apiKeys, setApiKeys] = useState<ProviderApiKeyRef[]>([]);
   const [activeApiKeyId, setActiveApiKeyId] = useState<string | null>(null);
+
+  // Export state
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [pendingDeleteIds, setPendingDeleteIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -437,12 +442,61 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
     }
   };
 
+  const handleExportKeys = async () => {
+    setExporting(true);
+    try {
+      // Resolve each key's full value through the decrypt endpoint; a
+      // failed decryption becomes an inline warning instead of aborting
+      // the whole export so one broken key can't block the backup.
+      const label = PROVIDER_LABEL[provider] || provider;
+      const lines: string[] = [
+        "# Rapa — Model Provider Keys Export",
+        "",
+        `- **Exported:** ${new Date().toLocaleString()}`,
+        `- **Provider:** ${label} (\`${provider}\`)`,
+        `- **Base URL:** \`${baseUrl || DEFAULT_BASE_URL[provider] || "—"}\``,
+        `- **Integration status:** ${enabled ? "enabled" : "disabled"}`,
+        `- **Automatic fallback:** ${autoSwitchApiKey ? "on" : "off"}`,
+        `- **Keys:** ${apiKeys.length}`,
+        "",
+        "> ⚠️ This file contains **plaintext API keys**. Store it securely and delete it once it is no longer needed.",
+        ""
+      ];
+      for (let i = 0; i < apiKeys.length; i++) {
+        const item = apiKeys[i];
+        lines.push(`## ${i + 1}. ${item.name}${item.id === activeApiKeyId ? " — `active`" : ""}`);
+        lines.push("");
+        try {
+          const result = await getApiKey({ provider, apiKeyId: item.id });
+          lines.push(`- **API Key:** \`${result.apiKey}\``);
+        } catch (err) {
+          lines.push(`- **API Key:** ⚠️ decryption failed${err instanceof Error ? ` — ${err.message}` : ""}`);
+        }
+        lines.push(`- **Masked:** \`${item.maskedKey}\``);
+        lines.push("");
+      }
+
+      const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `rapa-provider-keys-${provider}-${new Date().toISOString().slice(0, 10)}.md`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      toast.success("API keys exported as Markdown");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to export keys");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const handleStartEditModel = (index: number, currentValue: string) => {
     setEditingModelIndex(index);
     setEditingModelValue(currentValue);
-  };
-
-  const handleSaveEditModel = async () => {
+  };  const handleSaveEditModel = async () => {
     if (editingModelIndex === null) return;
 
     const trimmed = editingModelValue.trim();
@@ -550,12 +604,45 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-accent-orange/15 text-accent-orange">
               <KeyRound size={14} />
             </div>
-            <div>
+            <div className="min-w-0 flex-1">
               <h2 className="panel-title">API Keys</h2>
               <p className="panel-desc mt-0.5">
                 Saved keys stay hidden. Pick the active key manually or let the app rotate on failures.
               </p>
             </div>
+            <AlertDialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
+              <Hint label="Export keys as Markdown">
+                <AlertDialogTrigger asChild>
+                  <button
+                    disabled={loading || apiKeys.length === 0 || exporting}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded panel-badge px-3 py-1.5 font-mono-tech text-[10px] font-semibold uppercase tracking-[0.12em] cursor-pointer hover:bg-accent/30 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {exporting ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+                    Export
+                  </button>
+                </AlertDialogTrigger>
+              </Hint>
+              <AlertDialogContent className="bg-card-3 border-card-hover text-primary">
+                <AlertDialogHeader>
+                  <AlertDialogTitle className="font-mono-tech text-[11px] font-semibold uppercase tracking-[0.16em]">Export API Keys</AlertDialogTitle>
+                  <AlertDialogDescription className="font-mono-tech text-[10px]">
+                    Export all {apiKeys.length} saved key{apiKeys.length !== 1 ? "s" : ""} for {PROVIDER_LABEL[provider] || provider} to a Markdown file. The file will contain full key values in plaintext — store it securely and delete it when you no longer need it.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel className="bg-transparent border-card-hover font-mono-tech text-[10px] text-primary hover:bg-card-4 hover:text-primary">
+                    Cancel
+                  </AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={() => void handleExportKeys()}
+                    disabled={exporting}
+                    className="bg-accent-green font-mono-tech text-[10px] font-semibold uppercase tracking-[0.12em] hover:bg-accent-green/80 disabled:opacity-50"
+                  >
+                    Export
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
 
           <div className="space-y-4">
@@ -692,15 +779,15 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
                             </button>
                           </Hint>
                           <AlertDialog open={deletingKeyId === item.id} onOpenChange={(open) => setDeletingKeyId(open ? item.id : null)}>
-                            <AlertDialogTrigger asChild>
-                              <Hint label="Delete key">
+                            <Hint label="Delete key">
+                              <AlertDialogTrigger asChild>
                                 <button
                                   className="p-1.5 text-muted-foreground hover:text-accent-red transition-colors"
                                 >
                                   <Trash2 size={13} strokeWidth={2.5} />
                                 </button>
-                              </Hint>
-                            </AlertDialogTrigger>
+                              </AlertDialogTrigger>
+                            </Hint>
                             <AlertDialogContent className="bg-card-3 border-card-hover text-primary">
                               <AlertDialogHeader>
                                 <AlertDialogTitle className="font-mono-tech text-[11px] font-semibold uppercase tracking-[0.16em]">Delete API Key</AlertDialogTitle>
@@ -1004,15 +1091,15 @@ export const SettingsPage = ({ provider = "gemini" }: SettingsPageProps) => {
                           </button>
                         </Hint>
                         <AlertDialog open={deletingModel === model} onOpenChange={(open) => setDeletingModel(open ? model : null)}>
-                          <AlertDialogTrigger asChild>
-                            <Hint label="Remove model">
+                          <Hint label="Remove model">
+                            <AlertDialogTrigger asChild>
                               <button
                                 className="p-1.5 text-muted-foreground hover:text-accent-red transition-colors"
                               >
                                 <Trash2 size={12} strokeWidth={2.5} />
                               </button>
-                            </Hint>
-                          </AlertDialogTrigger>
+                            </AlertDialogTrigger>
+                          </Hint>
                           <AlertDialogContent className="bg-card-3 border-card-hover text-primary">
                             <AlertDialogHeader>
                               <AlertDialogTitle className="font-mono-tech text-[11px] font-semibold uppercase tracking-[0.16em]">Remove Model</AlertDialogTitle>
