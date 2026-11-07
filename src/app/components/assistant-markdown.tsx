@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Copy, Download, Maximize2, Minimize2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -8,7 +8,13 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight, vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import "katex/dist/katex.min.css";
 import { useTheme } from "../hooks/use-theme";
+import { useLightbox } from "./lightbox";
 import { Hint } from "./ui/tooltip";
+
+// Mermaid diagrams: heavy library kept out of the main bundle — both the
+// component chunk and the mermaid library load only when a response
+// actually contains a fenced ```mermaid block.
+const MermaidBlock = lazy(() => import("./markdown/mermaid-block").then(m => ({ default: m.MermaidBlock })));
 
 type AssistantMarkdownProps = {
   content: string;
@@ -116,6 +122,24 @@ type ParsedThoughtContent = {
   mainContent: string;
 };
 
+// Markdown images open in the global lightbox (LightboxProvider is
+// mounted in routes.tsx Layout). Rendered as a plain React component so
+// useLightbox() is a legal hook call; outside a provider it degrades to
+// a no-op and images keep their default behavior.
+const MarkdownImg = (props: React.ComponentPropsWithoutRef<"img">) => {
+  const { open } = useLightbox();
+  const { src, alt } = props;
+  if (!src) return null;
+  return (
+    <img
+      src={src}
+      alt={alt ?? ""}
+      className="max-w-full rounded border border-border/40 cursor-zoom-in"
+      onClick={() => open(src, alt)}
+    />
+  );
+};
+
 function parseThoughtContent(content: string): ParsedThoughtContent {
   const mainParts: string[] = [];
   const thoughtParts: string[] = [];
@@ -214,6 +238,7 @@ export const AssistantMarkdown = ({ content, hideThoughtBlock }: AssistantMarkdo
   const normalizedMainContent = useMemo(() => normalizeMathDelimiters(mainContent), [mainContent]);
   const [isThoughtExpanded, setIsThoughtExpanded] = useState(false);
   const thoughtPanelRef = useRef<HTMLDivElement | null>(null);
+  const { resolved } = useTheme();
 
   useEffect(() => {
     if (!hasThoughtTag || hideThoughtBlock) {
@@ -307,10 +332,19 @@ export const AssistantMarkdown = ({ content, hideThoughtBlock }: AssistantMarkdo
                 {children}
               </td>
             ),
+            img: MarkdownImg,
             // react-markdown v9 removed the `inline` prop. Discriminator:
             // fenced code blocks arrive with a `language-*` className, inline
             // backtick code arrives with none.
             code: ({ className, children, ...props }) => {
+              const rawCode = String(children ?? "").replace(/\n$/, "");
+              if (className === "language-mermaid") {
+                return (
+                  <Suspense fallback={<pre className="mb-3 overflow-x-auto rounded border border-border/40 bg-card-3/40 px-3 py-2.5 font-mono-tech text-[10px] leading-[1.6] text-muted-foreground">{rawCode}</pre>}>
+                    <MermaidBlock code={rawCode} theme={resolved} />
+                  </Suspense>
+                );
+              }
               if (className) {
                 return <CodeBlock className={className}>{children}</CodeBlock>;
               }

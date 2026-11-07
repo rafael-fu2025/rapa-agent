@@ -46,6 +46,10 @@ export type StreamEvent = {
   message?: string;
   tokenUsage?: TokenUsage;
   apiKeySwitch?: ApiKeySwitchInfo;
+  /** Context-window pressure at turn end (server-side approximation for chat). */
+  contextUsage?: { percent: number; usedTokens: number; budgetTokens: number };
+  /** Best-effort USD cost of this turn, when the provider reported usage. */
+  estimatedCostUsd?: number;
   interactive?: (
     AskUserInteractive
     | {

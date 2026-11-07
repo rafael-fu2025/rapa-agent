@@ -1,16 +1,20 @@
 import { Suspense, lazy, memo, useEffect, useRef, useState } from "react";
-import { AlertCircle, Check, Clock, Copy, FolderOpen, Gauge, GitBranch, KeyRound, Pencil, RotateCcw, Send, Trash2, X, FileEdit } from "lucide-react";
+import { AlertCircle, Check, Clock, Copy, FolderOpen, GitBranch, GitMerge, Gauge, KeyRound, Pencil, RotateCcw, Send, Trash2, X, FileEdit } from "lucide-react";
+import { toast } from "sonner";
 import { AssistantMarkdown } from "../assistant-markdown";
 import { InteractiveOptions } from "../interactive-options";
 import { ModeSwitchPrompt } from "../mode-switch-prompt";
 import type { ChatMessage, ChatMode, ApiKeySwitchNotice } from "../../types/chat";
-import type { AgentLiveToolCall, AgentRunSummary, PendingApprovalInfo } from "../../../lib/agent-api";
+import { discardRunWorktree, mergeRunWorktree, type AgentLiveToolCall, type AgentRunSummary, type PendingApprovalInfo } from "../../../lib/agent-api";
+import { fetchWithAuth } from "../../../lib/http";
 import { markInteractiveAnswered } from "../../../lib/api";
 import { looksLikeChatModeRestriction, looksLikeWorkspaceRequest } from "../../utils/chat-utils";
 import { cn } from "../../../lib/utils";
 import { Hint } from "../ui/tooltip";
 
 const AgentStepsViewer = lazy(() => import("../agent-steps-viewer").then(m => ({ default: m.AgentStepsViewer })));
+// Shared approval anatomy — same module as AgentStepsViewer (one chunk).
+const ApprovalCard = lazy(() => import("../agent-steps-viewer").then(m => ({ default: m.ApprovalCard })));
 
 type MessageListProps = {
   messages: ChatMessage[];
@@ -38,6 +42,9 @@ type MessageListProps = {
   onRegenerateWithCurrent?: (messageId: string) => void;
   /** Prompt queued while a stream runs — rendered dimmed until it sends. */
   queuedPrompt?: string | null;
+  /** Optional "send now" escape hatch: aborts the in-flight stream keeping
+   *  the queue, then submits the queued prompt immediately. */
+  onSendQueuedNow?: () => void;
   onCopy: (content: string) => void;
   onStartEdit: (messageId: string, content: string) => void;
   onDraftChange: (content: string) => void;
@@ -79,6 +86,7 @@ function MessageListComponent({
   currentModel,
   onRegenerateWithCurrent,
   queuedPrompt,
+  onSendQueuedNow,
   onCopy,
   onStartEdit,
   onDraftChange,
@@ -107,6 +115,17 @@ function MessageListComponent({
     setBannerClosing(true);
     setTimeout(() => setBannerDismissed(true), 300);
   };
+
+  // Item 3 — only the newest agent message that ran in a worktree shows the
+  // merge/discard banner; older ones keep their receipt card only.
+  let worktreeBannerMessageId: string | null = null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const candidate = messages[i];
+    if (candidate.role === "assistant" && candidate.worktree) {
+      worktreeBannerMessageId = candidate.id;
+      break;
+    }
+  }
 
   return (
     <div
@@ -220,6 +239,7 @@ function MessageListComponent({
             currentModel={currentModel}
             onRegenerateWithCurrent={onRegenerateWithCurrent}
             fallbackModeSwitchPrompt={fallbackModeSwitchPrompt}
+            showWorktreeBanner={message.id === worktreeBannerMessageId}
           />
         );
       })}
@@ -227,8 +247,20 @@ function MessageListComponent({
       {queuedPrompt && pending && (
         <div className="flex justify-end opacity-50" aria-label="Queued message">
           <div className="panel-card max-w-[85%] rounded px-2.5 py-1.5 font-mono-tech text-[10px] leading-[1.6] text-foreground/70">
-            <div className="mb-0.5 font-mono-tech text-[8px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/50">
-              queued — sends when the run finishes
+            <div className="mb-0.5 flex items-center gap-2">
+              <span className="font-mono-tech text-[8px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/50">
+                queued — sends when the run finishes
+              </span>
+              {onSendQueuedNow && (
+                <button
+                  type="button"
+                  onClick={onSendQueuedNow}
+                  data-testid="send-queued-now"
+                  className="rounded border border-border/50 bg-card/60 px-1.5 py-px font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em] text-muted-foreground transition-colors hover:border-accent-blue/40 hover:text-accent-blue"
+                >
+                  Send now
+                </button>
+              )}
             </div>
             <div className="whitespace-pre-wrap break-words line-clamp-4">{queuedPrompt}</div>
           </div>
@@ -423,6 +455,8 @@ type AssistantBlockProps = {
   fallbackModeSwitchPrompt: string | undefined;
   /** True only for the newest assistant message — gates the plan handoff button. */
   isLatestAssistant: boolean;
+  /** Item 3 — true for the newest message that ran in a worktree (banner gating). */
+  showWorktreeBanner?: boolean;
 };
 
 function AssistantMessageBlock({
@@ -449,6 +483,7 @@ function AssistantMessageBlock({
   onRegenerateWithCurrent,
   fallbackModeSwitchPrompt,
   isLatestAssistant,
+  showWorktreeBanner,
 }: AssistantBlockProps) {
   return (
     <article aria-label="Assistant response" data-message-id={message.id} className="w-full min-w-0 overflow-hidden">
@@ -651,7 +686,252 @@ function AssistantMessageBlock({
           </>
         ) : null}
       </div>
+      {/* Run receipt: agent runs surface their loop telemetry (status,
+          iterations, cost, verification gate) in a dedicated card. */}
+      {!isEditing && message.stats &&
+        (message.stats.iterations !== undefined || message.stats.verification != null) && (
+        <RunReceiptCard stats={message.stats} />
+      )}
+      {/* Item 3 — worktree banner: merge/discard/open the run's isolated
+          worktree once the run ends. */}
+      {!isEditing && showWorktreeBanner && message.worktree && (
+        <WorktreeBanner
+          runId={message.agentRunId ?? ""}
+          worktree={message.worktree}
+        />
+      )}
     </article>
+  );
+}
+
+/* ---------- Run Receipt — agent-run telemetry card ──────────── */
+
+type ReceiptStats = NonNullable<ChatMessage["stats"]>;
+
+function formatReceiptDuration(elapsedMs?: number): string | null {
+  if (elapsedMs == null) return null;
+  return elapsedMs >= 60000
+    ? `${Math.floor(elapsedMs / 60000)}m ${((elapsedMs % 60000) / 1000).toFixed(1)}s`
+    : `${(elapsedMs / 1000).toFixed(1)}s`;
+}
+
+function runReceiptStatusTone(status?: string): string {
+  switch (status) {
+    case "completed":
+      return "border-accent-green/40 bg-accent-green/10 text-accent-green";
+    case "failed":
+      return "border-accent-red/40 bg-accent-red/10 text-accent-red";
+    case "max_iterations":
+      return "border-accent-yellow/40 bg-accent-yellow/10 text-accent-yellow";
+    default:
+      return "border-border/40 bg-card-3/60 text-muted-foreground";
+  }
+}
+
+function verificationChipTone(passed: boolean): string {
+  return passed
+    ? "border-accent-green/40 bg-accent-green/10 text-accent-green"
+    : "border-accent-red/40 bg-accent-red/10 text-accent-red";
+}
+
+function formatReceiptCost(costUsd: number): string {
+  return `$${costUsd >= 1 ? costUsd.toFixed(2) : costUsd.toFixed(3)}`;
+}
+
+function RunReceiptCard({ stats }: { stats: ReceiptStats }) {
+  const duration = formatReceiptDuration(stats.elapsedMs);
+  // verification: null = the gate did not run → "—", undefined = unknown.
+  const verification = stats.verification ?? null;
+
+  return (
+    <div
+      data-testid="run-receipt-card"
+      className="mt-2 overflow-hidden rounded border border-border/40 bg-card-3/40"
+    >
+      <div className="flex items-center gap-2 px-3 py-1.5">
+        <span className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+          run receipt
+        </span>
+        {stats.status && (
+          <span
+            className={cn(
+              "inline-flex items-center rounded border px-1.5 py-px font-mono-tech text-[8px] font-semibold uppercase tracking-[0.08em]",
+              runReceiptStatusTone(stats.status)
+            )}
+          >
+            {stats.status.replace(/_/g, " ")}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/30 px-3 py-1.5 font-mono-tech text-[9px] text-muted-foreground">
+        {duration && (
+          <span className="inline-flex items-center gap-1">
+            <Clock size={10} className="text-muted-foreground/50" />
+            {duration}
+          </span>
+        )}
+        {stats.iterations !== undefined && (
+          <span>
+            {stats.iterations} iteration{stats.iterations === 1 ? "" : "s"}
+          </span>
+        )}
+        <span>
+          {stats.tokensEstimated ? "≈" : ""}
+          {stats.totalTokens} tokens
+        </span>
+        {typeof stats.costUsd === "number" && (
+          <span>{formatReceiptCost(stats.costUsd)}</span>
+        )}
+        <span className="ml-auto inline-flex items-center gap-1.5">
+          <span
+            data-testid="receipt-tests"
+            className={cn(
+              "rounded border px-1 py-px font-semibold uppercase tracking-[0.08em]",
+              verification ? verificationChipTone(verification.testsPassed) : "border-border/40 bg-card-3/60 text-muted-foreground/60"
+            )}
+          >
+            tests {verification ? (verification.testsPassed ? "✓" : "✗") : "—"}
+          </span>
+          <span
+            data-testid="receipt-typecheck"
+            className={cn(
+              "rounded border px-1 py-px font-semibold uppercase tracking-[0.08em]",
+              verification ? verificationChipTone(verification.typecheckPassed) : "border-border/40 bg-card-3/60 text-muted-foreground/60"
+            )}
+          >
+            typecheck {verification ? (verification.typecheckPassed ? "✓" : "✗") : "—"}
+          </span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Worktree Banner — run isolation lifecycle (Item 3) ── */
+
+type WorktreeStats = NonNullable<ChatMessage["worktree"]>;
+
+/**
+ * Derive the workspace-relative worktree directory from the branch name.
+ * createRunWorktree builds both from the same short token
+ * (branch `rapa/run-<x>` ↔ `<root>/.rapa/worktrees/run-<x>`), so the
+ * relative path is recoverable without shipping originalRoot in the done
+ * event.
+ */
+function worktreeRelativePath(branch: string): string {
+  const short = branch.replace(/^rapa\/run-/, "");
+  return `.rapa/worktrees/run-${short}`;
+}
+
+function WorktreeBanner({ runId, worktree }: { runId: string; worktree: WorktreeStats }) {
+  const [busy, setBusy] = useState<"merge" | "discard" | null>(null);
+  // Resolved = the user merged/discarded (or dismissed) — the banner's
+  // job is done. Server-side status would need a fetch per render; local
+  // resolution keeps the banner zero-cost.
+  const [resolved, setResolved] = useState(false);
+
+  if (!runId || resolved) return null;
+
+  const handleMerge = async () => {
+    setBusy("merge");
+    try {
+      const result = await mergeRunWorktree(runId);
+      if (result.ok) {
+        toast.success(result.message);
+        setResolved(true);
+      } else {
+        toast.error(result.message);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to merge worktree");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleDiscard = async () => {
+    if (!window.confirm("Discard this run's worktree? Any unmerged changes in it are lost.")) return;
+    setBusy("discard");
+    try {
+      const result = await discardRunWorktree(runId);
+      if (result.ok) {
+        toast.success(result.message);
+        setResolved(true);
+      } else {
+        toast.error(result.message);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to discard worktree");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleOpenFolder = async () => {
+    if (!worktree.workspaceId) return;
+    try {
+      const response = await fetchWithAuth(`/workspaces/${encodeURIComponent(worktree.workspaceId)}/reveal`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: worktreeRelativePath(worktree.branch) })
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null) as { message?: string } | null;
+        toast.error(error?.message || "Failed to open the worktree folder");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to open the worktree folder");
+    }
+  };
+
+  return (
+    <div role="status" aria-label="Run worktree" data-testid="worktree-banner" className="mt-2 overflow-hidden rounded border border-accent-blue/30 bg-card-3/40">
+      <div className="flex items-center gap-2.5 px-3 py-2">
+        <GitBranch size={12} className="shrink-0 text-accent-blue/70" />
+        <span className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-accent-blue/80">
+          isolated worktree
+        </span>
+        <code className="truncate font-mono-tech text-[9px] text-muted-foreground">{worktree.branch}</code>
+        <span className="flex-1" />
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            data-testid="worktree-merge"
+            disabled={busy !== null}
+            onClick={() => { void handleMerge(); }}
+            className="inline-flex items-center gap-1 rounded border border-accent-green/40 bg-accent-green/10 px-1.5 py-0.5 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em] text-accent-green transition-colors hover:bg-accent-green/20 disabled:opacity-50"
+          >
+            <GitMerge size={10} />
+            Merge
+          </button>
+          <button
+            type="button"
+            data-testid="worktree-discard"
+            disabled={busy !== null}
+            onClick={() => { void handleDiscard(); }}
+            className="inline-flex items-center gap-1 rounded border border-accent-red/40 bg-accent-red/10 px-1.5 py-0.5 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em] text-accent-red transition-colors hover:bg-accent-red/20 disabled:opacity-50"
+          >
+            <Trash2 size={10} />
+            Discard
+          </button>
+          {worktree.workspaceId && (
+            <Hint label="Open worktree folder">
+              <button
+                type="button"
+                data-testid="worktree-open"
+                onClick={() => { void handleOpenFolder(); }}
+                className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-card-hover/40 hover:text-foreground"
+              >
+                <FolderOpen size={11} />
+              </button>
+            </Hint>
+          )}
+        </div>
+      </div>
+      <div className="border-t border-border/30 px-3 py-1.5 font-mono-tech text-[9px] leading-4 text-muted-foreground/60">
+        The run executed in an isolated git worktree. Merge to keep its changes, discard to throw them away.
+      </div>
+    </div>
   );
 }
 
@@ -661,7 +941,7 @@ function ApiKeySwitchBanner({ notice }: { notice: ApiKeySwitchNotice }) {
   const [dismissed, setDismissed] = useState(false);
   if (dismissed) return null;
   return (
-    <div role="status" aria-live="polite" className="overflow-hidden rounded border border-border/40 bg-card-3/40" style={{ backdropFilter: "blur(16px)" }}>
+    <div role="status" aria-live="polite" className="overflow-hidden rounded border border-border/40 bg-card-3/40">
       <div className="flex items-center gap-2.5 px-3 py-2">
         <div className="flex h-5 w-5 items-center justify-center rounded bg-accent-orange/15 text-accent-orange">
           <KeyRound size={11} />
@@ -701,7 +981,7 @@ function ResumableRunBanner({
   onDismiss: (runId: string) => void;
 }) {
   return (
-    <div role="status" aria-label="Unfinished agent run" className="overflow-hidden rounded border border-accent-yellow/30 bg-card-3/40" style={{ backdropFilter: "blur(16px)" }}>
+    <div role="status" aria-label="Unfinished agent run" className="overflow-hidden rounded border border-accent-yellow/30 bg-card-3/40">
       <div className="flex items-center gap-2.5 px-3 py-2">
         <RotateCcw size={12} className="shrink-0 text-accent-yellow/70" />
         <span className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-accent-yellow/80">
@@ -754,7 +1034,7 @@ function ErrorBanner({ error }: { error: { summary: string; details?: string } }
   const [dismissed, setDismissed] = useState(false);
   if (dismissed) return null;
   return (
-    <div role="alert" aria-live="assertive" className="overflow-hidden rounded border border-accent-red/30 bg-card-3/40" style={{ backdropFilter: "blur(16px)" }}>
+    <div role="alert" aria-live="assertive" className="overflow-hidden rounded border border-accent-red/30 bg-card-3/40">
       <div className="flex items-center gap-2.5 px-3 py-2">
         <AlertCircle size={12} className="shrink-0 text-accent-red/70" />
         <span className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-accent-red/80">
@@ -788,7 +1068,8 @@ function ErrorBanner({ error }: { error: { summary: string; details?: string } }
 /**
  * Approvals the server is still holding for this conversation — rendered
  * after a page reload so a blocked run can be unblocked instead of
- * orphaned (audit M2.2).
+ * orphaned (audit M2.2). Reuses the shared ApprovalCard anatomy (severity
+ * badge / command / risk / actions) from agent-steps-viewer.
  */
 function PendingApprovalsCard({
   approvals,
@@ -803,7 +1084,6 @@ function PendingApprovalsCard({
     <div
       role="alert"
       className="overflow-hidden rounded border border-accent-yellow/40 bg-card-3/40"
-      style={{ backdropFilter: "blur(16px)" }}
     >
       <div className="flex items-center gap-2.5 px-3 py-2">
         <Clock size={12} className="shrink-0 animate-pulse text-accent-yellow" />
@@ -814,39 +1094,18 @@ function PendingApprovalsCard({
           This run is paused until you decide.
         </span>
       </div>
-      <div className="divide-y divide-border/30">
-        {approvals.map((approval) => {
-          const busy = busyIds.includes(approval.approvalId);
-          return (
-            <div key={approval.approvalId} className="flex items-center gap-2.5 px-3 py-2.5">
-              <div className="min-w-0 flex-1">
-                <code className="font-mono-tech text-[10px] font-semibold text-foreground">{approval.toolName}</code>
-                {approval.command && (
-                  <div className="mt-0.5 truncate font-mono-tech text-[10px] text-muted-foreground">
-                    <span className="select-none text-muted-foreground/40">$ </span>
-                    {approval.command}
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => onDecide(approval.approvalId, false)}
-                className="shrink-0 rounded border border-border/40 px-2 py-1 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em] text-muted-foreground transition-colors hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                Reject
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => onDecide(approval.approvalId, true)}
-                className="shrink-0 rounded border border-accent-green/40 bg-accent-green/10 px-2 py-1 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em] text-accent-green transition-colors hover:bg-accent-green/20 disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                {busy ? "…" : "Approve"}
-              </button>
-            </div>
-          );
-        })}
+      <div>
+        {approvals.map((approval) => (
+          <Suspense key={approval.approvalId} fallback={null}>
+            <ApprovalCard
+              toolName={approval.toolName}
+              command={approval.command}
+              approvalId={approval.approvalId}
+              onDecision={onDecide}
+              busy={busyIds.includes(approval.approvalId)}
+            />
+          </Suspense>
+        ))}
       </div>
     </div>
   );

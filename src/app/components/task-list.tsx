@@ -74,7 +74,7 @@ export function extractTasks(steps: AgentStep[], liveToolCalls: AgentLiveToolCal
   let tasks: AgentTask[] = [];
 
   for (const step of steps) {
-    step.toolResults.forEach((result) => {
+    step.toolResults?.forEach((result) => {
       if (!result.success) return;
       tasks = mergeTaskSnapshot(tasks, taskSnapshotFromResult(result.data));
     });

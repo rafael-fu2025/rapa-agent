@@ -11,9 +11,18 @@ import { RightSidebar } from "./components/right-sidebar";
 import { AgentRunComparison } from "./components/agent-run-comparison";
 import { TerminalDialog } from "./components/terminal-dialog";
 import { GoToFileDialog, FindInFilesDialog } from "./components/command-palette";
+import { LightboxProvider } from "./components/lightbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle
+} from "./components/ui/dialog";
 import { Hint } from "./components/ui/tooltip";
 import { getConversationMessages, deleteConversationMessages, type ChatAttachment, type ReasoningEffort } from "../lib/api";
 import { listAgentRuns, listPendingApprovals, type AgentRunSummary, type PendingApprovalInfo } from "../lib/agent-api";
+import { LIVE_MESSAGE_ID_PREFIX, reattachLiveRun } from "../lib/live-run-store";
 import { useAgentSettings } from "../lib/agent-settings";
 import { useKeyboardShortcuts } from "./hooks/use-keyboard-shortcuts";
 import { useChatStream } from "./hooks/use-chat-stream";
@@ -34,6 +43,85 @@ const AgentSpecialistsPage = lazy(() => import("./components/agent-specialists-p
 const AgentSettingsPage = lazy(() => import("./components/agent-settings-page").then(m => ({ default: m.AgentSettingsPage })));
 const ServiceKeysSettings = lazy(() => import("./components/service-keys-settings").then(m => ({ default: m.ServiceKeysSettings })));
 const AppearancePage = lazy(() => import("./components/appearance-page").then(m => ({ default: m.AppearancePage })));
+
+/* ------------------------------------------------------------------ */
+/*  Keyboard shortcut cheat-sheet                                      */
+/* ------------------------------------------------------------------ */
+
+/* Only bindings that are actually wired: chat-input.tsx (Enter /
+   Shift+Enter), the useKeyboardShortcuts registrations in Layout and
+   Home, and Escape-to-close (Radix dialogs + right sidebar). */
+const KEYBOARD_SHORTCUTS: Array<{ keys: string[]; label: string }> = [
+  { keys: ["Enter"], label: "Send message" },
+  { keys: ["Shift", "Enter"], label: "Insert newline" },
+  { keys: ["Escape"], label: "Close dialog / panel" },
+  { keys: ["Ctrl", "\\"], label: "Toggle sidebar" },
+  { keys: ["Ctrl", "N"], label: "New chat" },
+  { keys: ["Ctrl", "K"], label: "Search conversations" },
+  { keys: ["Ctrl", "P"], label: "Go to file" },
+  { keys: ["Ctrl", "Shift", "F"], label: "Find in files" },
+  { keys: ["Ctrl", "`"], label: "Open terminal" },
+  { keys: ["?"], label: "Show this cheat-sheet" }
+];
+
+const ShortcutCheatSheet = ({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) => (
+  <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent
+      className="dialog-panel sm:max-w-[360px] gap-0 overflow-hidden rounded p-0"
+      aria-label="Keyboard shortcuts"
+    >
+      <DialogHeader className="gap-1 border-b border-border/40 px-4 py-3">
+        <DialogTitle className="font-mono-tech text-[10px] font-semibold uppercase tracking-[0.16em] text-foreground">
+          Keyboard shortcuts
+        </DialogTitle>
+        <DialogDescription className="font-mono-tech text-[9px] uppercase tracking-[0.08em] text-muted-foreground">
+          Bindings currently wired in the app
+        </DialogDescription>
+      </DialogHeader>
+      <div className="max-h-[60vh] overflow-y-auto">
+        {KEYBOARD_SHORTCUTS.map((shortcut) => (
+          <div
+            key={shortcut.label}
+            className="flex items-center justify-between gap-3 border-b border-border/30 px-4 py-2 last:border-b-0"
+          >
+            <span className="font-mono-tech text-[10px] text-muted-foreground">{shortcut.label}</span>
+            <span className="flex shrink-0 items-center gap-1">
+              {shortcut.keys.map((key) => (
+                <kbd
+                  key={key}
+                  className="rounded border border-border/40 bg-card-3 px-1.5 py-0.5 font-mono-tech text-[9px] font-semibold uppercase text-foreground"
+                >
+                  {key}
+                </kbd>
+              ))}
+            </span>
+          </div>
+        ))}
+      </div>
+    </DialogContent>
+  </Dialog>
+);
+
+/* ------------------------------------------------------------------ */
+/*  Empty-state onboarding                                             */
+/* ------------------------------------------------------------------ */
+
+const ONBOARDED_STORAGE_KEY = "rapa.onboarded";
+
+const ONBOARDING_MODES: Array<{ mode: string; description: string }> = [
+  { mode: "CHAT", description: "direct LLM conversation" },
+  { mode: "AGENT", description: "tool-using runs with approvals" },
+  { mode: "PLAN", description: "read-only planning" }
+];
+
+function readOnboarded(): boolean {
+  try {
+    return localStorage.getItem(ONBOARDED_STORAGE_KEY) != null;
+  } catch {
+    // Storage unavailable — don't nag the user with the panel.
+    return true;
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /*  Layout                                                             */
@@ -70,6 +158,7 @@ type LayoutProps = {
 
 const Layout = ({ children, hideModelSelector = false, mode = "chat", onModeChange, onExport, onNewChat, conversationWorkspace, onSearchOpen, onOpenGoToFile, onOpenFindInFiles, onOpenTerminal, rightTab, onRightTabChange, onRightClose, rightSidebarMessages, rightSidebarWorkspaceId, rightSidebarWorkspaceName, rightSidebarConversationId, onCompareRuns, onToggleRightSidebar, rightSidebarOpen }: LayoutProps) => {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const navigate = useNavigate();
 
   useKeyboardShortcuts([
@@ -113,10 +202,19 @@ const Layout = ({ children, hideModelSelector = false, mode = "chat", onModeChan
         onOpenFindInFiles?.();
         onRightTabChange?.("files");
       }
+    },
+    // "?" (Shift+/) opens the shortcut cheat-sheet. The hook itself
+    // ignores bare keys while typing in inputs, so the composer is safe.
+    // shift must be declared: "?" is always produced with Shift held.
+    {
+      key: "?",
+      shift: true,
+      action: () => setShortcutsOpen(true)
     }
   ]);
 
   return (
+    <LightboxProvider>
     <div className="flex w-full h-screen bg-background text-foreground overflow-hidden">
       <aside className="h-full p-2 pr-0" aria-label="Sidebar">
         <Sidebar
@@ -143,7 +241,9 @@ const Layout = ({ children, hideModelSelector = false, mode = "chat", onModeChan
           />
         </aside>
       )}
+      <ShortcutCheatSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     </div>
+    </LightboxProvider>
   );
 };
 
@@ -218,6 +318,18 @@ const Home = () => {
   // TerminalDialog can pre-pin a new tab to that directory. Cleared
   // after the dialog consumes it.
   const [pendingTerminalCwd, setPendingTerminalCwd] = useState<string | null>(null);
+  // One-time mode primer on the empty chat state. Absent
+  // `rapa.onboarded` flag → show the welcome panel until dismissed.
+  const [showOnboarding, setShowOnboarding] = useState(() => !readOnboarded());
+
+  const dismissOnboarding = useCallback(() => {
+    try {
+      localStorage.setItem(ONBOARDED_STORAGE_KEY, "1");
+    } catch {
+      /* ignore */
+    }
+    setShowOnboarding(false);
+  }, []);
 
   const { settings: agentSettings } = useAgentSettings();
   const { showThinking } = agentSettings;
@@ -262,8 +374,10 @@ const Home = () => {
     reconnecting,
     queuedPrompt,
     isStreamingRef,
+    sessionUsage,
     submitPrompt,
     handleStopGeneration,
+    handleSendQueuedNow,
     handleAgentToolApproval,
     handleModeSwitchApproval,
     handleRegenerate,
@@ -455,6 +569,19 @@ const Home = () => {
         if (latestPersistedMessage?.reasoningEffort) {
           setSelectedReasoningEffort(latestPersistedMessage.reasoningEffort);
         }
+
+        // Detachable runs — re-attach on cold entry (F5 mid-run / first
+        // visit while a run is live on the server). When the module-level
+        // store still tracks a live run for this conversation (warm
+        // return: the executors kept streaming after the previous view
+        // unmounted), reattachLiveRun skips itself and the hook hydrates
+        // from the store directly. The store seeding + replayed stream
+        // drive the hook's synthesized in-flight message; when the run
+        // settles, the pending-transition effect above refetches once for
+        // the canonical row.
+        void reattachLiveRun(selectedConversationId, {
+          mode: normalizeChatMode(latestPersistedMessage?.mode) ?? "agent",
+        });
       } catch {
         if (!mounted) return;
         setError("Failed to load conversation messages");
@@ -479,6 +606,26 @@ const Home = () => {
       setLoadNonce((n) => n + 1);
     }
   }, [pending, selectedConversationId, navigate]);
+
+  /* --- Detachable runs: refetch once when a tracked run settles --- */
+
+  // A run tracked by the live-run store can settle while its synthesized
+  // in-flight message is on screen (warm return: the run finished after
+  // the original view unmounted; cold re-attach: the replayed stream just
+  // delivered done). The canonical persisted assistant row only appears
+  // after a refetch — bump the load nonce exactly once per settle.
+  const liveMessagesRef = useRef<ChatMessage[]>(messages);
+  liveMessagesRef.current = messages;
+  const prevPendingRef = useRef(false);
+  useEffect(() => {
+    const wasPending = prevPendingRef.current;
+    prevPendingRef.current = pending;
+    if (!wasPending || pending || !conversationId) return;
+    const hasSyntheticMessage = liveMessagesRef.current.some((m) => m.id.startsWith(LIVE_MESSAGE_ID_PREFIX));
+    if (hasSyntheticMessage) {
+      setLoadNonce((n) => n + 1);
+    }
+  }, [pending, conversationId]);
 
   /* --- Resumable run detection --- */
 
@@ -876,6 +1023,7 @@ const Home = () => {
                   void handleRegenerate(messageId, { model: selectedModel, provider: selectedProvider });
                 }}
                 queuedPrompt={queuedPrompt}
+                onSendQueuedNow={handleSendQueuedNow}
                 onCopy={handleCopy}
                 onStartEdit={handleEdit}
                 onDraftChange={handleDraftChange}
@@ -930,9 +1078,37 @@ const Home = () => {
               <div className={getInputDockShellClass(isNewConversationView)}>
                 <div className="mx-auto w-full max-w-[720px]">
                   {isNewConversationView ? (
-                    <h2 className="mb-5 text-center text-[32px] font-semibold tracking-tight text-foreground">
-                      How can I help you today?
-                    </h2>
+                    <>
+                      <h2 className="mb-5 text-center text-[32px] font-semibold tracking-tight text-foreground">
+                        How can I help you today?
+                      </h2>
+                      {showOnboarding ? (
+                        <div className="mb-5 overflow-hidden rounded border border-border/40 bg-card-3/40">
+                          <div className="flex items-center justify-between border-b border-border/40 bg-card-3/60 px-3 py-1.5">
+                            <span className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                              welcome to rapa
+                            </span>
+                            <button
+                              type="button"
+                              onClick={dismissOnboarding}
+                              className="rounded border border-border/40 px-2 py-0.5 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em] text-muted-foreground transition-colors hover:border-border hover:text-foreground"
+                            >
+                              Got it
+                            </button>
+                          </div>
+                          <div>
+                            {ONBOARDING_MODES.map(({ mode, description }) => (
+                              <div key={mode} className="flex items-baseline gap-3 px-3 py-1.5">
+                                <span className="w-12 shrink-0 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-accent-blue">
+                                  {mode}
+                                </span>
+                                <span className="font-mono-tech text-[10px] text-muted-foreground">{description}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </>
                   ) : null}
                   <ChatInput
                     onSubmit={handleSubmit}
@@ -945,6 +1121,7 @@ const Home = () => {
                     selectedReasoningEffort={selectedReasoningEffort}
                     onSelectReasoningEffort={setSelectedReasoningEffort}
                     onModeCommand={setMode}
+                    sessionUsage={sessionUsage}
                   />
                 </div>
               </div>

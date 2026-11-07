@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
 import { Plus, ArrowUp, Image as ImageIcon, Paperclip, X, AlertCircle, LoaderCircle } from "lucide-react";
 import type { ChatAttachment, ReasoningEffort } from "../../lib/api";
+import type { SessionUsage } from "../types/chat";
 import { cn } from "../../lib/utils";
 import { Hint } from "./ui/tooltip";
 
@@ -19,6 +20,9 @@ type ChatInputProps = {
   /** Slash-command mode switcher: typing /agent, /plan or /chat submits the
    *  mode change instead of a message (audit M4). */
   onModeCommand?: (mode: "chat" | "agent" | "plan") => void;
+  /** Session context/cost meter from useChatStream. Optional — routes wiring
+   *  happens in a later wave; the chip renders nothing when absent. */
+  sessionUsage?: SessionUsage;
 };
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
@@ -79,6 +83,7 @@ export const ChatInput = ({
   selectedReasoningEffort = "off",
   onSelectReasoningEffort,
   onModeCommand,
+  sessionUsage,
 }: ChatInputProps) => {
   const [value, setValue] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -469,6 +474,24 @@ export const ChatInput = ({
                   }}
                 />
               </div>
+            {sessionUsage && (sessionUsage.contextPercent !== null || sessionUsage.costUsd > 0) && (
+              <Hint label="Estimated context usage and session cost">
+                <span
+                  data-testid="session-usage-chip"
+                  className="inline-flex items-center rounded border border-border/40 bg-card-3/50 px-1.5 py-1 font-mono-tech text-[9px] text-muted-foreground"
+                >
+                  {sessionUsage.contextPercent !== null && (
+                    <span>ctx {Math.round(sessionUsage.contextPercent)}%</span>
+                  )}
+                  {sessionUsage.contextPercent !== null && sessionUsage.costUsd > 0 && (
+                    <span className="mx-1 text-muted-foreground/40">·</span>
+                  )}
+                  {sessionUsage.costUsd > 0 && (
+                    <span>${sessionUsage.costUsd >= 1 ? sessionUsage.costUsd.toFixed(2) : sessionUsage.costUsd.toFixed(3)}</span>
+                  )}
+                </span>
+              </Hint>
+            )}
             <ModelSelector
               selectedProvider={selectedProvider}
               selectedModel={selectedModel}

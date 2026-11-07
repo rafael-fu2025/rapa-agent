@@ -96,6 +96,18 @@ export function RunsPanelContent({ conversationId, onCompare }: RunsPanelContent
     return () => window.clearInterval(timer);
   }, [hasActiveRun, conversationId, load]);
 
+  // Needs-input broadcast (registry parity): the sidebar badges the Runs
+  // tab while any visible run is blocked on an unanswered approval. The
+  // runs data lives here, the tab icon lives in RightSidebar — a window
+  // CustomEvent bridges them (same pattern as `workspace:tree-refresh`).
+  const needsInputCount = useMemo(
+    () => runs.filter((run) => run.needsInput).length,
+    [runs]
+  );
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("rapa:runs-needs-input", { detail: { count: needsInputCount } }));
+  }, [needsInputCount]);
+
   const toggleCompare = (runId: string) => {
     setCompareIds((prev) =>
       prev.includes(runId)
@@ -193,6 +205,15 @@ export function RunsPanelContent({ conversationId, onCompare }: RunsPanelContent
                     <span className={cn("truncate font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em]", statusTone(run.status))}>
                       {run.status}
                     </span>
+                    {run.needsInput && (
+                      <span
+                        data-testid="run-needs-input"
+                        title="Waiting for your approval"
+                        className="shrink-0 rounded border border-accent-yellow/50 bg-accent-yellow/10 px-1 py-px font-mono-tech text-[8px] font-semibold uppercase tracking-[0.08em] text-accent-yellow"
+                      >
+                        input
+                      </span>
+                    )}
                     <span className="ml-auto shrink-0 font-mono-tech text-[8px] text-muted-foreground/50">
                       {timeAgo(run.startedAt ?? run.createdAt)}
                     </span>

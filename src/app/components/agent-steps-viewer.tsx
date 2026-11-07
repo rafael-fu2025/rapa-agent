@@ -427,6 +427,133 @@ function extractToolFileMetadata({
   };
 }
 
+/* ── Approval card — shared approval anatomy ────────────────────── */
+/* Rendered inline in ToolTraceCard (live runs) and reused by
+   PendingApprovalsCard (rehydrated after reload) so both approval
+   surfaces share the same severity badge / command / risk / actions. */
+
+function getRiskSeverityTone(severity: string): { className: string; label: string } {
+  switch (severity.trim().toLowerCase()) {
+    case "medium":
+      return { className: "border-accent-yellow/40 bg-accent-yellow/10 text-accent-yellow", label: "medium" };
+    case "high":
+      return { className: "border-accent-orange/40 bg-accent-orange/10 text-accent-orange", label: "high" };
+    case "destructive":
+    case "irreversible":
+      return { className: "border-accent-red/40 bg-accent-red/10 text-accent-red", label: severity.trim().toLowerCase() };
+    default:
+      // low / unknown severities stay grayscale — accent is status-only.
+      return { className: "border-border/40 bg-card-3/60 text-muted-foreground", label: severity.trim() || "low" };
+  }
+}
+
+export type ApprovalCardProps = {
+  /** Human-readable tool name (underscores kept — mono aesthetic). */
+  toolName: string;
+  /** Command preview, when the tool call has one (shell tools). */
+  command?: string;
+  approvalId: string;
+  /** Server-side dangerous-pattern scan result for the pending call. */
+  risk?: { severity: string; summary: string[] };
+  onDecision: (approvalId: string, approved: boolean) => void;
+  busy?: boolean;
+};
+
+export function ApprovalCard({
+  toolName,
+  command,
+  approvalId,
+  risk,
+  onDecision,
+  busy = false
+}: ApprovalCardProps) {
+  // Progressive-trust opt-in for this approval prompt.
+  const [alwaysAllow, setAlwaysAllow] = useState(false);
+  const trimmedCommand = (command ?? "").trim();
+  const firstToken = trimmedCommand.split(/\s+/)[0] ?? "";
+  const severityTone = risk?.severity ? getRiskSeverityTone(risk.severity) : null;
+  const summaryLines = (risk?.summary ?? []).filter(
+    (line) => typeof line === "string" && line.trim().length > 0
+  );
+
+  return (
+    <div className="mx-3 mb-2 rounded border border-accent-yellow/30 bg-accent-yellow/[0.04] px-3 py-2">
+      <div className="flex items-center gap-2 text-[11px]">
+        <ShieldAlert size={13} className="shrink-0 text-accent-yellow" />
+        <span className="text-accent-yellow">
+          Approve <span className="font-semibold">{toolName}</span>?
+        </span>
+        {severityTone && (
+          <span
+            className={cn(
+              "ml-auto inline-flex shrink-0 items-center rounded border px-1.5 py-0.5 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.08em]",
+              severityTone.className
+            )}
+          >
+            {severityTone.label}
+          </span>
+        )}
+      </div>
+      {trimmedCommand && (
+        <code className="mt-1.5 block truncate rounded border border-accent-yellow/20 bg-card px-2 py-1 font-mono-tech text-[10px] text-accent-yellow/80">
+          {trimmedCommand}
+        </code>
+      )}
+      {summaryLines.length > 0 && (
+        <div className="mt-1.5 space-y-0.5 rounded border border-accent-yellow/20 bg-card/60 px-2 py-1.5">
+          {summaryLines.map((line, index) => (
+            <div key={`${index}-${line.slice(0, 16)}`} className="font-mono-tech text-[9px] leading-[1.5] text-accent-yellow/70">
+              {line}
+            </div>
+          ))}
+        </div>
+      )}
+      <label className="mt-2 flex cursor-pointer items-center gap-1.5 select-none">
+        <input
+          type="checkbox"
+          checked={alwaysAllow}
+          onChange={(e) => setAlwaysAllow(e.target.checked)}
+          className="h-3 w-3 cursor-pointer accent-[var(--accent-blue)]"
+        />
+        <span className="font-mono-tech text-[9px] text-muted-foreground">
+          {trimmedCommand ? "Always allow this command (prefix match)" : "Always allow this tool (exact match)"}
+        </span>
+      </label>
+      <div className="mt-2 flex gap-2">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            // Progressive trust: persist an auto-approve pattern when the
+            // user opts in, then approve this call. Destructive commands
+            // are still gated server-side by the severity check, which
+            // overrides saved patterns.
+            if (alwaysAllow) {
+              const pattern = firstToken
+                ? { name: `${toolName}: ${firstToken}`, pattern: firstToken, matchType: "prefix" as const, toolName }
+                : { name: toolName, pattern: toolName, matchType: "exact" as const, toolName };
+              void upsertAutoApprovePattern(pattern).catch(() => undefined);
+            }
+            void onDecision(approvalId, true);
+          }}
+          className="rounded border border-accent-green/40 bg-accent-green/10 px-2.5 py-1 font-mono-tech text-[10px] font-medium uppercase tracking-wider text-accent-green transition-colors hover:bg-accent-green/20 disabled:opacity-40"
+        >
+          {busy ? "..." : "Approve"}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => { setAlwaysAllow(false); void onDecision(approvalId, false); }}
+          className="rounded border border-accent-red/30 bg-accent-red/[0.06] px-2.5 py-1 font-mono-tech text-[10px] font-medium uppercase tracking-wider text-accent-red transition-colors hover:bg-accent-red/15 disabled:opacity-40"
+        >
+          Reject
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
 /* ── Tool Trace Card — Engineering Blueprint redesign ───────────── */
 /* Compact single-row design: spinning progress ring, monospace tool name,
    contextual preview (command / file path), expandable detail panel.
@@ -475,13 +602,10 @@ function ToolTraceCard({
     ?? (typeof safeParams.path === "string" ? safeParams.path : undefined);
   const inlinePreview = commandPreview ?? pathPreview;
   const ToolIcon = getToolIcon(name);
-  const approvalToolName = name.replace(/_/g, " ");
 
   // ── Diff summary for edit tools ──────────────────────────────
   const isEditTool = EDIT_TOOL_NAMES.has(name);
   const [diffDialogOpen, setDiffDialogOpen] = useState(false);
-  // Progressive-trust opt-in for the inline approval prompt.
-  const [alwaysAllow, setAlwaysAllow] = useState(false);
   const diffEntry = isEditTool && status === "completed" && result?.data
     ? extractDiffFromResult(result.data as Record<string, unknown>, name, 0)
     : null;
@@ -500,10 +624,9 @@ function ToolTraceCard({
           : isApproval ? "border-accent-yellow/30"
           : "border-border/40"
       )}
-      style={{
-        backdropFilter: "blur(16px)",
-        ...(isRunning ? { boxShadow: "0 0 8px color-mix(in srgb, var(--accent-blue) 15%, transparent)" } : {})
-      }}
+      style={
+        isRunning ? { boxShadow: "0 0 8px color-mix(in srgb, var(--accent-blue) 15%, transparent)" } : undefined
+      }
     >
       {/* ── Compact header (always visible) ────────────────────────── */}
       {/* A div with button semantics, not a <button>: the header contains
@@ -566,6 +689,7 @@ function ToolTraceCard({
           </button>
         ) : (
           <span
+            aria-live="polite"
             className={cn(
               "shrink-0 font-mono-tech text-[9px] font-medium uppercase tracking-[0.12em] transition-all duration-300",
               isRunning ? "text-accent-blue"
@@ -642,63 +766,16 @@ function ToolTraceCard({
         </div>
       )}
 
-      {/* ── Inline approval prompt ────────────────────────────────── */}
+      {/* ── Inline approval prompt (shared ApprovalCard anatomy) ──── */}
       {approvalId && onToolApproval && (
-        <div className="mx-3 mb-2 rounded border border-accent-yellow/30 bg-accent-yellow/[0.04] px-3 py-2">
-          <div className="flex items-center gap-2 text-[11px]">
-            <ShieldAlert size={13} className="shrink-0 text-accent-yellow" />
-            <span className="text-accent-yellow">
-              Approve <span className="font-semibold">{approvalToolName}</span>?
-            </span>
-          </div>
-          {commandPreview && (
-            <code className="mt-1.5 block truncate rounded border border-accent-yellow/20 bg-card px-2 py-1 font-mono-tech text-[10px] text-accent-yellow/80">
-              {commandPreview}
-            </code>
-          )}
-          <label className="mt-2 flex cursor-pointer items-center gap-1.5 select-none">
-            <input
-              type="checkbox"
-              checked={alwaysAllow}
-              onChange={(e) => setAlwaysAllow(e.target.checked)}
-              className="h-3 w-3 cursor-pointer accent-[var(--accent-blue)]"
-            />
-            <span className="font-mono-tech text-[9px] text-muted-foreground">
-              Always allow {commandPreview ? `"${commandPreview.trim().split(/\s+/)[0] ?? ""} …"` : approvalToolName} without asking
-            </span>
-          </label>
-          <div className="mt-2 flex gap-2">
-            <button
-              type="button"
-              disabled={isApprovalBusy}
-              onClick={() => {
-                // Progressive trust: persist an auto-approve pattern when
-                // the user opts in, then approve this call. Destructive
-                // commands are still gated server-side by the severity
-                // check, which overrides saved patterns.
-                if (alwaysAllow) {
-                  const firstToken = commandPreview?.trim().split(/\s+/)[0];
-                  const pattern = firstToken
-                    ? { name: `${name}: ${firstToken}`, pattern: firstToken, matchType: "prefix" as const, toolName: name }
-                    : { name, pattern: name, matchType: "exact" as const, toolName: name };
-                  void upsertAutoApprovePattern(pattern).catch(() => undefined);
-                }
-                void onToolApproval(approvalId, true);
-              }}
-              className="rounded border border-accent-green/40 bg-accent-green/10 px-2.5 py-1 font-mono-tech text-[10px] font-medium uppercase tracking-wider text-accent-green transition-colors hover:bg-accent-green/20 disabled:opacity-40"
-            >
-              {isApprovalBusy ? "..." : "Approve"}
-            </button>
-            <button
-              type="button"
-              disabled={isApprovalBusy}
-              onClick={() => { setAlwaysAllow(false); void onToolApproval(approvalId, false); }}
-              className="rounded border border-accent-red/30 bg-accent-red/[0.06] px-2.5 py-1 font-mono-tech text-[10px] font-medium uppercase tracking-wider text-accent-red transition-colors hover:bg-accent-red/15 disabled:opacity-40"
-            >
-              Reject
-            </button>
-          </div>
-        </div>
+        <ApprovalCard
+          toolName={name}
+          command={commandPreview}
+          approvalId={approvalId}
+          risk={approvalData?.risk}
+          onDecision={onToolApproval}
+          busy={isApprovalBusy}
+        />
       )}
 
       {/* ── Expandable details panel ──────────────────────────────── */}
@@ -893,7 +970,6 @@ function CollapsibleReasoning({ content, isLive = false }: CollapsibleReasoningP
         "overflow-hidden rounded border",
         isLive ? "border-accent-blue/20 bg-card-3/40" : "border-border/40 bg-card-3/40"
       )}
-      style={{ backdropFilter: "blur(16px)" }}
     >
       {/* Header row */}
       <button
@@ -1141,10 +1217,27 @@ export function AgentStepsViewer({
 
   if (displayItems.length === 0 && tasks.length === 0) return null;
 
+  // Stacked approvals: several tool calls can be parked waiting for the
+  // user at once (batched writes). Surface the count as a sticky chip so
+  // the queue stays visible while the trace scrolls.
+  const pendingApprovalCount = displayItems.filter(
+    (item) => item.type === "tool" && item.status === "requires_approval"
+  ).length;
 
   return (
     <div className={cn("my-2 space-y-2", className)}>
       {tasks.length > 0 ? <TaskList steps={steps} liveToolCalls={liveToolCalls} isAgentActive={isAgentActive} /> : null}
+      {pendingApprovalCount >= 2 && (
+        <div
+          aria-live="polite"
+          className="sticky top-0 z-10 flex items-center gap-2 rounded border border-accent-yellow/40 bg-accent-yellow/10 px-2.5 py-1 backdrop-blur-sm"
+        >
+          <ShieldAlert size={11} className="shrink-0 text-accent-yellow" />
+          <span className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-accent-yellow">
+            {pendingApprovalCount} awaiting approval
+          </span>
+        </div>
+      )}
       {displayItems.map((item, index) => {
 
         if (item.type === "reasoning") {

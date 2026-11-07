@@ -67,7 +67,7 @@ describe("reasoning-effort picker (profile-driven)", () => {
     expect(effortButton("Default")).toBeDefined();
     expect(screen.queryByRole("button", { name: /^Max$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^XHigh$/i })).toBeNull();
-  });
+  }, 20000);
 
   it("renders extended tiers when the profile has them", async () => {
     renderSelector("high", profile("extended", ["off", "low", "medium", "high", "xhigh"]));

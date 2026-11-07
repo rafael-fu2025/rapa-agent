@@ -1,6 +1,4 @@
 import { useMemo } from "react";
-import { diffLines } from "diff";
-import { FileCode2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -8,6 +6,9 @@ import {
   DialogTitle,
   DialogDescription
 } from "./ui/dialog";
+import { FileTypeIcon } from "./file-type-icon";
+import { DiffViewer } from "./diff/diff-viewer";
+import type { DiffEntry } from "./diff/diff-hunks";
 
 type DiffDialogProps = {
   open: boolean;
@@ -20,6 +21,8 @@ type DiffDialogProps = {
   matchStrategy?: string;
 };
 
+// Props surface is locked to agent-steps-viewer.tsx (lazy import):
+// <DiffDialog open onOpenChange filePath before after lineStart lineEnd matchStrategy />
 export function DiffDialog({
   open,
   onOpenChange,
@@ -30,7 +33,10 @@ export function DiffDialog({
   lineEnd,
   matchStrategy
 }: DiffDialogProps) {
-  const diffParts = useMemo(() => diffLines(before, after), [before, after]);
+  const entry = useMemo<DiffEntry>(
+    () => ({ id: "diff-dialog", path: filePath, before, after, lineStart, lineEnd, matchStrategy }),
+    [filePath, before, after, lineStart, lineEnd, matchStrategy]
+  );
 
   const fileName = filePath.split("/").pop() ?? filePath;
   const lineLabel =
@@ -50,7 +56,7 @@ export function DiffDialog({
       >
         <DialogHeader className="border-b border-border/40 px-5 py-4">
           <DialogTitle className="flex items-center gap-2 font-mono-tech text-[11px] font-semibold normal-case tracking-normal">
-            <FileCode2 className="h-4 w-4 text-muted-foreground shrink-0" />
+            <FileTypeIcon name={fileName} className="h-4 w-4 shrink-0" />
             <span className="truncate">{filePath}</span>
           </DialogTitle>
           <DialogDescription className="flex items-center gap-3 font-mono-tech text-[9px] uppercase tracking-[0.08em] text-muted-foreground">
@@ -63,34 +69,8 @@ export function DiffDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          <div className="bg-app">
-            <pre className="min-w-full p-0 text-[11px] leading-[1.6] text-primary font-mono-tech">
-              {diffParts.map((part, index) => {
-                const lines = part.value.split("\n");
-                if (lines[lines.length - 1] === "") {
-                  lines.pop();
-                }
-
-                return lines.map((line, lineIndex) => {
-                  const key = `${index}-${lineIndex}`;
-                  const prefix = part.added ? "+" : part.removed ? "-" : " ";
-                  const rowClass = part.added
-                    ? "bg-accent-green/[0.08] text-accent-green font-medium"
-                    : part.removed
-                      ? "bg-accent-red/[0.06] text-accent-red line-through opacity-80"
-                      : "bg-transparent text-muted-foreground";
-
-                  return (
-                    <div key={key} className={`grid grid-cols-[36px_1fr] px-4 ${rowClass}`}>
-                      <span className="select-none text-muted-foreground">{prefix}</span>
-                      <span className="whitespace-pre-wrap break-words">{line || " "}</span>
-                    </div>
-                  );
-                });
-              })}
-            </pre>
-          </div>
+        <div className="flex min-h-0 flex-1 flex-col">
+          <DiffViewer entries={[entry]} tone="color" className="h-full min-h-0 flex-1 border-0" />
         </div>
       </DialogContent>
     </Dialog>

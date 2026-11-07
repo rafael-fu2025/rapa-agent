@@ -1,9 +1,27 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useNavigate } from "react-router";
 import { streamChat, forkConversation, deleteConversationMessages, type ChatAttachment, type ReasoningEffort, type TokenUsage } from "../../lib/api";
 import { streamAgent, submitAgentToolApproval, abortAgentRun, pauseAgentRun, resumeAgentRun, type AgentRunSummary } from "../../lib/agent-api";
+import {
+  acquireLiveRunConsumer,
+  finalizeLiveRun,
+  foldLiveStep,
+  getLiveRunState,
+  hasLiveRun,
+  hasLiveRunConsumer,
+  LIVE_MESSAGE_ID_PREFIX,
+  pushLiveToolCall,
+  resetLiveRun,
+  setLiveActiveRun,
+  setLivePending,
+  setLiveQueuedPrompt,
+  setLiveReasoning,
+  setLiveReconnecting,
+  setLiveStreamingText,
+  subscribeLiveRun,
+} from "../../lib/live-run-store";
 import { DEFAULT_AUTO_APPROVE_TOOLS, useAgentSettings } from "../../lib/agent-settings";
-import type { ChatMessage, ChatMode, ApiKeySwitchNotice } from "../types/chat";
+import type { ChatMessage, ChatMode, ApiKeySwitchNotice, SessionUsage } from "../types/chat";
 import { getRealOrEstimatedTokenCount } from "../utils/chat-utils";
 
 /**
@@ -83,10 +101,34 @@ export function useChatStream(params: UseChatStreamParams) {
 
   const navigate = useNavigate();
   const { settings: agentSettings } = useAgentSettings();
-  const { maxIterations, autoApproveCategories } = agentSettings;
+  const { maxIterations, autoApproveCategories, sandboxMode, autoApproveClassifier, worktree: worktreeIsolation } = agentSettings;
 
-  const [pending, setPending] = useState(false);
-  const [reconnecting, setReconnecting] = useState<string | null>(null);
+  // Detachable runs: the live-run store is the module-level source of truth
+  // for in-flight stream state. The executors write every event into the
+  // store (keyed by the run's conversation) AND into `messages` via
+  // updateMessageById for the mounted instance; a remounted view derives
+  // the same props purely from the store snapshot.
+  const storeKey = conversationId ?? selectedConversationId ?? "";
+  const storeKeyRef = useRef(storeKey);
+  storeKeyRef.current = storeKey;
+  // Key the currently-running executor writes to (differs from storeKey
+  // between submit and the start event, and when the user switches views).
+  const activeStoreKeyRef = useRef<string>("");
+  const live = useSyncExternalStore(
+    useCallback((listener: () => void) => subscribeLiveRun(storeKey, listener), [storeKey]),
+    useCallback(() => getLiveRunState(storeKey), [storeKey])
+  );
+
+  const [pendingState, setPending] = useState(false);
+  const [reconnectingState, setReconnecting] = useState<string | null>(null);
+  // Session-scoped context/cost meter (trust & transparency): accumulated
+  // across agent runs in the current conversation view, surfaced as a
+  // composer chip. Reset by resetStreamState (new chat / unmount).
+  const [sessionUsage, setSessionUsage] = useState<SessionUsage>({
+    contextPercent: null,
+    costUsd: 0,
+    lastTotalTokens: null,
+  });
   const isStreamingRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
   const treeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -94,12 +136,107 @@ export function useChatStream(params: UseChatStreamParams) {
   // used by the exit-hatch controls (audit M2.4).
   const activeRunIdRef = useRef<string | null>(null);
 
+  // Mounted-view values OR the store snapshot: local state covers the
+  // native in-flight run, the store covers a run this instance remounted
+  // into (detachable runs — navigate away and back, or F5 + re-attach).
+  const pending = pendingState || live.pending;
+  const reconnecting = reconnectingState ?? live.reconnecting;
+
   const updateMessageById = useCallback(
     (messageId: string, updater: (message: ChatMessage) => ChatMessage) => {
       setMessages((prev) => prev.map((m) => (m.id === messageId ? updater(m) : m)));
     },
     [setMessages]
   );
+
+  /**
+   * Mirror the store's live state onto the streaming assistant message:
+   * - Warm re-attach (module survived navigation): synthesizes the
+   *   in-flight assistant message from the snapshot, then applies every
+   *   store delta so the remounted view tracks the run exactly like the
+   *   original instance did.
+   * - Re-attach on cold entry (routes seeds the store with source
+   *   "reattached"): same synthesis + delta path.
+   * - Chat partial: a chat stream aborted on unmount leaves its streamed
+   *   text in the store — merge it into an empty trailing assistant
+   *   message so the return trip shows what was generated.
+   * Native runs in THIS instance skip the merge (isStreamingRef): their
+   * event handlers already write the same values into messages.
+   */
+  useEffect(() => {
+    if (isStreamingRef.current) return;
+
+    if (!live.pending) {
+      if (live.source === "chat" && live.streamingText) {
+        const text = live.streamingText;
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last || last.role !== "assistant" || last.content.trim().length > 0) return prev;
+          return [...prev.slice(0, -1), { ...last, content: text }];
+        });
+      }
+      // A queued prompt stranded by a run that finished headless (consumer
+      // count hit zero) is dropped here — it was never persisted.
+      if (live.queuedPrompt) {
+        setLiveQueuedPrompt(storeKey, null);
+      }
+      return;
+    }
+
+    const runId = live.activeRunId;
+    if (!runId) return;
+    setMessages((prev) => {
+      const index = prev.findIndex((m) => m.role === "assistant" && m.agentRunId === runId);
+      if (index === -1) {
+        const synthesized: ChatMessage = {
+          id: `${LIVE_MESSAGE_ID_PREFIX}${runId}`,
+          conversationId: conversationId ?? selectedConversationId,
+          role: "assistant",
+          content: live.streamingText ?? "",
+          mode: live.mode ?? "agent",
+          agentRunId: runId,
+          agentSteps: live.agentSteps.length > 0 ? live.agentSteps : undefined,
+          liveToolCalls: live.liveToolCalls,
+          liveReasoning: live.liveReasoning ?? undefined,
+        };
+        return [...prev, synthesized];
+      }
+      const target = prev[index];
+      const nextContent = live.streamingText || target.content || "";
+      const nextMode = target.mode ?? (live.mode ?? "agent");
+      const nextSteps = live.agentSteps.length > 0 ? live.agentSteps : target.agentSteps;
+      const nextToolCalls = live.liveToolCalls;
+      const nextReasoning = live.liveReasoning ?? target.liveReasoning;
+      if (
+        nextContent === target.content &&
+        nextMode === target.mode &&
+        nextSteps === target.agentSteps &&
+        nextToolCalls === target.liveToolCalls &&
+        nextReasoning === target.liveReasoning
+      ) {
+        return prev;
+      }
+      return prev.map((m, i) =>
+        i === index
+          ? {
+              ...m,
+              content: nextContent,
+              mode: nextMode,
+              agentSteps: nextSteps,
+              liveToolCalls: nextToolCalls,
+              liveReasoning: nextReasoning,
+            }
+          : m
+      );
+    });
+  }, [live, messages, storeKey, conversationId, selectedConversationId, setMessages]);
+
+  // Mounted-consumer tracking: the post-run queue flush uses this to
+  // refuse flushing into an unmounted view (detachable runs).
+  useEffect(() => {
+    const release = acquireLiveRunConsumer(storeKey);
+    return release;
+  }, [storeKey]);
 
   const finalizeAssistStats = useCallback(
     ({
@@ -111,6 +248,10 @@ export function useChatStream(params: UseChatStreamParams) {
       mode: runMode,
       tokenUsage,
       elapsedMs,
+      costUsd,
+      iterations,
+      verification,
+      status,
     }: {
       assistantId: string;
       finalContent: string;
@@ -120,6 +261,10 @@ export function useChatStream(params: UseChatStreamParams) {
       mode: ChatMode;
       tokenUsage?: TokenUsage;
       elapsedMs?: number;
+      costUsd?: number;
+      iterations?: number;
+      verification?: { testsPassed: boolean; typecheckPassed: boolean } | null;
+      status?: string;
     }) => {
       const totalTokens = getRealOrEstimatedTokenCount(finalContent, tokenUsage);
       const generatedTokens = tokenUsage?.completionTokens ?? totalTokens;
@@ -135,7 +280,11 @@ export function useChatStream(params: UseChatStreamParams) {
         stats: {
           tokensPerSec: Number(tokensPerSec.toFixed(1)),
           totalTokens,
-          elapsedMs,
+          ...(elapsedMs !== undefined ? { elapsedMs } : {}),
+          ...(costUsd !== undefined ? { costUsd } : {}),
+          ...(iterations !== undefined ? { iterations } : {}),
+          ...(verification !== undefined ? { verification } : {}),
+          ...(status !== undefined ? { status } : {}),
         },
       }));
     },
@@ -180,6 +329,8 @@ export function useChatStream(params: UseChatStreamParams) {
       let awaitingNewAttempt = false;
       const controller = new AbortController();
       streamAbortRef.current = controller;
+      let runStoreKey = conversationIdToUse ?? storeKeyRef.current;
+      activeStoreKeyRef.current = runStoreKey;
 
       try {
         await streamChat(
@@ -197,7 +348,14 @@ export function useChatStream(params: UseChatStreamParams) {
           {
             onStart: (event) => {
               if (event.conversationId) {
+                runStoreKey = event.conversationId;
+                activeStoreKeyRef.current = runStoreKey;
                 setConversationId(event.conversationId);
+                // Store becomes the source of truth for the run from here.
+                setLivePending(runStoreKey, true);
+                setLiveActiveRun(runStoreKey, null, { source: "chat", mode: "chat" });
+                setLiveReconnecting(runStoreKey, null);
+                setLiveStreamingText(runStoreKey, "", "replace");
               }
               if (event.model) {
                 setSelectedModel(event.model);
@@ -207,8 +365,10 @@ export function useChatStream(params: UseChatStreamParams) {
               if (awaitingNewAttempt) {
                 streamedText = "";
                 awaitingNewAttempt = false;
+                setLiveStreamingText(runStoreKey, "", "replace");
               }
               streamedText += chunk;
+              setLiveStreamingText(runStoreKey, chunk, "append");
               updateMessageById(assistantId, (message) => ({
                 ...message,
                 content: streamedText,
@@ -226,6 +386,8 @@ export function useChatStream(params: UseChatStreamParams) {
                   window.history.replaceState(null, "", `/?c=${encodeURIComponent(event.conversationId)}`);
                 }
               }
+
+              finalizeLiveRun(runStoreKey, streamedText || event.content || "");
 
               finalizeAssistStats({
                 assistantId,
@@ -256,11 +418,13 @@ export function useChatStream(params: UseChatStreamParams) {
               }));
             },
             onError: (message) => {
+              setLiveReconnecting(runStoreKey, null);
               setReconnecting(null);
               setError(message);
             },
             onReconnect: () => {
               awaitingNewAttempt = true;
+              setLiveReconnecting(runStoreKey, "Reconnecting...");
               setReconnecting("Reconnecting...");
             },
           },
@@ -276,6 +440,8 @@ export function useChatStream(params: UseChatStreamParams) {
         }
         // Clear the reconnect banner on every exit path — the agent stream
         // did this, the chat stream didn't, leaving a stale "Reconnecting...".
+        setLiveReconnecting(runStoreKey, null);
+        finalizeLiveRun(runStoreKey);
         setReconnecting(null);
         setPending(false);
         isStreamingRef.current = false;
@@ -322,6 +488,11 @@ export function useChatStream(params: UseChatStreamParams) {
       let finalContent = "";
       let finalTokenUsage: TokenUsage | undefined;
       let finalElapsedMs: number | undefined;
+      // Run-receipt fields captured from the done event (trust & transparency).
+      let finalStatus: string | undefined;
+      let finalIterations: number | undefined;
+      let finalCostUsd: number | undefined;
+      let finalVerification: { testsPassed: boolean; typecheckPassed: boolean } | null | undefined;
       let activeConversationId = conversationId;
       let activeRunId: string | null = null;
       const controller = new AbortController();
@@ -329,6 +500,8 @@ export function useChatStream(params: UseChatStreamParams) {
       // Expose the run id to handleStopGeneration / pause / resume, which
       // live outside this closure (audit M2.4).
       activeRunIdRef.current = null;
+      let runStoreKey = conversationIdToUse ?? storeKeyRef.current;
+      activeStoreKeyRef.current = runStoreKey;
 
       const setAgentMessageState = (updater: (message: ChatMessage) => ChatMessage) => {
         updateMessageById(assistantId, updater);
@@ -348,15 +521,29 @@ export function useChatStream(params: UseChatStreamParams) {
             maxIterations,
             autoApproveTools,
             reasoningEffort: reasoningEffortToUse ?? "off",
+            // Item 3 — Agent Settings wiring: shell sandbox strategy,
+            // LLM auto-approve classifier, worktree-per-run isolation.
+            // "native" is the server default, so only send non-defaults.
+            ...(sandboxMode && sandboxMode !== "native" ? { sandboxMode } : {}),
+            ...(autoApproveClassifier?.enabled ? { autoApproveClassifier } : {}),
+            ...(worktreeIsolation ? { worktree: true } : {}),
           },
           {
             onStart: (event) => {
               activeConversationId = event.conversationId;
+              runStoreKey = event.conversationId;
+              activeStoreKeyRef.current = runStoreKey;
               setConversationId(event.conversationId);
               // Remember the persisted run id so Stop/Pause/Resume can
               // address the exit-hatch control routes (audit M2.4).
               activeRunId = event.runId ?? null;
               activeRunIdRef.current = activeRunId;
+              // Store becomes the source of truth for the run from here —
+              // it keeps updating even after this view unmounts.
+              setLivePending(runStoreKey, true);
+              setLiveActiveRun(runStoreKey, activeRunId, { source: "attached", mode: runMode });
+              setLiveReconnecting(runStoreKey, null);
+              setLiveStreamingText(runStoreKey, "", "replace");
               if (selectedConversationId !== event.conversationId) {
                 // Use history.replaceState instead of navigate() to update the URL
                 // WITHOUT triggering React Router's navigation handlers. This prevents
@@ -374,6 +561,7 @@ export function useChatStream(params: UseChatStreamParams) {
               }));
             },
             onThinking: (event) => {
+              setLiveReasoning(runStoreKey, event.reasoning ?? null);
               setAgentMessageState((message) => ({
                 ...message,
                 mode: "agent",
@@ -381,6 +569,12 @@ export function useChatStream(params: UseChatStreamParams) {
               }));
             },
             onToolCall: (event) => {
+              pushLiveToolCall(runStoreKey, {
+                iteration: event.iteration,
+                status: event.status,
+                call: event.call,
+                ...(event.result !== undefined ? { result: event.result } : {}),
+              });
               setAgentMessageState((message) => {
                 const existing = message.liveToolCalls ?? [];
                 const withoutCurrent = existing.filter((item) => item.call.id !== event.call.id);
@@ -397,6 +591,7 @@ export function useChatStream(params: UseChatStreamParams) {
             },
             onAssistant: (event) => {
               finalContent = event.content;
+              setLiveStreamingText(runStoreKey, event.content, "replace");
               setAgentMessageState((message) => ({
                 ...message,
                 content: event.content,
@@ -407,6 +602,7 @@ export function useChatStream(params: UseChatStreamParams) {
               }));
             },
             onStep: (event) => {
+              foldLiveStep(runStoreKey, event.step);
               setAgentMessageState((message) => {
                 const previousSteps = message.agentSteps ?? [];
                 const nextSteps = [...previousSteps.filter((s) => s.iteration !== event.step.iteration), event.step];
@@ -423,6 +619,23 @@ export function useChatStream(params: UseChatStreamParams) {
               finalContent = event.response;
               finalTokenUsage = event.tokenUsage;
               finalElapsedMs = doneEvent.elapsedMs;
+              finalStatus = event.status;
+              finalIterations = event.iterations;
+              finalCostUsd = typeof event.estimatedCostUsd === "number" ? event.estimatedCostUsd : undefined;
+              finalVerification = event.verification === undefined ? undefined : event.verification;
+
+              // Settle the store with the full response — a view that
+              // remounts later shows the complete content instantly.
+              finalizeLiveRun(runStoreKey, event.response);
+
+              // Accumulate the session context/cost meter. contextPercent
+              // reports the latest run's pressure (null when the server
+              // didn't emit contextUsage); cost accumulates across runs.
+              setSessionUsage((prev) => ({
+                contextPercent: event.contextUsage?.percent ?? null,
+                costUsd: prev.costUsd + (typeof event.estimatedCostUsd === "number" ? event.estimatedCostUsd : 0),
+                lastTotalTokens: event.tokenUsage?.totalTokens ?? null,
+              }));
 
               setAgentMessageState((message) => ({
                 ...message,
@@ -432,6 +645,12 @@ export function useChatStream(params: UseChatStreamParams) {
                 liveReasoning: undefined,
                 liveToolCalls: [],
                 interactive: event.interactive,
+                // Item 3 — single additive merge of done.worktree into the
+                // message metadata so the worktree banner can render (and
+                // address merge/discard/open) without extra stream state.
+                ...(event.worktree
+                  ? { worktree: { ...event.worktree, workspaceId: workspaceId ?? null } }
+                  : {}),
               }));
 
               if (activeConversationId && selectedConversationId !== activeConversationId) {
@@ -450,10 +669,12 @@ export function useChatStream(params: UseChatStreamParams) {
               flushTreeRefresh(workspaceId, treeRefreshTimerRef);
             },
             onError: (message) => {
+              setLiveReconnecting(runStoreKey, null);
               setReconnecting(null);
               setError(message);
             },
             onReconnect: () => {
+              setLiveReconnecting(runStoreKey, "Reconnecting...");
               setReconnecting("Reconnecting...");
             },
           },
@@ -469,9 +690,13 @@ export function useChatStream(params: UseChatStreamParams) {
           mode: runMode,
           tokenUsage: finalTokenUsage,
           elapsedMs: finalElapsedMs,
+          status: finalStatus,
+          iterations: finalIterations,
+          costUsd: finalCostUsd,
+          verification: finalVerification,
         });
       } catch (err) {
-        setReconnecting(null);
+        setLiveReconnecting(runStoreKey, null);
         if (!(err instanceof DOMException && err.name === "AbortError")) {
           setError(err instanceof Error ? err.message : errorMessage);
         }
@@ -479,6 +704,7 @@ export function useChatStream(params: UseChatStreamParams) {
         if (streamAbortRef.current === controller) {
           streamAbortRef.current = null;
         }
+        finalizeLiveRun(runStoreKey);
         setPending(false);
         setReconnecting(null);
         isStreamingRef.current = false;
@@ -499,20 +725,30 @@ export function useChatStream(params: UseChatStreamParams) {
       finalizeAssistStats,
       maxIterations,
       autoApproveCategories,
+      sandboxMode,
+      autoApproveClassifier,
+      worktreeIsolation,
     ]
   );
 
   // Queued prompt: submitted while a stream was running; auto-sent when
   // the run finishes instead of the old silent no-op (audit M4).
-  const [queuedPrompt, setQueuedPrompt] = useState<string | null>(null);
+  const [queuedPromptState, setQueuedPrompt] = useState<string | null>(null);
   const queuedPromptRef = useRef<{ prompt: string; attachments: ChatAttachment[] } | null>(null);
   const submitPromptRef = useRef<((prompt: string, attachments: ChatAttachment[]) => Promise<void>) | null>(null);
+  const queuedPrompt = queuedPromptState ?? live.queuedPrompt;
 
   const flushQueuedPrompt = useCallback(async () => {
     const queued = queuedPromptRef.current;
     if (!queued) return;
+    // Detachable runs: never flush headless. When the view that queued the
+    // prompt unmounted, its consumer was released — the queued prompt is
+    // dropped (the store clears it on the next mount) instead of
+    // re-submitting into a dead component.
+    if (!hasLiveRunConsumer(activeStoreKeyRef.current)) return;
     queuedPromptRef.current = null;
     setQueuedPrompt(null);
+    setLiveQueuedPrompt(activeStoreKeyRef.current, null);
     await submitPromptRef.current?.(queued.prompt, queued.attachments);
   }, []);
 
@@ -522,17 +758,21 @@ export function useChatStream(params: UseChatStreamParams) {
       attachments: ChatAttachment[] = [],
       overrides?: Partial<{ mode: ChatMode; provider: string; model: string; conversationId: string; reasoningEffort: ReasoningEffort }>
     ) => {
-      // Quadruple guard against double-submit:
+      // Triple guard against double-submit:
       // 1. Module-level lock (synchronous, survives React re-renders)
       // 2. Ref-based streaming flag (synchronous, survives closures)
-      // 3. State-based pending flag (async, catches other paths)
-      // 4. Content deduplication (prevents same prompt being submitted twice)
-      if (_submitLock || isStreamingRef.current || pending) {
+      // 3. Store-tracked run for this conversation (imperative read —
+      //    deliberately NOT the render-scoped `pending`: the post-run
+      //    queue flush runs in the same microtask chain as the executor's
+      //    finally, before React re-renders, so state-derived flags would
+      //    be stale and re-queue the prompt instead of sending it)
+      if (_submitLock || isStreamingRef.current || hasLiveRun(storeKeyRef.current)) {
         // A stream is already running — queue the prompt instead of the
         // old silent no-op; it auto-sends when the run finishes
         // (audit M4).
         queuedPromptRef.current = { prompt, attachments };
         setQueuedPrompt(prompt);
+        setLiveQueuedPrompt(storeKeyRef.current, prompt);
         return;
       }
 
@@ -560,6 +800,9 @@ export function useChatStream(params: UseChatStreamParams) {
       setSelectedModel(runModel);
       setConversationId(runConversationId);
       setApiKeySwitchNotice(null);
+      // Fresh run — clear any stale streamed partial so a view remounting
+      // during THIS run can't show the previous response's text.
+      setLiveStreamingText(runConversationId ?? storeKeyRef.current, "", "replace");
 
       const userMessage: ChatMessage = {
         id: `u-${Date.now()}`,
@@ -621,7 +864,6 @@ export function useChatStream(params: UseChatStreamParams) {
       await flushQueuedPrompt();
     },
     [
-      pending,
       messages,
       mode,
       selectedProvider,
@@ -647,35 +889,64 @@ export function useChatStream(params: UseChatStreamParams) {
     await submitPrompt(prompt, attachments);
   };
 
-  const handleStopGeneration = useCallback(() => {
+  const handleStopGeneration = useCallback((keepQueue = false) => {
     // Tell the server first when a persisted agent run is in flight, so
     // the run's status is marked aborted and the exit hatch coordinates
-    // a clean stop — then cut the client stream (audit M2.4).
-    const runId = activeRunIdRef.current;
+    // a clean stop — then cut the client stream (audit M2.4). The run id
+    // falls back to the store so a reattached view can stop too.
+    const stopKey = activeStoreKeyRef.current || storeKeyRef.current;
+    const runId = activeRunIdRef.current ?? live.activeRunId;
     if (runId) {
       activeRunIdRef.current = null;
       void abortAgentRun(runId).catch(() => undefined);
     }
     // Stopping discards any queued follow-up — the user interrupted.
-    queuedPromptRef.current = null;
-    setQueuedPrompt(null);
+    // Exception: "send now" (keepQueue) preserves it and re-sends right
+    // after the abort settles (audit M4).
+    if (!keepQueue) {
+      queuedPromptRef.current = null;
+      setQueuedPrompt(null);
+      setLiveQueuedPrompt(stopKey, null);
+    }
     streamAbortRef.current?.abort();
     streamAbortRef.current = null;
+    // Settle the store immediately so a reattached view stops showing the
+    // run as active (the reattach stream settles on its own afterwards).
+    finalizeLiveRun(stopKey);
     setPending(false);
     isStreamingRef.current = false;
-  }, []);
+  }, [live.activeRunId]);
+
+  /**
+   * Send-now: abort the in-flight stream but keep the queued prompt, then
+   * flush it once the abort settles. The aborted stream's own post-run
+   * flush (submitPrompt → flushQueuedPrompt) races this timeout —
+   * flushQueuedPrompt nulls the ref before submitting, so exactly one of
+   * the two can win; the other is a no-op.
+   */
+  const handleSendQueuedNow = useCallback(() => {
+    if (!queuedPromptRef.current) return;
+    handleStopGeneration(true);
+    window.setTimeout(() => {
+      if (!queuedPromptRef.current) return;
+      // Abort not fully unwound yet — the stream's own flush will pick the
+      // queue up; submitting now would just re-queue via the submit guard.
+      if (isStreamingRef.current) return;
+      void flushQueuedPrompt();
+    }, 150);
+  }, [handleStopGeneration, flushQueuedPrompt]);
 
   const handlePauseRun = useCallback(() => {
-    const runId = activeRunIdRef.current;
+    const runId = activeRunIdRef.current ?? live.activeRunId;
     if (!runId) return;
     void pauseAgentRun(runId).catch(() => undefined);
-  }, []);
+  }, [live.activeRunId]);
 
   const handleResumeRunControls = useCallback(() => {
-    const runId = activeRunIdRef.current;
+    const runId = activeRunIdRef.current ?? live.activeRunId;
     if (!runId) return;
     void resumeAgentRun(runId).catch(() => undefined);
-  }, []);
+  }, [live.activeRunId]);
 
   const handleAgentToolApproval = useCallback(
     async (approvalId: string, approved: boolean) => {
@@ -942,14 +1213,24 @@ export function useChatStream(params: UseChatStreamParams) {
     setReconnecting(null);
     queuedPromptRef.current = null;
     setQueuedPrompt(null);
+    // Fresh conversation — drop the store's run state for the view and
+    // restart the context/cost meter.
+    resetLiveRun(storeKeyRef.current);
+    setSessionUsage({ contextPercent: null, costUsd: 0, lastTotalTokens: null });
   }, []);
 
-  // Abort any in-flight stream when the owning component unmounts (e.g.
-  // navigating to Settings mid-stream). Without this, the fetch/SSE loop
-  // runs to completion and keeps calling the unmounted component's setters.
+  // Detachable runs: when the owning component unmounts (e.g. navigating
+  // to Settings mid-stream), an in-flight AGENT run keeps streaming at
+  // module scope — the store keeps updating so navigating back
+  // re-attaches instantly and the run is not killed server-side. Chat
+  // mode (and runs that never persisted a runId) still aborts: the server
+  // cancels upstream on socket close and the partial persists for the
+  // return trip.
   useEffect(() => {
     return () => {
-      streamAbortRef.current?.abort();
+      if (streamAbortRef.current && !activeRunIdRef.current) {
+        streamAbortRef.current.abort();
+      }
     };
   }, []);
 
@@ -957,10 +1238,12 @@ export function useChatStream(params: UseChatStreamParams) {
     pending,
     reconnecting,
     queuedPrompt,
+    sessionUsage,
     isStreamingRef,
     streamAbortRef,
     submitPrompt,
     handleStopGeneration,
+    handleSendQueuedNow,
     handleAgentToolApproval,
     handleModeSwitchApproval,
     handleRegenerate,

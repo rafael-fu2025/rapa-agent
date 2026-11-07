@@ -4,6 +4,7 @@ import { CheckCircle2, ChevronDown, ChevronUp, GitBranch, LoaderCircle, RotateCc
 import { getAgentRun, restoreAgentCheckpoint, type AgentCheckpoint, type AgentRunDetail } from "../../lib/agent-api";
 import { cn } from "../../lib/utils";
 import { Hint } from "./ui/tooltip";
+import { DiffViewer } from "./diff/diff-viewer";
 
 type AgentRunPanelProps = {
   agentRunId?: string;
@@ -57,9 +58,19 @@ function CheckpointRow({
             {checkpoint.toolCall?.name ? <span className="font-mono-tech text-[9px] text-muted-foreground">{checkpoint.toolCall.name}</span> : null}
           </div>
           {checkpoint.diffPreview ? (
-            <pre className="mt-1.5 max-h-28 overflow-auto panel-card rounded p-2 font-mono-tech text-[9px] leading-4 text-foreground">
-              {checkpoint.diffPreview}
-            </pre>
+            <DiffViewer
+              entries={[
+                {
+                  id: checkpoint.id,
+                  path: checkpoint.path,
+                  before: "",
+                  after: "",
+                  rawPreview: checkpoint.diffPreview
+                }
+              ]}
+              storageKey="rapa.agent.checkpointDiffSeen"
+              className="mt-1.5"
+            />
           ) : null}
           {checkpoint.restoreNote ? <div className="mt-1.5 font-mono-tech text-[9px] text-muted-foreground">{checkpoint.restoreNote}</div> : null}
         </div>

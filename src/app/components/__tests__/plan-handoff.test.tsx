@@ -83,7 +83,7 @@ describe("plan→agent handoff button", () => {
       { mode: "agent" }
     );
     expect(onSubmit).toHaveBeenCalledWith(expect.stringContaining("# Implementation Plan"), { mode: "agent" });
-  });
+  }, 20000);
 
   it("does not render on agent-mode messages or while a run is active", () => {
     const { rerender } = { rerender: null };

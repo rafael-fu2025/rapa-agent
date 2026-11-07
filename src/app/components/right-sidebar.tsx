@@ -51,6 +51,19 @@ export function RightSidebar({
     return () => window.removeEventListener("workspace:open-file", handler);
   }, []);
 
+  // Needs-input badge (Item 3): RunsPanelContent broadcasts how many of
+  // its visible runs are blocked on an unanswered approval via
+  // `rapa:runs-needs-input`; the Runs tab icon pulses while count > 0.
+  const [runsNeedsInput, setRunsNeedsInput] = useState(0);
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as { count?: number } | undefined;
+      setRunsNeedsInput(typeof detail?.count === "number" ? detail.count : 0);
+    };
+    window.addEventListener("rapa:runs-needs-input", handler);
+    return () => window.removeEventListener("rapa:runs-needs-input", handler);
+  }, []);
+
   // Close on escape (skip if another overlay already handled it)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -170,13 +183,16 @@ export function RightSidebar({
                 type="button"
                 onClick={() => { onTabChange("runs"); setCollapsed(false); }}
                 className={cn(
-                  "flex w-full items-center justify-center rounded-lg px-2 py-2.5 transition-colors",
+                  "relative flex w-full items-center justify-center rounded-lg px-2 py-2.5 transition-colors",
                   activeTab === "runs"
                     ? "bg-accent text-foreground"
                     : "text-muted-foreground hover:bg-accent hover:text-foreground"
                 )}
               >
                 <Activity size={18} />
+                {runsNeedsInput > 0 && (
+                  <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-accent-yellow animate-pulse" />
+                )}
               </button>
             </Hint>
           </div>
@@ -251,13 +267,16 @@ export function RightSidebar({
                     type="button"
                     onClick={() => onTabChange("runs")}
                     className={cn(
-                      "rounded-md p-2 transition-colors",
+                      "relative rounded-md p-2 transition-colors",
                       activeTab === "runs"
                         ? "bg-accent text-foreground"
                         : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
                     )}
                   >
                     <Activity size={16} />
+                    {runsNeedsInput > 0 && (
+                      <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-accent-yellow animate-pulse" />
+                    )}
                   </button>
                 </Hint>
               </div>

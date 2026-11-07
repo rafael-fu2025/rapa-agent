@@ -23,6 +23,11 @@ export type AgentApprovalData = {
   callId?: string;
   tool?: string;
   parameters?: Record<string, unknown>;
+  /** Server-side dangerous-pattern scan of the pending command. */
+  risk?: {
+    severity: string;
+    summary: string[];
+  };
 };
 
 export type AgentToolResult = {
@@ -106,6 +111,7 @@ export type AgentRunDetail = {
   runSummary?: string | null;
   errorMessage?: string | null;
   tokenUsage?: TokenUsage | null;
+  worktree?: RunWorktreeMetadata | null;
   iterationCount: number;
   startedAt: string;
   completedAt?: string | null;
@@ -138,12 +144,22 @@ export type AgentRunSummary = {
   updatedAt: string;
   conversation?: { title?: string | null } | null;
   workspace?: { name?: string | null; path?: string | null } | null;
+  /** True when the run's conversation holds an unanswered tool approval. */
+  needsInput?: boolean;
   _count?: {
     steps: number;
     toolCalls: number;
     checkpoints: number;
     processSessions: number;
   };
+};
+
+/** Worktree metadata attached to a run row (Item 3). */
+export type RunWorktreeMetadata = {
+  branch: string;
+  path: string;
+  originalRoot: string;
+  status?: "active" | "merged" | "discarded";
 };
 
 
@@ -195,6 +211,14 @@ export type AgentExecutionEvent =
       assistantMessageId?: string;
       apiKeySwitch?: ApiKeySwitchInfo;
       interactive?: AskUserInteractive;
+      /** Context-window pressure at run end (server-side estimate). */
+      contextUsage?: { percent: number; usedTokens: number; budgetTokens: number };
+      /** Best-effort USD cost of this run, when the provider reports usage. */
+      estimatedCostUsd?: number;
+      /** Post-run verification gate outcome. null = verification did not run. */
+      verification?: { testsPassed: boolean; typecheckPassed: boolean } | null;
+      /** Worktree isolation (Item 3) — present when the run executed in a dedicated git worktree. */
+      worktree?: { branch: string; path: string };
     }
 
 
@@ -269,6 +293,32 @@ export function pauseAgentRun(runId: string) {
 
 export function resumeAgentRun(runId: string) {
   return runControlRequest(runId, "resume");
+}
+
+/* ---- Worktree lifecycle (Item 3) ---- */
+
+/**
+ * Merge a completed run's worktree branch back into the original checkout.
+ * Returns ok:false (HTTP 200) with the server's message when git refused
+ * (dirty checkout, conflicts) so the caller can toast it verbatim.
+ */
+export async function mergeRunWorktree(runId: string) {
+  const response = await fetchWithAuth(`/agent/runs/${encodeURIComponent(runId)}/worktree/merge`, { method: "POST" });
+  if (!response.ok) {
+    const error = await response.json().catch(() => null) as { message?: string } | null;
+    throw new Error(error?.message || "Failed to merge worktree");
+  }
+  return response.json() as Promise<{ ok: boolean; message: string }>;
+}
+
+/** Remove a run's worktree and delete its branch. */
+export async function discardRunWorktree(runId: string) {
+  const response = await fetchWithAuth(`/agent/runs/${encodeURIComponent(runId)}/worktree/discard`, { method: "POST" });
+  if (!response.ok) {
+    const error = await response.json().catch(() => null) as { message?: string } | null;
+    throw new Error(error?.message || "Failed to discard worktree");
+  }
+  return response.json() as Promise<{ ok: boolean; message: string }>;
 }
 
 /* ---- Run fetch cache ----
@@ -726,6 +776,78 @@ export async function executeAgent(params: {
   return response.json();
 }
 
+/* ---- Detachable runs: re-attach to an in-flight run's SSE stream ---- */
+
+export type AgentRunStreamResult = {
+  /** The done event when the stream delivered one, undefined otherwise
+   *  (409 not-live, network failure after one retry, or a stream that
+   *  closed early). Callers fall back to the persisted run state. */
+  finalEvent?: AgentExecutionEvent;
+};
+
+/**
+ * Open the re-attach stream for a persisted run: GET
+ * `/agent/runs/:id/stream?since=<seq>`, parsed with the shared
+ * consumeSseStream. Deliberately quiet — no retry storms:
+ *
+ * - 409 (RUN_NOT_LIVE) resolves `{}` silently; the caller falls back to
+ *   the persisted run detail.
+ * - A network error retries exactly once after 2s, then surfaces as
+ *   `{ finalEvent: undefined }`.
+ * - Any other non-OK status also resolves `{}` (best-effort re-attach).
+ */
+export async function getAgentRunStream(
+  runId: string,
+  opts: {
+    since: number;
+    onEvent: (event: AgentExecutionEvent) => void;
+    signal?: AbortSignal;
+  }
+): Promise<AgentRunStreamResult> {
+  const fetchStream = (): Promise<Response> =>
+    fetchWithAuth(`/agent/runs/${encodeURIComponent(runId)}/stream?since=${opts.since}`, {
+      method: "GET",
+      signal: opts.signal,
+    });
+
+  let response: Response;
+  try {
+    response = await fetchStream();
+  } catch (err) {
+    // An aborted fetch must not retry — the caller is tearing down.
+    if (opts.signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) {
+      return {};
+    }
+    // One retry after a short backoff, then give up silently.
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    try {
+      response = await fetchStream();
+    } catch {
+      return {};
+    }
+  }
+
+  if (response.status === 409) {
+    return {}; // RUN_NOT_LIVE — the run already finished; caller falls back
+  }
+  if (!response.ok) {
+    return {};
+  }
+
+  let finalEvent: AgentExecutionEvent | undefined;
+  try {
+    await consumeSseStream<AgentExecutionEvent>(response, {
+      onEvent: (event) => {
+        if (event.type === "done") finalEvent = event;
+        opts.onEvent(event);
+      },
+    });
+  } catch {
+    return { finalEvent };
+  }
+  return { finalEvent };
+}
+
 export async function streamAgent(
   params: {
     prompt: string;
@@ -749,6 +871,12 @@ export async function streamAgent(
      * Omit to use the provider default.
      */
     reasoningEffort?: "off" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | "on";
+    /** Shell-command sandbox strategy threaded to ToolExecutionContext. */
+    sandboxMode?: "native" | "docker" | "off";
+    /** LLM auto-approve classifier config (lib/auto-approve-classifier.ts). */
+    autoApproveClassifier?: { enabled?: boolean; provider?: string; model?: string };
+    /** Worktree-per-run isolation (Item 3) — opt the run into its own git worktree. */
+    worktree?: boolean;
   },
   handlers: {
     onStart?: (event: Extract<AgentExecutionEvent, { type: "start" }>) => void;
