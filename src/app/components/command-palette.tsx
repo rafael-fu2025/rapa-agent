@@ -33,9 +33,10 @@ import {
   type FileMatch,
   type ContentMatch
 } from "../../lib/workspace-api";
-import { File, Loader2, Search as SearchIcon } from "lucide-react";
+import { Loader2, Search as SearchIcon } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "../../lib/utils";
+import { FileTypeIcon } from "./file-type-icon";
 
 // === Go to file (Ctrl+P) ====================================================
 
@@ -131,7 +132,7 @@ export function GoToFileDialog({
                 onSelect={() => handleSelect(m)}
                 className="font-mono-tech text-[12px]"
               >
-                <File className="mr-2 h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+                <FileTypeIcon name={m.name} className="mr-2 h-3.5 w-3.5" />
                 <span className="truncate font-medium text-foreground/90">{m.name}</span>
                 <span className="ml-2 truncate text-[11px] text-muted-foreground/60">
                   {m.path}

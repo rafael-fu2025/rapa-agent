@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { FileCode2, Loader2, Eye, Code, Image as ImageIcon } from "lucide-react";
+import { Loader2, Eye, Code } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -10,6 +10,7 @@ import {
   DialogDescription
 } from "./ui/dialog";
 import { cn } from "../../lib/utils";
+import { FileTypeIcon } from "./file-type-icon";
 import {
   getWorkspaceFileContent,
   fetchWorkspaceRawObjectUrl,
@@ -108,9 +109,7 @@ export function FileViewerDialog({
       >
         <DialogHeader className="border-b border-border/40 px-5 py-4">
           <DialogTitle className="flex items-center gap-2 font-mono-tech text-[11px] font-semibold normal-case tracking-normal">
-            {image
-              ? <ImageIcon className="h-4 w-4 text-muted-foreground shrink-0" />
-              : <FileCode2 className="h-4 w-4 text-muted-foreground shrink-0" />}
+            <FileTypeIcon name={fileName} className="h-4 w-4 shrink-0" />
             <span className="truncate">{filePath}</span>
           </DialogTitle>
           <DialogDescription className="flex items-center gap-3 font-mono-tech text-[9px] uppercase tracking-[0.08em] text-muted-foreground">

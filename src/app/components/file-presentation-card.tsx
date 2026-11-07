@@ -6,18 +6,9 @@
 // reads that array and renders the cards.
 
 import { useState } from "react";
-import {
-  Check,
-  Copy,
-  FileText,
-  FileImage,
-  FileArchive,
-  FileCode,
-  FileQuestion,
-  ExternalLink,
-  FolderOpen
-} from "lucide-react";
+import { Check, Copy, ExternalLink } from "lucide-react";
 import { Hint } from "./ui/tooltip";
+import { FileTypeIcon, FolderTypeIcon } from "./file-type-icon";
 
 export type PresentedFile = {
   path: string;
@@ -61,16 +52,11 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-function FileIcon({ kind, isDirectory }: { kind: FileKind; isDirectory: boolean }) {
+function FileIcon({ name, isDirectory }: { name: string; isDirectory: boolean }) {
   if (isDirectory) {
-    return <FolderOpen className="h-4 w-4 text-muted-foreground" />;
+    return <FolderTypeIcon name={name} open className="h-4 w-4" />;
   }
-  const cls = "h-4 w-4";
-  if (kind === "image") return <FileImage className={`${cls} text-blue-400`} />;
-  if (kind === "archive") return <FileArchive className={`${cls} text-amber-400`} />;
-  if (kind === "document") return <FileText className={`${cls} text-emerald-400`} />;
-  if (kind === "code") return <FileCode className={`${cls} text-violet-400`} />;
-  return <FileQuestion className={`${cls} text-muted-foreground`} />;
+  return <FileTypeIcon name={name} className="h-4 w-4" />;
 }
 
 function FileCard({ file }: { file: PresentedFile }) {
@@ -99,7 +85,7 @@ function FileCard({ file }: { file: PresentedFile }) {
   return (
     <div className="flex flex-col gap-2 rounded border border-border/60 bg-card-3 p-3 hover:border-border transition-colors">
       <div className="flex items-start gap-2">
-        <FileIcon kind={kind} isDirectory={file.isDirectory} />
+        <FileIcon name={file.name} isDirectory={file.isDirectory} />
         <div className="flex-1 min-w-0">
           <Hint label={file.path}>
             <div className="font-mono text-[12px] font-medium text-foreground truncate">

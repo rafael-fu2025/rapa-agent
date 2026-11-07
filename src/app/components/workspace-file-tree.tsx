@@ -2,9 +2,6 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   ChevronRight,
   ChevronDown,
-  File,
-  Folder,
-  FolderOpen,
   RefreshCw,
   Loader2,
   Copy,
@@ -63,6 +60,7 @@ import {
   type WorkspaceFileStat
 } from "../../lib/workspace-api";
 import { API_BASE } from "../../lib/api";
+import { FileTypeIcon, FolderTypeIcon } from "./file-type-icon";
 import { FileViewerDialog } from "./file-viewer";
 
 type Props = {
@@ -317,9 +315,9 @@ const TreeNode = ({
       >
         {/* Spacer + icon to align with the normal row. */}
         {isDirectory ? (
-          <Folder size={12} className="shrink-0 text-accent-yellow/50" />
+          <FolderTypeIcon name={node.name} className="h-3 w-3" />
         ) : (
-          <File size={11} className={cn("shrink-0", getFileColor(node.name))} />
+          <FileTypeIcon name={node.name} className="h-3 w-3" />
         )}
         <div className="relative flex-1 min-w-0">
           <Input
@@ -451,17 +449,13 @@ const TreeNode = ({
           ) : (
             <ChevronRight size={10} className="shrink-0 text-muted-foreground/50" />
           )}
-          {isExpanded ? (
-            <FolderOpen size={12} className="shrink-0 text-accent-yellow/60" />
-          ) : (
-            <Folder size={12} className="shrink-0 text-accent-yellow/50" />
-          )}
+          <FolderTypeIcon name={node.name} open={isExpanded} className="h-3.5 w-3.5" />
           {label}
         </>
       ) : (
         <>
           <span className="w-[10px]" /> {/* spacer for alignment */}
-          <File size={11} className={cn("shrink-0", getFileColor(node.name))} />
+          <FileTypeIcon name={node.name} className="h-3.5 w-3.5" />
           {label}
         </>
       )}
@@ -1999,7 +1993,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
                         onClick={() => handleFileOpen(recentPath)}
                         className="flex flex-1 min-w-0 items-center gap-1.5 rounded px-1.5 py-0.5 text-left font-mono-tech text-[11px] text-foreground/80 transition-colors hover:bg-accent/20"
                       >
-                        <File size={10} className={cn("shrink-0", getFileColor(name))} />
+                        <FileTypeIcon name={name} className="h-3 w-3" />
                         <span className="truncate">{name}</span>
                         <span className="truncate text-[10px] text-muted-foreground/60">· {recentPath}</span>
                       </button>
