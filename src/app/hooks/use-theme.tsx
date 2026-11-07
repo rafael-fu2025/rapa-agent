@@ -48,7 +48,7 @@ function applyTheme(resolved: ResolvedTheme): void {
   // matches. Light = a soft off-white, dark = the existing near-black.
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) {
-    meta.setAttribute("content", resolved === "dark" ? "#0C0C0C" : "#FAFAFA");
+    meta.setAttribute("content", resolved === "dark" ? "#0C0C0C" : "#F2F4F7");
   }
   root.style.colorScheme = resolved;
 }

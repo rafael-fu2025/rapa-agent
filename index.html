@@ -28,7 +28,7 @@
             else document.documentElement.classList.remove("dark");
             document.documentElement.style.colorScheme = resolved;
             var meta = document.querySelector('meta[name="theme-color"]');
-            if (meta) meta.setAttribute("content", resolved === "dark" ? "#0C0C0C" : "#FAFAFA");
+            if (meta) meta.setAttribute("content", resolved === "dark" ? "#0C0C0C" : "#F2F4F7");
           } catch (_) { /* localStorage may be unavailable */ }
         })();
       </script>

@@ -2,77 +2,83 @@
 
 :root {
   --font-size: 16px;
-  --background: #ffffff;
-  --foreground: oklch(0.145 0 0);
-  --card: #fafafa;
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: #030213;
-  --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.95 0.0058 264.53);
-  --secondary-foreground: #030213;
-  --muted: #ececf0;
-  --muted-foreground: #717182;
-  --accent: #e9ebef;
-  --accent-foreground: #030213;
+  /* Light mode is designed on its own terms, not as an inverted dark
+     theme. The page is a soft cool off-white (the light twin of dark's
+     #0C0C0C), text is a softened near-black instead of pure #030213,
+     and elevation goes the light-mode way: surfaces get WHITER as they
+     rise above the page (dark mode gets lighter-grays the same way). */
+  --background: #f2f4f7;
+  --foreground: #1a2029;
+  --card: #ffffff;
+  --card-foreground: #1a2029;
+  --popover: #ffffff;
+  --popover-foreground: #1a2029;
+  --primary: #10141c;
+  --primary-foreground: #ffffff;
+  --secondary: #eef0f4;
+  --secondary-foreground: #1a2029;
+  --muted: #eef0f4;
+  --muted-foreground: #5f6774;
+  --accent: #e8ecf1;
+  --accent-foreground: #1a2029;
   --destructive: #d4183d;
   --destructive-foreground: #ffffff;
-  --border: rgba(0, 0, 0, 0.1);
+  --border: rgba(13, 18, 28, 0.1);
   --input: transparent;
-  --input-background: #f3f3f5;
-  --switch-background: #cbced4;
+  --input-background: #f1f3f7;
+  --switch-background: #d3d9e2;
   --font-weight-medium: 500;
   --font-weight-normal: 400;
-  --ring: oklch(0.708 0 0);
+  --ring: #93a1b5;
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: #030213;
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar: #f4f6f9;
+  --sidebar-foreground: #1a2029;
+  --sidebar-primary: #10141c;
+  --sidebar-primary-foreground: #f4f6f9;
+  --sidebar-accent: #eaedf2;
+  --sidebar-accent-foreground: #1a2029;
+  --sidebar-border: rgba(13, 18, 28, 0.08);
+  --sidebar-ring: #93a1b5;
 
   /* ----------------------------------------------------------------- */
   /* Legacy / app-specific tokens — keep the rest of the codebase happy */
   /* ----------------------------------------------------------------- */
-  --app: #ffffff;
-  --card-2: #f7f7f8;
-  --card-3: #f0f0f2;
-  --card-4: #e6e6ea;
-  --card-5: #d8d8dc;
-  --card-strong: #f3f3f5;
-  --card-hover: #ececf0;
-  --border-card: rgba(0, 0, 0, 0.08);
-  --border-card-strong: rgba(0, 0, 0, 0.14);
-  --text-primary: #030213;
-  --text-secondary: #4B5563;
-  --text-muted: #4B5563;
+  --app: #f7f8fa;
+  --card-2: #fbfcfe;
+  --card-3: #f1f3f7;
+  --card-4: #e8ebf1;
+  --card-5: #dce1e8;
+  --card-strong: #f6f8fa;
+  --card-hover: #eceff4;
+  --border-card: rgba(13, 18, 28, 0.08);
+  --border-card-strong: rgba(13, 18, 28, 0.15);
+  --text-primary: #1a2029;
+  --text-secondary: #4d5665;
+  --text-muted: #7b8493;
   --text-muted-foreground: var(--muted-foreground);
-  /* Slight tint for fade gradients — visible on both white and dark
-     backgrounds. In light mode it's a very light gray; in dark mode
-     it's a deep gray. */
-  --fade-tint: rgba(255, 255, 255, 0.85);
-  --fade-tint-strong: rgba(255, 255, 255, 0.95);
+  /* Tint for fade gradients, matched to the page surface so gradients
+     melt into the background instead of floating as white stripes. */
+  --fade-tint: rgba(247, 248, 250, 0.88);
+  --fade-tint-strong: rgba(247, 248, 250, 0.96);
   /* The user-chosen accent (Appearance settings) overrides the blue
      default when set. --accent-color is applied by lib/appearance.ts. */
   --accent-blue: var(--accent-color, #2563eb);
-  --accent-yellow: #ca8a04;
-  --accent-orange: #ea580c;
+  /* Status accents are chosen for >= 4.5:1 contrast on the light page
+     both as label text and as button backgrounds under white text. */
+  --accent-yellow: #a16207;
+  --accent-orange: #c2410c;
   --accent-red: #d4183d;
-  --accent-green: #16A34A;
+  --accent-green: #15803d;
   /* Reasoning / thinking-mode accent (used by the model-selector
      effort dropdown + closed-state badge). Distinct from accent-blue
      (selected model) and accent-orange (active provider) so the
      three states are visually separable at a glance. */
-  --accent-purple: #7c3aed;
+  --accent-purple: #6d28d9;
 
   /* Brand panel — fixed dark surface for the login brand panel */
   --brand-bg: #08090a;
@@ -219,6 +225,53 @@
   --color-brand-accent: var(--brand-accent);
   --color-brand-border: var(--brand-border);
   --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* ── Light-mode glass adjustments ────────────────────────────────────
+   The glassmorphism panels below (sidebar/dropdown/dialog/workspace
+   chip/analytics/toasts) blend a semi-transparent card color with
+   backdrop blur. Those alphas were tuned against the dark page; against
+   the light page they wash out to near-invisible milky rectangles, and
+   worse, backdrop-filter promotes each panel to its own composited
+   layer, which disables ClearType subpixel antialiasing in Chromium —
+   text inside reads soft, and semibold labels look shadowed. In light
+   mode the panels therefore go fully opaque and drop the blur: the
+   border + corner brackets keep the blueprint identity, and the text
+   renders sharp. */
+html:not(.dark) .sidebar-panel {
+  background: var(--card);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html:not(.dark) .dropdown-panel {
+  background: var(--card);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html:not(.dark) .mode-toggle-panel {
+  background: var(--card);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html:not(.dark) .workspace-chip {
+  background: var(--card);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html:not(.dark) .dialog-panel {
+  background: var(--card);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html:not(.dark) .analytics-panel {
+  background: var(--card);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html:not(.dark) .toaster [data-sonner-toast] {
+  background: var(--card);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 @layer base {
