@@ -2259,27 +2259,43 @@ const PROGRESS_TOOLS: Set<string> = new Set([
 
 /**
  * Detect "intent without action" — short assistant text that promises a tool
- * call ("let me read X", "I'll do Y", "I should tail the logs") but the model
- * actually emitted no tool. Returns the matched phrase (for echoing in the
- * nudge) or null if the text doesn't look like an unfinished promise.
+ * call ("let me read X", "I'll do Y") but the model actually emitted no tool.
+ * Returns the matched phrase (for echoing in the nudge) or null if the text
+ * doesn't look like an unfinished promise.
  *
  * Conservative — only matches when:
  *   - The response is short (< 400 chars)
  *   - There are no fenced code blocks
- *   - There's a "let me / I'll / I should / let's / I will" phrase
- *
- * Long answers that happen to contain "let me know" are not stalls.
+ *   - It doesn't end with a question (a question to the user is a turn end)
+ *   - It contains no no-tools meta statement ("no tool calls needed")
+ *   - There's a "let me / I'll / let's" commitment phrase (never "I should";
+ *     never "let me know", which is a question, not a promise)
  */
+
 // Commitment language only — "let me", "I'll", "I'm going to". Deliberation
 // verbs ("I should", "I could", "I might") are intentionally excluded: they
 // describe internal weighing, not a promise the user can see broken.
-const INTENT_PHRASE_RE = /\b(let me|let'?s|i'?ll|i will|i'?m going to|i am going to|next,?\s+i'?ll|now,?\s+i'?ll)\b[^.!?\n]{0,80}/i;
+//
+// Three false-positive exclusions (seen live: "hi" → greeting → 2 bogus
+// nudges → 3 wasted rounds):
+//   - "let me know …" is a question to the user, not a promise (the old
+//     `let me` alternative matched it; the <400-char guard let short
+//     greetings through despite the long-answer doc claim);
+//   - a no-tools meta statement ("no tool calls needed", "in plain prose")
+//     is the model narrating its decision — primed by this very system
+//     prompt's "A turn with no tool calls ends the run" — not a stall;
+//   - a trailing question is a legitimate turn end.
+const INTENT_PHRASE_RE = /\b(let me(?! know)|let'?s|i'?ll|i will|i'?m going to|i am going to)\b[^.!?\n]{0,80}/i;
+const NO_TOOL_META_RE =
+  /\bno tool\s*(calls?|use|usage)?\b|without (a |any |using )?tools?\b|plain prose\b|(?:don'?t|does'?t|not) (?:need|require|use) (?:a |any )?tools?\b/i;
 
-function detectIntentWithoutAction(text: string): string | null {
+export function detectIntentWithoutAction(text: string): string | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
   if (trimmed.length >= 400) return null;
   if (/```/.test(trimmed)) return null;
+  if (trimmed.endsWith("?")) return null;
+  if (NO_TOOL_META_RE.test(trimmed)) return null;
   const match = INTENT_PHRASE_RE.exec(trimmed);
   return match ? match[0].trim() : null;
 }
