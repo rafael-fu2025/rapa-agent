@@ -35,35 +35,6 @@
   }
 }
 
-/* Accessibility: collapse all animation/transition motion for users who
-   opt out via their OS-level reduced-motion preference — EXCEPT functional
-   status indicators. Spinners and pulse dots communicate state ("working",
-   "waiting on you") rather than decorate, so they keep moving; without
-   this exception the Agent Plan spinner and sidebar badges freeze solid
-   and the app looks hung. Decorative motion (shimmer, pulse-border,
-   slide-in, pings) stays collapsed. */
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-
-  .animate-spin,
-  [class*="animate-spin"] {
-    animation-duration: 1s !important;
-    animation-iteration-count: infinite !important;
-  }
-
-  .animate-pulse,
-  [class*="animate-pulse"] {
-    animation-duration: 2s !important;
-    animation-iteration-count: infinite !important;
-  }
-
-  .animate-ping,
-  [class*="animate-ping"] {
-    animation-duration: 1s !important;
-    animation-iteration-count: infinite !important;
-  }
-}
+/* Reduced-motion handling was removed by user decision: status indicators
+   (spinners, pulse dots, pings) must always animate, and decorative motion
+   follows the user's theme rather than an OS preference. */
