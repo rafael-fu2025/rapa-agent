@@ -8,6 +8,7 @@ import { Tool, type ToolDefinition, type ToolExecutionContext, type ToolResult }
 import { ToolOrchestrator } from "../tool-orchestrator.js";
 import { toolRegistry } from "../../../tools/index.js";
 import { ReadFileTool, WriteFileTool } from "../../../tools/filesystem.js";
+import { ExecuteCommandTool } from "../../../tools/shell.js";
 
 let workspaceRoot = "";
 
@@ -440,6 +441,63 @@ describe("permission-mode auto-approve expansion", () => {
       }
     });
     const [result] = await orch.executeToolCallsInBatches([writeCall("ask.txt")]);
+    expect(result!.success).toBe(false);
+    expect(String(result!.error)).toMatch(/requires approval/i);
+  });
+});
+
+describe("full-access permission mode vs dangerous-command overlay", () => {
+  let localRoot = "";
+  beforeEach(async () => {
+    localRoot = await mkdtemp(join(tmpdir(), "rapa-fullaccess-"));
+    toolRegistry.register(new ExecuteCommandTool());
+  });
+  afterEach(() => {
+    toolRegistry.unregister("execute_command");
+  });
+
+  const cmdCall = (command: string) =>
+    ({ id: `cmd-${Math.abs(command.length * 31)}`, name: "execute_command", parameters: { command } });
+
+  it("full access runs allowlisted-ish diagnostic pipes without approval (live: netstat pipe)", async () => {
+    const orch = new ToolOrchestrator({
+      context: { workspaceRoot: localRoot, userId: "u", conversationId: "c" },
+      config: {
+        maxIterations: 5, autoApproveTools: ["*"], permissionMode: "full",
+        provider: "p", model: "m", baseUrl: "b", apiKey: "k"
+      }
+    });
+    const [result] = await orch.executeToolCallsInBatches([
+      cmdCall("netstat -ano | findstr LISTENING | findstr \"127.0.0.1\"")
+    ]);
+    expect(result!.success).toBe(true);
+    expect(String(result!.output)).toMatch(/LISTENING/i);
+  });
+
+  it("full access still gates catastrophic (irreversible) commands", async () => {
+    const orch = new ToolOrchestrator({
+      context: { workspaceRoot: localRoot, userId: "u", conversationId: "c" },
+      config: {
+        maxIterations: 5, autoApproveTools: ["*"], permissionMode: "full",
+        provider: "p", model: "m", baseUrl: "b", apiKey: "k"
+      }
+    });
+    const [result] = await orch.executeToolCallsInBatches([cmdCall("rm -rf /")]);
+    expect(String(result!.error)).toMatch(/requires approval/i);
+    expect((result!.data as Record<string, unknown>).rejected).toBe(true);
+  });
+
+  it("ask mode still gates the diagnostic pipe (previous behavior)", async () => {
+    const orch = new ToolOrchestrator({
+      context: { workspaceRoot: localRoot, userId: "u", conversationId: "c" },
+      config: {
+        maxIterations: 5, autoApproveTools: [], permissionMode: "ask",
+        provider: "p", model: "m", baseUrl: "b", apiKey: "k"
+      }
+    });
+    const [result] = await orch.executeToolCallsInBatches([
+      cmdCall("netstat -ano | findstr LISTENING")
+    ]);
     expect(result!.success).toBe(false);
     expect(String(result!.error)).toMatch(/requires approval/i);
   });

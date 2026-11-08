@@ -241,6 +241,11 @@ export type ToolApprovalDecision = {
 export type AgentConfig = {
   maxIterations: number;
   autoApproveTools: string[];
+  /** Composer permission ladder. "full" yields the dangerous-command
+   *  overlay to the user's choice for everything except irreversible
+   *  operations (format drives, rm -rf root, drop-table), which still
+   *  require human confirmation. */
+  permissionMode?: "ask" | "autonomous" | "full";
   provider: string;
   model: string;
   baseUrl: string;

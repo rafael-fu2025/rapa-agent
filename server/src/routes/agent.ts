@@ -635,6 +635,7 @@ function createAgent(
           : requestInfo.payload.permissionMode === "autonomous"
             ? [...AUTONOMOUS_AUTO_APPROVE_CATEGORIES, ...requestInfo.payload.autoApproveTools]
             : requestInfo.payload.autoApproveTools,
+      permissionMode: requestInfo.payload.permissionMode,
       provider: requestInfo.provider,
       model: requestInfo.model,
       baseUrl: requestInfo.baseUrl,

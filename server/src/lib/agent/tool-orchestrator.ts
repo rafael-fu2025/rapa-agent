@@ -5,7 +5,7 @@ import { isWithinWorkspaceSymlinkSafe, resolveWorkspacePath } from "../../tools/
 import { toolRegistry } from "../../tools/index.js";
 import { isDangerousCommand, diagnoseAndFixCommand } from "../../tools/shell.js";
 import { hasTestInfrastructure, resolveTypecheckCommand } from "../../tools/diagnostics.js";
-import { analyseCommandRisk, type CommandRiskAssessment } from "../safety/dangerous-patterns.js";
+import { analyseCommandRisk, SEVERITY_RANK, type CommandRiskAssessment } from "../safety/dangerous-patterns.js";
 import { detectPromptInjection, wrapUntrustedContent } from "../safety/prompt-injection.js";
 import { redact } from "../crypto.js";
 import type {
@@ -282,6 +282,20 @@ export class ToolOrchestrator {
     const effectiveCmd = diagnoseAndFixCommand(cmd).command;
     const risk = analyseCommandRisk(effectiveCmd);
 
+    // The rewrite can DOWNGRADE severity: `rm -rf /` is irreversible on the
+    // raw string (rm-rf-root), but its translated `rmdir /s /q` form matches
+    // a weaker pattern — and in full-access mode that gap let the translated
+    // command reach real execution. Assess the ORIGINAL command too and keep
+    // the highest severity so a rewrite can never hide what the model asked
+    // for. (Matches/summary merge so approval cards still show both.)
+    const originalRisk = analyseCommandRisk(cmd);
+    if (SEVERITY_RANK[originalRisk.severity] > SEVERITY_RANK[risk.severity]) {
+      risk.severity = originalRisk.severity;
+      risk.requiresConfirmation = risk.requiresConfirmation || originalRisk.requiresConfirmation;
+      risk.summary.push(...originalRisk.summary);
+      risk.matches.push(...originalRisk.matches);
+    }
+
     // Layer the allowlist check (VULN-15): if the command is not on the
     // known-safe allowlist, force user approval even when no dangerous
     // pattern matched. This catches unusual commands that slip past the
@@ -298,12 +312,25 @@ export class ToolOrchestrator {
   }
 
   /**
+   * Whether the dangerous-command overlay forces a human dialog for this
+   * risk assessment. In "full" permission mode the overlay yields to the
+   * user's explicit choice for everything except catastrophic
+   * (irreversible) operations — format drives, rm -rf on roots,
+   * drop-table — which still require human confirmation.
+   */
+  private riskForcesApproval(risk: CommandRiskAssessment | undefined): boolean {
+    if (!risk?.requiresConfirmation) return false;
+    if (this.config.permissionMode === "full" && risk.severity !== "irreversible") return false;
+    return true;
+  }
+
+  /**
    * Returns true when a shell call contains a dangerous pattern and so
    * must be approved, regardless of the tool's auto-approve setting.
+   * Full permission mode downgrades every non-irreversible overlay hit.
    */
   needsCommandRiskApproval(call: ToolCall): boolean {
-    const risk = this.getCommandRiskForCall(call);
-    return Boolean(risk?.requiresConfirmation);
+    return this.riskForcesApproval(this.getCommandRiskForCall(call));
   }
 
   private async requestToolApproval(call: ToolCall, definition: ToolDefinition): Promise<ToolApprovalDecision> {
@@ -327,7 +354,7 @@ export class ToolOrchestrator {
     const tool = toolRegistry.get(call.name);
     if (!tool) return { approved: false, message: `Tool ${call.name} not found` };
     const riskAssessment = this.getCommandRiskForCall(call);
-    const forcedByRisk = Boolean(riskAssessment?.requiresConfirmation);
+    const forcedByRisk = this.riskForcesApproval(riskAssessment);
     if (!this.needsToolApproval(tool.definition) && !forcedByRisk) return { approved: true };
 
     const decision = await this.requestToolApproval(call, tool.definition);
@@ -426,7 +453,7 @@ export class ToolOrchestrator {
     // (e.g. execute_command is in `autoApproveTools`), force the user to
     // confirm any command that matches a high-severity pattern.
     const riskAssessment = this.getCommandRiskForCall(call);
-    if (riskAssessment?.requiresConfirmation && !options.approved) {
+    if (this.riskForcesApproval(riskAssessment) && !options.approved) {
       return this.buildApprovalRequiredResult(call, { riskAssessment });
     }
 

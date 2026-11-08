@@ -236,7 +236,7 @@ const PATTERNS: DangerousPattern[] = [
   }
 ];
 
-const SEVERITY_RANK: Record<CommandRiskSeverity, number> = {
+export const SEVERITY_RANK: Record<CommandRiskSeverity, number> = {
   low: 0,
   medium: 1,
   high: 2,
