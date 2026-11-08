@@ -597,6 +597,22 @@ export function getConfiguredLlmTimeoutMs() {
   return DEFAULT_LLM_TIMEOUT_MS;
 }
 
+/** Ceiling on silence between streamed body chunks. Reasoning models can
+ *  legitimately think for minutes before the first token arrives — the old
+ *  120s idle cap aborted them mid-thought (live: "LLM stream stalled: no
+ *  data received for 120000ms" on minimax). Default 5 minutes; the overall
+ *  call timeout still bounds the request, and any received byte re-arms the
+ *  timer, so genuinely dead streams are still caught. */
+export const DEFAULT_IDLE_READ_TIMEOUT_MS = 300_000;
+
+export function getConfiguredIdleReadTimeoutMs() {
+  const configured = Number.parseInt(process.env.LLM_IDLE_READ_TIMEOUT_MS ?? "", 10);
+  if (Number.isFinite(configured) && configured >= 30000) {
+    return configured;
+  }
+  return DEFAULT_IDLE_READ_TIMEOUT_MS;
+}
+
 export function normalizeTokenUsage(usage?: ProviderTokenUsage | null): AgentTokenUsage | undefined {
   if (!usage) return undefined;
 

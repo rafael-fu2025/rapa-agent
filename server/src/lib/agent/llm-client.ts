@@ -14,6 +14,7 @@ import {
   type ReasoningSetting
 } from "./reasoning-translator.js";
 import {
+  getConfiguredIdleReadTimeoutMs,
   normalizeTokenUsage,
   RETRY_LLM_TIMEOUT_MS,
   type AgentConfig,
@@ -474,7 +475,10 @@ export class LLMClient {
 
     // A provider may accept the request then stall the body forever. Headers
     // arriving is not liveness — cap the gap between body chunks instead.
-    const idleReadTimeoutMs = Math.min(timeoutMs, 120_000);
+    // Reasoning models can think silently for minutes before the first
+    // token; the cap is env-tunable (LLM_IDLE_READ_TIMEOUT_MS, default 5 min)
+    // and still bounded by the overall call timeout.
+    const idleReadTimeoutMs = Math.min(timeoutMs, getConfiguredIdleReadTimeoutMs());
     let idleReadTimer: NodeJS.Timeout | undefined;
     const armIdleReadTimer = () => {
       if (idleReadTimer) clearTimeout(idleReadTimer);
