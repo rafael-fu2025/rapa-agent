@@ -11,7 +11,7 @@ function App() {
         <Toaster
           position="bottom-right"
           toastOptions={{
-            className: "border border-border bg-card/95 text-card-foreground shadow-lg backdrop-blur"
+            className: "border border-border bg-card text-card-foreground shadow-lg"
           }}
         />
       </div>

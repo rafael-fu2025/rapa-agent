@@ -1,2 +1,6 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+/* No webfont imports — the app uses Windows-native system fonts only:
+   Segoe UI for UI chrome (body, --font-sans) and Consolas for the
+   mono/label/code layer (--font-mono, .font-mono-tech). This matches
+   the VSCode pairing (Segoe UI workbench + Consolas editor) and
+   renders instantly with zero network dependency. Non-Windows OSes
+   fall back to ui-monospace / system-ui gracefully. */

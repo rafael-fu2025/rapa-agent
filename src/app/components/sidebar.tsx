@@ -89,7 +89,7 @@ const SidebarItem = ({ icon, label, shortcut, active, to, collapsed = false, onC
     <>
       <div className={cn("flex items-center", collapsed ? "justify-center w-full" : "gap-3")}>
         <div className="w-5 h-5 flex items-center justify-center">{icon}</div>
-        {!collapsed && <span className="text-[11px] font-medium leading-none font-mono-tech">{label}</span>}
+        {!collapsed && <span className="text-[11px] font-medium leading-none font-sans">{label}</span>}
       </div>
       {!collapsed && shortcut && (
         <span className="text-[10px] text-muted-foreground group-hover:text-foreground font-medium">{shortcut}</span>
@@ -702,7 +702,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
           <>
             <div className="px-3 pt-3 pb-3">
               <div className="flex items-center justify-between px-1 pb-3">
-                <h1 className="text-[14px] font-semibold tracking-[0.02em] text-foreground font-mono-tech">Rapa</h1>
+                <h1 className="text-[14px] font-semibold tracking-[0.02em] text-foreground font-sans">Rapa</h1>
                 <div className="flex items-center gap-1">
                   <ThemeQuickToggle />
                   <Hint label="Collapse sidebar">
@@ -790,7 +790,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
             {/* History header — pinned outside scroll area */}
             {!isSettingsRoute && (
               <div className="px-3 pb-2 flex items-center justify-between">
-                <h2 className="text-[11px] font-semibold text-muted-foreground font-mono-tech uppercase tracking-[0.08em]">History</h2>
+                <h2 className="text-[11px] font-semibold text-muted-foreground font-sans uppercase tracking-[0.08em]">History</h2>
                 {conversations.length > 0 && (
                   <DropdownMenu.Root>
                     <DropdownMenu.Trigger asChild>
@@ -807,7 +807,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                       >
                         <DropdownMenu.Item
                           onSelect={handleOpenDeleteAllConfirm}
-                          className="flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 text-[11px] font-mono-tech text-accent-red outline-none transition-colors hover:bg-accent-red/10"
+                          className="flex cursor-pointer items-center gap-3 rounded px-2 py-1 text-[11px] font-sans text-accent-red outline-none transition-colors hover:bg-accent-red/10"
                         >
                           <Trash2 size={14} />
                           <span className="font-medium">Delete All</span>
@@ -829,12 +829,12 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
               {isSettingsRoute ? (
                 <div className="space-y-4 px-3 pb-3">
                   <div className="space-y-1">
-                    <h2 className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">Analytics</h2>
+                    <h2 className="font-sans text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">Analytics</h2>
                     <button
                       type="button"
                       onClick={() => handleSelectSettingsTab("usage")}
                       className={cn(
-                        "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left font-mono-tech text-[10px] transition-colors",
+                        "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left font-sans text-[10px] transition-colors",
                         settingsTab === "usage"
                           ? "bg-accent/15 border border-accent/30 text-foreground"
                           : "bg-transparent text-muted-foreground hover:bg-accent/10 hover:text-foreground border border-transparent"
@@ -845,12 +845,12 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                   </div>
 
                   <div className="space-y-1">
-                    <h2 className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">Agent</h2>
+                    <h2 className="font-sans text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">Agent</h2>
                     <button
                       type="button"
                       onClick={() => handleSelectSettingsTab("agent")}
                       className={cn(
-                        "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left font-mono-tech text-[10px] transition-colors",
+                        "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left font-sans text-[10px] transition-colors",
                         settingsTab === "agent"
                           ? "bg-accent/15 border border-accent/30 text-foreground"
                           : "bg-transparent text-muted-foreground hover:bg-accent/10 hover:text-foreground border border-transparent"
@@ -862,7 +862,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                       type="button"
                       onClick={() => handleSelectSettingsTab("skills")}
                       className={cn(
-                        "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left font-mono-tech text-[10px] transition-colors",
+                        "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left font-sans text-[10px] transition-colors",
                         settingsTab === "skills"
                           ? "bg-accent/15 border border-accent/30 text-foreground"
                           : "bg-transparent text-muted-foreground hover:bg-accent/10 hover:text-foreground border border-transparent"
@@ -873,12 +873,12 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                   </div>
 
                   <div className="space-y-1">
-                    <h2 className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">Integrations</h2>
+                    <h2 className="font-sans text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">Integrations</h2>
                     <button
                       type="button"
                       onClick={() => handleSelectSettingsTab("search")}
                       className={cn(
-                        "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left font-mono-tech text-[10px] transition-colors",
+                        "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left font-sans text-[10px] transition-colors",
                         settingsTab === "search"
                           ? "bg-accent/15 border border-accent/30 text-foreground"
                           : "bg-transparent text-muted-foreground hover:bg-accent/10 hover:text-foreground border border-transparent"
@@ -890,7 +890,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                       type="button"
                       onClick={() => handleSelectSettingsTab("appearance")}
                       className={cn(
-                        "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left font-mono-tech text-[10px] transition-colors",
+                        "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left font-sans text-[10px] transition-colors",
                         settingsTab === "appearance"
                           ? "bg-accent/15 border border-accent/30 text-foreground"
                           : "bg-transparent text-muted-foreground hover:bg-accent/10 hover:text-foreground border border-transparent"
@@ -901,7 +901,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                   </div>
 
                   <div>
-                    <h2 className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">Model Providers</h2>
+                    <h2 className="font-sans text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">Model Providers</h2>
                   </div>
 
                   <div>
@@ -916,7 +916,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                             type="button"
                             onClick={() => handleSelectSettingsTab(provider.provider)}
                             className={cn(
-                              "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left font-mono-tech text-[10px] transition-colors",
+                              "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left font-sans text-[10px] transition-colors",
                               isActive
                                 ? "bg-accent/15 border border-accent/30 text-foreground"
                                 : "bg-transparent text-muted-foreground hover:bg-accent/10 hover:text-foreground border border-transparent"
@@ -938,7 +938,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                         type="button"
                         onClick={() => handleSelectSettingsTab("add-provider")}
                         className={cn(
-                          "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left font-mono-tech text-[10px] transition-colors",
+                          "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left font-sans text-[10px] transition-colors",
                           settingsTab === "add-provider"
                             ? "bg-accent/15 border border-accent/30 text-foreground"
                             : "bg-transparent text-muted-foreground hover:bg-accent/10 hover:text-foreground border border-transparent"
@@ -953,7 +953,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
               ) : (
                 <div className="space-y-0.5 pb-3">
                     {filteredConversations.length === 0 ? (
-                      <div className="px-3 py-2 text-[11px] text-disabled font-mono-tech">
+                      <div className="px-3 py-2 text-[11px] text-disabled font-sans">
                         {searching
                           ? "Searching…"
                           : searchQuery.trim() ? "No matching conversations" : "No conversations yet"}
@@ -961,7 +961,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                     ) : (
                       groupedConversations.map((group) => (
                         <div key={group.label}>
-                          <div className="px-3 pb-0.5 pt-3 font-mono-tech text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/50">
+                          <div className="px-3 pb-0.5 pt-3 font-sans text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/50">
                             {group.label}
                           </div>
                           {group.items.map((chat) => {
@@ -979,7 +979,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                           >
                           <div
                             className={cn(
-                              "group flex w-full min-w-0 items-center gap-1.5 rounded-lg px-3 py-1 transition-colors",
+                              "group flex w-full min-w-0 items-center gap-1.5 rounded px-2 py-1 transition-colors",
                               isActiveConversation
                                 ? "bg-accent text-foreground"
                                 : "bg-transparent text-foreground hover:bg-muted"
@@ -992,7 +992,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                                   aria-hidden
                                 />
                               ) : null}
-                              <span className="min-w-0 flex-1 truncate text-[11px] font-normal font-mono-tech">{chat.title || "Untitled"}</span>
+                              <span className="min-w-0 flex-1 truncate text-[11px] font-normal font-sans">{chat.title || "Untitled"}</span>
                               {isRunning ? (
                                 <span
                                   className="shrink-0 rounded-full bg-accent/40 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-primary"
@@ -1022,7 +1022,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                                 >
                                   <DropdownMenu.Item
                                     onSelect={() => handleOpenRename(chat)}
-                                    className="flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 text-[11px] font-mono-tech outline-none transition-colors hover:bg-accent hover:text-foreground"
+                                    className="flex cursor-pointer items-center gap-3 rounded px-2 py-1 text-[11px] font-sans outline-none transition-colors hover:bg-accent hover:text-foreground"
                                   >
                                     <Pencil size={14} />
                                     <span className="font-medium">Rename</span>
@@ -1032,7 +1032,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
 
                                   <DropdownMenu.Item
                                     onSelect={() => setDeleteTarget(chat)}
-                                    className="flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 text-[11px] font-mono-tech text-accent-red outline-none transition-colors hover:bg-accent-red/10"
+                                    className="flex cursor-pointer items-center gap-3 rounded px-2 py-1 text-[11px] font-sans text-accent-red outline-none transition-colors hover:bg-accent-red/10"
                                   >
                                     <Trash2 size={14} />
                                     <span className="font-medium">Delete</span>
@@ -1053,7 +1053,7 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                           type="button"
                           onClick={handleLoadMore}
                           disabled={loadingMore}
-                          className="w-full rounded-md bg-muted py-1.5 text-[11px] font-medium font-mono-tech text-muted transition-colors hover:bg-card-5 hover:text-white disabled:opacity-50"
+                          className="w-full rounded-md bg-muted py-1.5 text-[11px] font-medium font-sans text-muted transition-colors hover:bg-card-5 hover:text-white disabled:opacity-50"
                         >
                           {loadingMore ? "Loading..." : "Load More"}
                         </button>

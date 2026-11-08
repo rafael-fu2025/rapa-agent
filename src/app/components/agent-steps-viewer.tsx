@@ -1230,7 +1230,7 @@ export function AgentStepsViewer({
       {pendingApprovalCount >= 2 && (
         <div
           aria-live="polite"
-          className="sticky top-0 z-10 flex items-center gap-2 rounded border border-accent-yellow/40 bg-accent-yellow/10 px-2.5 py-1 backdrop-blur-sm"
+          className="sticky top-0 z-10 flex items-center gap-2 rounded border border-accent-yellow/40 bg-card px-2.5 py-1"
         >
           <ShieldAlert size={11} className="shrink-0 text-accent-yellow" />
           <span className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-accent-yellow">

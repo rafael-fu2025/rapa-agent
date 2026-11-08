@@ -334,7 +334,7 @@ const TreeNode = ({
               }
             }}
             onBlur={() => onInlineRenameCommit()}
-            className="h-6 px-1.5 py-0 text-[11px] font-mono-tech border-card-hover bg-card text-foreground"
+            className="h-6 px-1.5 py-0 text-[11px] font-sans border-card-hover bg-card text-foreground"
             // Select the whole name on focus, but stop at the extension
             // (matches the rename dialog's behaviour).
             onFocus={(e) => {
@@ -352,7 +352,7 @@ const TreeNode = ({
           {inlineRenameState.ext && (
             <span
               aria-hidden="true"
-              className="pointer-events-none absolute inset-y-0 right-2 flex items-center font-mono-tech text-[11px] text-muted-foreground/70"
+              className="pointer-events-none absolute inset-y-0 right-2 flex items-center font-sans text-[11px] text-muted-foreground/70"
             >
               {inlineRenameState.ext}
             </span>
@@ -366,7 +366,7 @@ const TreeNode = ({
   const label = (
     <span
       className={cn(
-        "truncate font-mono-tech text-[11px]",
+        "truncate font-sans text-[11px]",
         isDirectory ? "font-medium text-foreground/80" : getFileColor(node.name)
       )}
     >
@@ -492,21 +492,21 @@ const TreeNode = ({
             <>
               <ContextMenuItem
                 onSelect={() => onExpandAll(node.path)}
-                className="font-mono-tech text-[11px]"
+                className="font-sans text-[11px]"
               >
                 <Maximize2 size={12} />
                 Expand all
               </ContextMenuItem>
               <ContextMenuItem
                 onSelect={() => onOpenInTerminal(node.relativePath)}
-                className="font-mono-tech text-[11px]"
+                className="font-sans text-[11px]"
               >
                 <TerminalIcon size={12} />
                 Open in terminal
               </ContextMenuItem>
               <ContextMenuItem
                 onSelect={() => onSearchInFolder(node.relativePath)}
-                className="font-mono-tech text-[11px]"
+                className="font-sans text-[11px]"
               >
                 <SearchIcon size={12} />
                 Search in folder
@@ -522,14 +522,14 @@ const TreeNode = ({
             <>
               <ContextMenuItem
                 onSelect={() => onNewFile(node.relativePath)}
-                className="font-mono-tech text-[11px]"
+                className="font-sans text-[11px]"
               >
                 <FilePlus size={12} />
                 New file…
               </ContextMenuItem>
               <ContextMenuItem
                 onSelect={() => onNewFolder(node.relativePath)}
-                className="font-mono-tech text-[11px]"
+                className="font-sans text-[11px]"
               >
                 <FolderPlus size={12} />
                 New folder…
@@ -542,14 +542,14 @@ const TreeNode = ({
             <>
               <ContextMenuItem
                 onSelect={() => onDuplicate(node.relativePath)}
-                className="font-mono-tech text-[11px]"
+                className="font-sans text-[11px]"
               >
                 <Copy size={12} />
                 Duplicate
               </ContextMenuItem>
               <ContextMenuItem
                 onSelect={() => onDownload(node.relativePath)}
-                className="font-mono-tech text-[11px]"
+                className="font-sans text-[11px]"
               >
                 <Download size={12} />
                 Download
@@ -560,14 +560,14 @@ const TreeNode = ({
 
           <ContextMenuItem
             onSelect={() => onRename(node.relativePath, isDirectory)}
-            className="font-mono-tech text-[11px]"
+            className="font-sans text-[11px]"
           >
             <Pencil size={12} />
             Rename…
           </ContextMenuItem>
           <ContextMenuItem
             onSelect={() => onDelete(node.relativePath, isDirectory)}
-            className="font-mono-tech text-[11px] text-accent-red focus:text-accent-red"
+            className="font-sans text-[11px] text-accent-red focus:text-accent-red"
           >
             <Trash2 size={12} />
             Delete…
@@ -576,14 +576,14 @@ const TreeNode = ({
           <ContextMenuSeparator />
           <ContextMenuItem
             onSelect={() => onCopyPath(node.path, "absolute")}
-            className="font-mono-tech text-[11px]"
+            className="font-sans text-[11px]"
           >
             <LinkIcon size={12} />
             Copy absolute path
           </ContextMenuItem>
           <ContextMenuItem
             onSelect={() => onCopyPath(node.relativePath, "relative")}
-            className="font-mono-tech text-[11px]"
+            className="font-sans text-[11px]"
           >
             <Copy size={12} />
             Copy relative path
@@ -591,7 +591,7 @@ const TreeNode = ({
           <ContextMenuSeparator />
           <ContextMenuItem
             onSelect={() => onReveal(node.relativePath)}
-            className="font-mono-tech text-[11px]"
+            className="font-sans text-[11px]"
           >
             <ExternalLink size={12} />
             Reveal in file explorer
@@ -679,7 +679,7 @@ function HoverTooltipCard({
       // the user accidentally mouses over the tooltip).
       className="pointer-events-none absolute left-full top-1/2 z-50 ml-2 -translate-y-1/2 rounded border border-border bg-card px-2.5 py-1.5 text-left shadow-md max-w-[280px]"
     >
-      <div className="space-y-0.5 font-mono-tech text-[10px]">
+      <div className="space-y-0.5 font-sans text-[10px]">
         <div className="text-foreground/90 break-all">{relativePath}</div>
         {stat ? (
           <div className="flex items-center gap-2 text-muted-foreground">
@@ -1774,10 +1774,10 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
           <ContextMenuTrigger asChild>
             <div className="flex items-center justify-between">
               <div className="min-w-0 flex-1">
-                <span className="truncate font-mono-tech text-[10px] text-muted-foreground/70 block">
+                <span className="truncate font-sans text-[10px] text-muted-foreground/70 block">
                   {workspaceName ?? tree?.name ?? "Workspace"}
                 </span>
-                <span className="font-mono-tech text-[9px] text-muted-foreground/40">
+                <span className="font-sans text-[9px] text-muted-foreground/40">
                   {counts.dirs} dirs, {counts.files} files
                 </span>
               </div>
@@ -1819,7 +1819,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
             {tree && (
               <ContextMenuItem
                 onSelect={() => onCopyPathRoot(tree.path, "absolute")}
-                className="font-mono-tech text-[11px]"
+                className="font-sans text-[11px]"
               >
                 <LinkIcon size={12} />
                 Copy workspace path
@@ -1828,7 +1828,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
             <ContextMenuItem
               onSelect={() => onRevealRoot()}
               disabled={!tree}
-              className="font-mono-tech text-[11px]"
+              className="font-sans text-[11px]"
             >
               <ExternalLink size={12} />
               Reveal workspace in file explorer
@@ -1840,7 +1840,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
             <ContextMenuItem
               onSelect={() => handleNewFile(".")}
               disabled={!workspaceId}
-              className="font-mono-tech text-[11px]"
+              className="font-sans text-[11px]"
             >
               <FilePlus size={12} />
               New file…
@@ -1848,7 +1848,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
             <ContextMenuItem
               onSelect={() => handleNewFolder(".")}
               disabled={!workspaceId}
-              className="font-mono-tech text-[11px]"
+              className="font-sans text-[11px]"
             >
               <FolderPlus size={12} />
               New folder…
@@ -1857,7 +1857,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
             <ContextMenuItem
               onSelect={handleExpandAllRoot}
               disabled={!tree || counts.dirs === 0}
-              className="font-mono-tech text-[11px]"
+              className="font-sans text-[11px]"
             >
               <Maximize2 size={12} />
               Expand all
@@ -1865,7 +1865,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
             <ContextMenuItem
               onSelect={handleCollapseAll}
               disabled={expandedPaths.size === 0}
-              className="font-mono-tech text-[11px]"
+              className="font-sans text-[11px]"
             >
               <Minimize2 size={12} />
               Collapse all
@@ -1885,7 +1885,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Filter files…"
-            className="w-full rounded border border-border/40 bg-card-3/40 py-1 pl-7 pr-6 font-mono-tech text-[10px] text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:border-ring"
+            className="w-full rounded border border-border/40 bg-card-3/40 py-1 pl-7 pr-6 font-sans text-[10px] text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:border-ring"
             spellCheck={false}
             autoComplete="off"
           />
@@ -1909,14 +1909,14 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
             same operations. */}
         {selectedPaths.size > 0 && (
           <div className="flex items-center gap-1 border-t border-border/30 bg-accent/10 px-2 py-1">
-            <span className="font-mono-tech text-[10px] font-semibold text-foreground/80">
+            <span className="font-sans text-[10px] font-semibold text-foreground/80">
               {selectedPaths.size} selected
             </span>
             <Hint label="Copy all selected paths">
               <button
                 type="button"
                 onClick={() => void handleBulkCopyPaths()}
-                className="ml-auto inline-flex h-6 items-center gap-1 rounded px-2 font-mono-tech text-[10px] text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
+                className="ml-auto inline-flex h-6 items-center gap-1 rounded px-2 font-sans text-[10px] text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
               >
                 <Copy size={11} />
                 Copy paths
@@ -1927,7 +1927,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
                 type="button"
                 onClick={() => void handleBulkDelete()}
                 disabled={mutationBusy}
-                className="inline-flex h-6 items-center gap-1 rounded px-2 font-mono-tech text-[10px] text-accent-red transition-colors hover:bg-accent-red/20 disabled:opacity-50"
+                className="inline-flex h-6 items-center gap-1 rounded px-2 font-sans text-[10px] text-accent-red transition-colors hover:bg-accent-red/20 disabled:opacity-50"
               >
                 <Trash2 size={11} />
                 Delete
@@ -1937,7 +1937,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
               <button
                 type="button"
                 onClick={clearSelection}
-                className="inline-flex h-6 items-center gap-1 rounded px-1.5 font-mono-tech text-[10px] text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
+                className="inline-flex h-6 items-center gap-1 rounded px-1.5 font-sans text-[10px] text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
               >
                 <X size={11} />
               </button>
@@ -1958,7 +1958,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
           <div className="border-b border-border/30 px-2 py-1.5">
             <div className="flex items-center gap-1.5 px-1 pb-1">
               <Clock size={10} className="text-muted-foreground/60" />
-              <span className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">
+              <span className="font-sans text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">
                 Recent
               </span>
               <Hint label="Clear all recent files">
@@ -1976,7 +1976,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
                       // ignore
                     }
                   }}
-                  className="ml-auto font-mono-tech text-[9px] text-muted-foreground/60 transition-colors hover:text-foreground"
+                  className="ml-auto font-sans text-[9px] text-muted-foreground/60 transition-colors hover:text-foreground"
                 >
                   clear
                 </button>
@@ -1991,7 +1991,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
                       <button
                         type="button"
                         onClick={() => handleFileOpen(recentPath)}
-                        className="flex flex-1 min-w-0 items-center gap-1.5 rounded px-1.5 py-0.5 text-left font-mono-tech text-[11px] text-foreground/80 transition-colors hover:bg-accent/20"
+                        className="flex flex-1 min-w-0 items-center gap-1.5 rounded px-1.5 py-0.5 text-left font-sans text-[11px] text-foreground/80 transition-colors hover:bg-accent/20"
                       >
                         <FileTypeIcon name={name} className="h-3 w-3" />
                         <span className="truncate">{name}</span>
@@ -2036,10 +2036,10 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
 
         {error && (
           <div className="px-4 py-6 text-center">
-            <p className="font-mono-tech text-[11px] text-accent-red/70">{error}</p>
+            <p className="font-sans text-[11px] text-accent-red/70">{error}</p>
             <button
               onClick={() => { void loadTree(); }}
-              className="mt-2 rounded border border-border/40 px-3 py-1 font-mono-tech text-[10px] text-muted-foreground transition-colors hover:bg-accent/30"
+              className="mt-2 rounded border border-border/40 px-3 py-1 font-sans text-[10px] text-muted-foreground transition-colors hover:bg-accent/30"
               type="button"
             >
               Retry
@@ -2049,7 +2049,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
 
         {!loading && !error && filteredTree.length === 0 && (
           <div className="px-4 py-8 text-center">
-            <p className="font-mono-tech text-[11px] text-muted-foreground/60">
+            <p className="font-sans text-[11px] text-muted-foreground/60">
               {filter
                 ? `No files match "${filter}"`
                 : workspaceId
@@ -2092,7 +2092,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
 
       {/* Footer */}
       <div className="border-t border-border/30 px-4 py-2">
-        <span className="font-mono-tech text-[9px] text-muted-foreground/40">
+        <span className="font-sans text-[9px] text-muted-foreground/40">
           {tree?.path ?? ""}
         </span>
       </div>
@@ -2164,7 +2164,7 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
                   className="h-10 border-card-hover bg-card text-primary placeholder:text-muted-foreground"
                 />
                 {createDialog.parentRelativePath && createDialog.parentRelativePath !== "." && (
-                  <p className="font-mono-tech text-[10px] text-muted-foreground/70">
+                  <p className="font-sans text-[10px] text-muted-foreground/70">
                     Inside: {createDialog.parentRelativePath}
                   </p>
                 )}
@@ -2248,12 +2248,12 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
                       }
                       onFocus={(e) => e.currentTarget.select()}
                       disabled={mutationBusy}
-                      className="h-10 border-card-hover bg-card pr-16 font-mono-tech text-[12px] text-primary placeholder:text-muted-foreground"
+                      className="h-10 border-card-hover bg-card pr-16 font-sans text-[12px] text-primary placeholder:text-muted-foreground"
                     />
                     {renameDialog.ext && (
                       <span
                         aria-hidden="true"
-                        className="pointer-events-none absolute inset-y-0 right-3 flex items-center font-mono-tech text-[12px] text-muted-foreground/80"
+                        className="pointer-events-none absolute inset-y-0 right-3 flex items-center font-sans text-[12px] text-muted-foreground/80"
                       >
                         {renameDialog.ext}
                       </span>
@@ -2271,15 +2271,15 @@ export const WorkspaceFileTreeContent = ({ workspaceId, workspaceName }: Props) 
                     }
                     onFocus={(e) => e.currentTarget.select()}
                     disabled={mutationBusy}
-                    className="h-10 border-card-hover bg-card font-mono-tech text-[12px] text-primary placeholder:text-muted-foreground"
+                    className="h-10 border-card-hover bg-card font-sans text-[12px] text-primary placeholder:text-muted-foreground"
                   />
                 )}
 
-                <p className="font-mono-tech text-[10px] text-muted-foreground/70">
+                <p className="font-sans text-[10px] text-muted-foreground/70">
                   Current: {renameDialog.relativePath}
                 </p>
                 {!renameDialog.isDir && (
-                  <p className="font-mono-tech text-[10px] text-muted-foreground/60">
+                  <p className="font-sans text-[10px] text-muted-foreground/60">
                     Tip: paste a full path (with &quot;/&quot;) to move the file at the same time.
                   </p>
                 )}

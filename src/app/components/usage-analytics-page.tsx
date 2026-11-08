@@ -597,7 +597,7 @@ export function UsageAnalyticsPage() {
                               border: "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
                               borderRadius: 8,
                               fontSize: 11,
-                              fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                              fontFamily: "'Consolas', 'Cascadia Mono', ui-monospace, monospace",
                               color: "var(--text-primary)",
                             }}
                             labelStyle={{ color: "var(--text-primary)" }}
@@ -687,7 +687,7 @@ export function UsageAnalyticsPage() {
                               border: "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
                               borderRadius: 8,
                               fontSize: 11,
-                              fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                              fontFamily: "'Consolas', 'Cascadia Mono', ui-monospace, monospace",
                               color: "var(--text-primary)",
                             }}
                             labelStyle={{ color: "var(--text-primary)" }}
@@ -791,7 +791,7 @@ export function UsageAnalyticsPage() {
                         <XAxis dataKey="name" tick={chartConfig.axisStyle} axisLine={false} tickLine={false} />
                         <YAxis tick={chartConfig.axisStyle} axisLine={false} tickLine={false} tickFormatter={(v: number) => formatCompactNumber(v)} />
                         <Tooltip
-                          contentStyle={{ background: "color-mix(in srgb, var(--card) 85%, transparent)", backdropFilter: "blur(16px)", border: "1px solid color-mix(in srgb, var(--border) 50%, transparent)", borderRadius: 8, fontSize: 11, fontFamily: "'JetBrains Mono', ui-monospace, monospace", color: "var(--text-primary)" }}
+                          contentStyle={{ background: "color-mix(in srgb, var(--card) 85%, transparent)", backdropFilter: "blur(16px)", border: "1px solid color-mix(in srgb, var(--border) 50%, transparent)", borderRadius: 8, fontSize: 11, fontFamily: "'Consolas', 'Cascadia Mono', ui-monospace, monospace", color: "var(--text-primary)" }}
                           formatter={(value: number) => [formatCompactNumber(value), ""]}
                         />
                         <Area type="natural" dataKey="prompt" stroke="#4DA6FF" fill="url(#promptGradient)" strokeWidth={2} name="Prompt tokens" />
@@ -870,7 +870,7 @@ export function UsageAnalyticsPage() {
                           <YAxis
                             type="category"
                             dataKey="name"
-                            tick={{ fontSize: 11, fill: "var(--text-muted-foreground)", fontFamily: "'JetBrains Mono', monospace" }}
+                            tick={{ fontSize: 11, fill: "var(--text-muted-foreground)", fontFamily: "'Consolas', 'Cascadia Mono', monospace" }}
                             axisLine={false}
                             tickLine={false}
                             tickMargin={10}

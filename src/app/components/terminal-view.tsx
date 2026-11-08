@@ -126,7 +126,7 @@ export function TerminalView({
       rows: 30,
       fontSize: 11,
       lineHeight: 1.4,
-      fontFamily: "'JetBrains Mono', Consolas, 'Courier New', monospace",
+      fontFamily: "'Consolas', 'Cascadia Mono', 'Courier New', monospace",
       scrollback: 5000,
       allowProposedApi: true,
       theme: {
