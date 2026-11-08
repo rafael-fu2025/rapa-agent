@@ -39,7 +39,7 @@ import {
 } from "../lib/live-run-broker.js";
 import {
   createRunWorktree,
-  isGitRepo,
+  isGitRepoRoot,
   mergeRunWorktree,
   parseWorktreeMetadata,
   discardRunWorktree
@@ -409,7 +409,12 @@ async function prepareAgentRequest(payload: AgentRequestPayload): Promise<Prepar
   let worktreeInfo: PreparedAgentRequest["worktreeInfo"];
   if (payload.worktree === true) {
     try {
-      if (await isGitRepo(workspace.path)) {
+      // isGitRepoRoot, not isGitRepo: rev-parse walks up the tree, so a
+      // workspace under an accidental parent repo (live case: a repo in the
+      // user's home directory tracking unrelated projects) would check out
+      // that parent's entire tracked tree into an empty workspace.
+      // Isolation requires the workspace itself to be the repository root.
+      if (await isGitRepoRoot(workspace.path)) {
         // The AgentRun row does not exist yet at request-prepare time, so
         // the branch name is seeded from a random token; the run row then
         // records {branch, path, originalRoot} and merge/discard resolve
@@ -418,7 +423,7 @@ async function prepareAgentRequest(payload: AgentRequestPayload): Promise<Prepar
         worktreeInfo = { ...created, originalRoot: workspace.path };
         workspacePath = created.path;
       } else {
-        console.log("[agent] worktree requested but the workspace is not a git repository — running in the original checkout");
+        console.log("[agent] worktree requested but the workspace is not a git repository root — running in the original checkout");
       }
     } catch (error) {
       console.warn(`[agent] worktree creation failed — falling back to the original workspace: ${error instanceof Error ? error.message : String(error)}`);

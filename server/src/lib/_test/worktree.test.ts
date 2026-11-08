@@ -6,7 +6,7 @@
 // dependency for worktree isolation.
 
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,7 @@ import {
   createRunWorktree,
   discardRunWorktree,
   isGitRepo,
+  isGitRepoRoot,
   isWorktreeInfraStatusLine,
   mergeRunWorktree,
   parseWorktreeMetadata,
@@ -87,6 +88,30 @@ suite("isGitRepo", () => {
     const plain = await mkdtemp(join(tmpdir(), "rapa-notgit-"));
     createdDirs.push(plain);
     expect(await isGitRepo(plain)).toBe(false);
+  });
+});
+
+suite("isGitRepoRoot", () => {
+  it("accepts the repository root itself", async () => {
+    expect(await isGitRepoRoot(repoRoot)).toBe(true);
+  });
+
+  it("rejects a subfolder of a repository — the live empty-workspace bug", async () => {
+    // Live case: an "empty" workspace under an accidental parent repo (a
+    // repo in the user's home directory tracking unrelated projects)
+    // inherited that repo, and worktree creation checked out the parent's
+    // entire tracked tree into the workspace. A subfolder must never
+    // qualify as an isolation root.
+    const sub = join(repoRoot, "empty-workspace");
+    await mkdir(sub, { recursive: true });
+    expect(await isGitRepo(sub)).toBe(true);
+    expect(await isGitRepoRoot(sub)).toBe(false);
+  });
+
+  it("rejects a plain directory even when a parent is a repository", async () => {
+    const plain = await mkdtemp(join(tmpdir(), "rapa-notgit-root-"));
+    createdDirs.push(plain);
+    expect(await isGitRepoRoot(plain)).toBe(false);
   });
 });
 

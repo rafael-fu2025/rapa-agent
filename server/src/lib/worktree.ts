@@ -15,7 +15,7 @@
 
 import { execFile } from "node:child_process";
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import { promisify } from "node:util";
 
 import { getSanitizedEnv } from "../tools/shell.js";
@@ -75,6 +75,27 @@ export function sanitizeBranchToken(id: string): string {
 export async function isGitRepo(dir: string): Promise<boolean> {
   const result = await runGit(["rev-parse", "--is-inside-work-tree"], dir);
   return result.ok && result.stdout.trim() === "true";
+}
+
+/**
+ * True only when `dir` IS a git repository root (its own .git), not a
+ * subfolder of one. `git rev-parse` walks up the tree, so an empty workspace
+ * under an accidental parent repo (live case: a repo at C:\Users\Rafael
+ * tracking the xampp projects) reports "inside a work tree" — creating a
+ * worktree there checked out the parent repo's entire tracked tree into the
+ * empty workspace. Worktree isolation is only meaningful when the workspace
+ * is the repo being isolated, so this is the eligibility check.
+ */
+export async function isGitRepoRoot(dir: string): Promise<boolean> {
+  if (!(await isGitRepo(dir))) return false;
+  const toplevel = await runGit(["rev-parse", "--show-toplevel"], dir);
+  if (!toplevel.ok) return false;
+  const resolvedRoot = resolvePath(toplevel.stdout.trim());
+  const resolvedDir = resolvePath(dir);
+  // Windows paths are case-insensitive; compare case-normalized there.
+  return process.platform === "win32"
+    ? resolvedRoot.toLowerCase() === resolvedDir.toLowerCase()
+    : resolvedRoot === resolvedDir;
 }
 
 /**
