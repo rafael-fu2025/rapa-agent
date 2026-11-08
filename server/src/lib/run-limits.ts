@@ -1,8 +1,12 @@
 // Run limits (research ASI10 — Rogue Agents).
 //
-// Enforces hard caps on the resources a single agent run can consume.
+// Optional hard caps on the resources a single agent run can consume.
 // The agent loop checks `RunLimitTracker.shouldStop()` at the top of every
 // iteration and yields a `limit_exceeded` event before doing more work.
+//
+// **Caps are opt-in**: by default runs are unlimited. Set any of the
+// AGENT_RUN_MAX_TOKENS / _COST_USD / _DURATION_MS / _ITERATIONS env vars
+// to enable a cap; a limit is enforced only when its value is defined.
 //
 // Limits:
 //   - maxTokens  — total tokens consumed by the run
@@ -182,28 +186,29 @@ export class RunLimitTracker {
 }
 
 /**
- * Default run limits. Loaded from env at boot. Users can override per-run
- * via the agent request payload.
+ * Default run limits. **Caps are opt-in**: with no AGENT_RUN_MAX_* env vars
+ * set, runs are unlimited (a personal-machine deployment should not kill
+ * long jobs by default). Setting any of the env vars enables that cap;
+ * invalid values are ignored. Per-run overrides via the request payload
+ * still take precedence when provided.
  */
 export function loadDefaultRunLimits(): RunLimits {
-  return {
-    maxTokens: readEnvInt("AGENT_RUN_MAX_TOKENS", 1_000_000),
-    maxCostUsd: readEnvNumber("AGENT_RUN_MAX_COST_USD", 5.0),
-    maxDurationMs: readEnvInt("AGENT_RUN_MAX_DURATION_MS", 30 * 60 * 1000),
-    maxIterations: readEnvInt("AGENT_RUN_MAX_ITERATIONS", 60)
-  };
+  const limits: RunLimits = {};
+  const maxTokens = readEnvNumber("AGENT_RUN_MAX_TOKENS");
+  if (maxTokens !== undefined) limits.maxTokens = maxTokens;
+  const maxCostUsd = readEnvNumber("AGENT_RUN_MAX_COST_USD");
+  if (maxCostUsd !== undefined) limits.maxCostUsd = maxCostUsd;
+  const maxDurationMs = readEnvNumber("AGENT_RUN_MAX_DURATION_MS");
+  if (maxDurationMs !== undefined) limits.maxDurationMs = maxDurationMs;
+  const maxIterations = readEnvNumber("AGENT_RUN_MAX_ITERATIONS");
+  if (maxIterations !== undefined) limits.maxIterations = maxIterations;
+  return limits;
 }
 
-function readEnvInt(name: string, fallback: number): number {
+/** Read a positive numeric env value; undefined when unset or invalid. */
+function readEnvNumber(name: string): number | undefined {
   const raw = process.env[name];
-  if (!raw) return fallback;
+  if (!raw) return undefined;
   const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
-}
-
-function readEnvNumber(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (!raw) return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
