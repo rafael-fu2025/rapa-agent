@@ -51,6 +51,13 @@ type TraceItem =
       content: string;
     }
   | {
+      /** Per-turn narration — the model's prose between tool batches
+       *  (ZCode interleaves it between the one-liner tool rows). */
+      type: "response";
+      id: string;
+      content: string;
+    }
+  | {
       type: "tool";
       id: string;
       name: string;
@@ -618,15 +625,10 @@ function ToolTraceCard({
     <>
     <div
       className={cn(
-        "overflow-hidden rounded border bg-card-3/40 transition-all duration-300",
-        isFailed ? "border-accent-red/30"
-          : isRunning ? "border-accent-blue/40 animate-[pulse-border_2s_ease-in-out_infinite]"
-          : isApproval ? "border-accent-yellow/30"
-          : "border-border/40"
+        "rounded transition-colors duration-150",
+        isFailed && "bg-accent-red/[0.05]",
+        isApproval && "bg-accent-yellow/[0.05]"
       )}
-      style={
-        isRunning ? { boxShadow: "0 0 8px color-mix(in srgb, var(--accent-blue) 15%, transparent)" } : undefined
-      }
     >
       {/* ── Compact header (always visible) ────────────────────────── */}
       {/* A div with button semantics, not a <button>: the header contains
@@ -646,8 +648,8 @@ function ToolTraceCard({
           }
         }}
         className={cn(
-          "flex w-full items-center gap-2.5 px-3 py-2 text-left outline-none",
-          canExpand && "cursor-pointer hover:bg-card-hover/40 focus-visible:bg-card-hover/40",
+          "flex w-full items-center gap-2.5 px-2 py-1 text-left outline-none",
+          canExpand && "cursor-pointer hover:bg-accent/30 focus-visible:bg-accent/30",
           !canExpand && "cursor-default"
         )}
       >
@@ -749,23 +751,6 @@ function ToolTraceCard({
         )}
       </div>
 
-      {/* ── Running shimmer bar ───────────────────────────────────── */}
-      {isRunning && (
-        <div className="h-[3px] w-full overflow-hidden bg-accent-blue/10">
-          <div className="h-full w-1/3 animate-[shimmer_1.5s_ease-in-out_infinite] bg-gradient-to-r from-transparent via-accent-blue/60 to-transparent" />
-        </div>
-      )}
-
-      {/* ── File operation context for in-progress edit tools ─────── */}
-      {isEditTool && (isRunning || status === "pending") && pathPreview && (
-        <div className="mx-3 mb-2 flex items-center gap-2 rounded border border-accent-blue/20 bg-accent-blue/[0.04] px-2.5 py-1.5">
-          <FileEdit size={12} className="shrink-0 text-accent-blue/60" />
-          <span className="truncate font-mono-tech text-[10px] font-medium text-accent-blue/70">
-            {pathPreview}
-          </span>
-        </div>
-      )}
-
       {/* ── Inline approval prompt (shared ApprovalCard anatomy) ──── */}
       {approvalId && onToolApproval && (
         <ApprovalCard
@@ -780,7 +765,7 @@ function ToolTraceCard({
 
       {/* ── Expandable details panel ──────────────────────────────── */}
       {canExpand && isOpen && (
-        <div className="border-t border-border/50">
+        <div className="my-1 ml-6 border-l border-border/40 pl-3">
           {/* Specialized: present_file cards */}
           {getPresentedFiles(result) && (
             <div className="border-b border-border/30 px-3 py-2.5 last:border-b-0">
@@ -980,7 +965,7 @@ function CollapsibleReasoning({ content, isLive = false }: CollapsibleReasoningP
         <ProgressRing status={isLive ? "running" : "completed"} />
 
         <span className="font-mono-tech text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-          {isLive ? "thinking" : "reasoning"}
+          {isLive ? "Thinking" : "Thought"}
         </span>
 
         <span className="flex-1" />
@@ -1045,7 +1030,8 @@ function buildTraceItems(
   liveReasoning: string | undefined,
   liveToolCalls: AgentLiveToolCall[],
   persistedNameByCallId: Map<string, string>,
-  persistedNameByIndex: string[]
+  persistedNameByIndex: string[],
+  options: { suppressFinalResponse?: boolean } = {}
 ): TraceItem[] {
   const items: TraceItem[] = [];
   let flatCallIndex = 0;
@@ -1056,6 +1042,17 @@ function buildTraceItems(
         type: "reasoning",
         id: `step-${step.iteration}-reasoning`,
         content: step.reasoning.trim()
+      });
+    }
+
+    // Per-turn narration — the model's prose between tool batches. When the
+    // run is finished, the FINAL step's response is suppressed: it duplicates
+    // the message content rendered below the trace.
+    if (step.response?.trim()) {
+      items.push({
+        type: "response",
+        id: `step-${step.iteration}-response`,
+        content: step.response.trim()
       });
     }
 
@@ -1097,6 +1094,14 @@ function buildTraceItems(
 
   });
 
+
+  if (options.suppressFinalResponse) {
+    let lastResponseIndex = -1;
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      if (items[i].type === "response") { lastResponseIndex = i; break; }
+    }
+    if (lastResponseIndex !== -1) items.splice(lastResponseIndex, 1);
+  }
 
   if (liveReasoning?.trim()) {
     items.push({
@@ -1184,7 +1189,9 @@ export function AgentStepsViewer({
     return () => { cancelled = true; };
   }, [agentRunId]);
 
-  const items = buildTraceItems(steps, liveReasoning, liveToolCalls, persistedNameByCallId, persistedNameByIndex);
+  const items = buildTraceItems(steps, liveReasoning, liveToolCalls, persistedNameByCallId, persistedNameByIndex, {
+    suppressFinalResponse: !isAgentActive
+  });
   const displayItems = (() => {
     if (!(isAgentActive && liveReasoning?.trim())) {
       return items;
@@ -1225,7 +1232,7 @@ export function AgentStepsViewer({
   ).length;
 
   return (
-    <div className={cn("my-2 space-y-2", className)}>
+    <div className={cn("my-2 space-y-0.5", className)}>
       {tasks.length > 0 ? <TaskList steps={steps} liveToolCalls={liveToolCalls} isAgentActive={isAgentActive} /> : null}
       {pendingApprovalCount >= 2 && (
         <div
@@ -1239,6 +1246,17 @@ export function AgentStepsViewer({
         </div>
       )}
       {displayItems.map((item, index) => {
+
+        if (item.type === "response") {
+          return (
+            <p
+              key={item.id}
+              className="py-1 pr-2 text-[12.5px] leading-[1.65] whitespace-pre-wrap text-foreground/90"
+            >
+              {item.content}
+            </p>
+          );
+        }
 
         if (item.type === "reasoning") {
           const isLive = item.id === "live-reasoning";
