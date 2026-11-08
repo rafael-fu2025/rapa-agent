@@ -1,5 +1,5 @@
 import { Suspense, lazy, memo, useEffect, useRef, useState } from "react";
-import { AlertCircle, Check, Clock, Copy, FolderOpen, GitBranch, GitMerge, Gauge, KeyRound, Pencil, RotateCcw, Send, Trash2, X, FileEdit } from "lucide-react";
+import { AlertCircle, Check, ChevronRight, Clock, Copy, FolderOpen, GitBranch, GitMerge, Gauge, KeyRound, Pencil, RotateCcw, Send, Timer, Trash2, X, FileEdit } from "lucide-react";
 import { toast } from "sonner";
 import { AssistantMarkdown } from "../assistant-markdown";
 import { InteractiveOptions } from "../interactive-options";
@@ -430,6 +430,40 @@ function UserMessageBubble({
   );
 }
 
+/** ZCode-style collapsed run summary: "Worked for 2m 14s ⌄" — one quiet
+ *  line that stands in for the whole tool trace once the run finishes. */
+function WorkedHeader({
+  elapsedMs,
+  steps,
+  open,
+  onToggle
+}: {
+  elapsedMs?: number;
+  steps: number;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11px] font-sans text-muted-foreground transition-colors hover:bg-accent/30"
+    >
+      <Timer size={12} className="shrink-0" />
+      <span className="font-medium text-foreground/80">
+        {elapsedMs != null
+          ? `Worked for ${formatReceiptDuration(elapsedMs)}`
+          : `Worked · ${steps} step${steps === 1 ? "" : "s"}`}
+      </span>
+      <ChevronRight
+        size={12}
+        className={cn("shrink-0 transition-transform duration-200", open && "rotate-90")}
+      />
+    </button>
+  );
+}
+
 type AssistantBlockProps = {
   message: ChatMessage;
   isEditing: boolean;
@@ -485,6 +519,23 @@ function AssistantMessageBlock({
   isLatestAssistant,
   showWorktreeBanner,
 }: AssistantBlockProps) {
+  const agentSteps = message.agentSteps ?? [];
+  const liveToolCalls = message.liveToolCalls ?? [];
+  const hasTrace = agentSteps.length > 0 || liveToolCalls.length > 0;
+
+  // ZCode "Worked for [time]" pattern: trace streams live while the run is
+  // active; when the final response lands, the whole trace collapses into a
+  // one-line summary. Manual expansion during the run is respected until
+  // completion; reloaded messages start collapsed.
+  const wasActiveRef = useRef(isAgentActive);
+  const [traceOpen, setTraceOpen] = useState(isAgentActive);
+  useEffect(() => {
+    if (wasActiveRef.current && !isAgentActive) setTraceOpen(false);
+    wasActiveRef.current = isAgentActive;
+  }, [isAgentActive]);
+  const showTrace = hasTrace && (isAgentActive || traceOpen);
+  const showWorkedHeader = hasTrace && !isAgentActive;
+
   return (
     <article aria-label="Assistant response" data-message-id={message.id} className="w-full min-w-0 overflow-hidden">
       <div className="w-full min-w-0">
@@ -497,13 +548,21 @@ function AssistantMessageBlock({
           />
         ) : (
           <>
-            {(message.mode === "agent" || message.mode === "plan") && (
+            {showWorkedHeader && (
+              <WorkedHeader
+                elapsedMs={message.stats?.elapsedMs}
+                steps={agentSteps.length}
+                open={traceOpen}
+                onToggle={() => setTraceOpen((v) => !v)}
+              />
+            )}
+            {(message.mode === "agent" || message.mode === "plan") && showTrace && (
               <Suspense fallback={null}>
                 <AgentStepsViewer
                   steps={
                     showThinking
-                      ? (message.agentSteps ?? [])
-                      : (message.agentSteps ?? []).map((step) => ({ ...step, reasoning: undefined }))
+                      ? agentSteps
+                      : agentSteps.map((step) => ({ ...step, reasoning: undefined }))
                   }
                   liveToolCalls={message.liveToolCalls}
                   liveReasoning={showThinking ? message.liveReasoning : undefined}
@@ -687,8 +746,10 @@ function AssistantMessageBlock({
         ) : null}
       </div>
       {/* Run receipt: agent runs surface their loop telemetry (status,
-          iterations, cost, verification gate) in a dedicated card. */}
-      {!isEditing && message.stats &&
+          iterations, cost, verification gate) in a dedicated card. Hidden
+          while the worked-summary is collapsed — the header line already
+          carries the headline "Worked for" duration. */}
+      {!isEditing && (traceOpen || !hasTrace) && message.stats &&
         (message.stats.iterations !== undefined || message.stats.verification != null) && (
         <RunReceiptCard stats={message.stats} />
       )}

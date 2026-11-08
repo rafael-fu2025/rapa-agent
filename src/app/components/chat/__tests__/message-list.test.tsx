@@ -313,3 +313,73 @@ describe("MessageList pending approvals reuse", () => {
     expect(onToolApproval).toHaveBeenCalledWith("appr-1", true);
   });
 });
+
+describe("MessageList worked-for accordion", () => {
+  const doneAgentMessage = (overrides: Partial<ChatMessage> = {}): ChatMessage[] => [
+    { id: "u-1", role: "user", content: "build it", mode: "agent" },
+    {
+      id: "a-1",
+      role: "assistant",
+      content: "done",
+      mode: "agent",
+      agentSteps: [
+        { iteration: 1, toolCalls: [], toolResults: [], timestamp: "2026-11-08T00:00:00Z" },
+        { iteration: 2, toolCalls: [], toolResults: [], timestamp: "2026-11-08T00:00:05Z" }
+      ],
+      stats: {
+        tokensPerSec: 10,
+        totalTokens: 100,
+        elapsedMs: 134000
+      },
+      ...overrides
+    }
+  ];
+
+  it("collapses a finished run into a Worked-for header", () => {
+    renderList(doneAgentMessage());
+    const header = screen.getByRole("button", { name: /worked for/i });
+    expect(header).toHaveTextContent("Worked for 2m 14.0s");
+    expect(header).toHaveAttribute("aria-expanded", "false");
+    // Collapsed: the receipt stays hidden with the trace.
+    expect(screen.queryByTestId("run-receipt-card")).not.toBeInTheDocument();
+  });
+
+  it("falls back to a step count when no elapsed time is known", () => {
+    renderList(doneAgentMessage({ stats: { tokensPerSec: 10, totalTokens: 100 } }));
+    expect(screen.getByRole("button", { name: /worked/i })).toHaveTextContent("Worked · 2 steps");
+  });
+
+  it("expands trace and receipt when the header is clicked", async () => {
+    const user = userEvent.setup();
+    renderList(doneAgentMessage({
+      stats: { tokensPerSec: 10, totalTokens: 100, elapsedMs: 134000, iterations: 2, verification: null }
+    }));
+    await user.click(screen.getByRole("button", { name: /worked for/i }));
+    const header = screen.getByRole("button", { name: /worked for/i });
+    expect(header).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("run-receipt-card")).toBeInTheDocument();
+  });
+
+  it("shows no header while the run is actively streaming", () => {
+    renderList(
+      [
+        { id: "u-1", role: "user", content: "build it", mode: "agent" },
+        {
+          id: "a-1",
+          role: "assistant",
+          content: "",
+          mode: "agent",
+          agentSteps: [{ iteration: 1, toolCalls: [], toolResults: [], timestamp: "t" }],
+          liveToolCalls: [{ iteration: 2, status: "running", call: { id: "c1", name: "read_file", parameters: {} } }]
+        }
+      ],
+      { pending: true }
+    );
+    expect(screen.queryByRole("button", { name: /worked/i })).not.toBeInTheDocument();
+  });
+
+  it("renders no header for chat messages without a trace", () => {
+    renderList(MESSAGES, { mode: "chat" });
+    expect(screen.queryByRole("button", { name: /worked/i })).not.toBeInTheDocument();
+  });
+});
