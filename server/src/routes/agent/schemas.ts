@@ -27,6 +27,11 @@ export const agentRequestSchema = z.object({
   // ephemeral network-disabled container (lib/sandbox/); "off" disables both.
   // Threaded to tools via ToolExecutionContext.sandboxMode.
   sandboxMode: z.enum(["native", "docker", "off"]).optional(),
+  // Composer permission ladder (ZCode/Claude-Code style). "autonomous"
+  // auto-approves project-file categories; "full" approves every tool via
+  // the "*" wildcard. Both keep the dangerous-command severity overlay and
+  // the destructive/irreversible gate non-bypassable server-side.
+  permissionMode: z.enum(["ask", "autonomous", "full"]).optional(),
   // LLM auto-approve classifier (lib/auto-approve-classifier.ts): when
   // enabled, shell approval requests are classified approve/deny/unsure
   // before pattern matching. Omit to rely on the
@@ -182,6 +187,12 @@ export const checkpointListSchema = z.object({
 // "Alive" agent run statuses — anything in this set is considered
 // in-flight and contributes to the per-workspace running count.
 // Persisted by `persistAgentRun` in `lib/agent-run-store.ts`.
+/** Tool categories auto-approved in "autonomous" permission mode — project
+ *  file work without arbitrary-command risk. Shell, web, browser, media,
+ *  email and MCP still require confirmation, and the dangerous-command
+ *  severity overlay stays non-bypassable in every mode. */
+export const AUTONOMOUS_AUTO_APPROVE_CATEGORIES = ["filesystem", "code", "document"] as const;
+
 export const ACTIVE_RUN_STATUSES = ["pending", "resumed", "in_progress", "running"] as const;
 
 export const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes

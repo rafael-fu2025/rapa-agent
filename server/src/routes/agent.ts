@@ -72,7 +72,8 @@ import {
   checkpointListSchema,
   ACTIVE_RUN_STATUSES,
   type AgentRequestPayload,
-  type ChatCompletionResponse
+  type ChatCompletionResponse,
+  AUTONOMOUS_AUTO_APPROVE_CATEGORIES
 } from "./agent/schemas.js";
 
 import {
@@ -623,7 +624,12 @@ function createAgent(
     },
     {
       maxIterations: requestInfo.payload.maxIterations,
-      autoApproveTools: requestInfo.payload.autoApproveTools,
+      autoApproveTools:
+        requestInfo.payload.permissionMode === "full"
+          ? ["*", ...requestInfo.payload.autoApproveTools]
+          : requestInfo.payload.permissionMode === "autonomous"
+            ? [...AUTONOMOUS_AUTO_APPROVE_CATEGORIES, ...requestInfo.payload.autoApproveTools]
+            : requestInfo.payload.autoApproveTools,
       provider: requestInfo.provider,
       model: requestInfo.model,
       baseUrl: requestInfo.baseUrl,

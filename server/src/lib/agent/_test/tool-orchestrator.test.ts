@@ -394,3 +394,53 @@ describe("ToolOrchestrator auto-approve classifier ride-through", () => {
     expect(seen[0].autoApproveClassifier).toEqual({ enabled: true, provider: "openai", model: "gpt-test" });
   });
 });
+
+describe("permission-mode auto-approve expansion", () => {
+  let localRoot = "";
+  beforeEach(async () => {
+    localRoot = await mkdtemp(join(tmpdir(), "rapa-perm-"));
+    toolRegistry.register(new WriteFileTool());
+  });
+  afterEach(() => {
+    toolRegistry.unregister("write_file");
+  });
+
+  const writeCall = (path: string, content = "data") =>
+    ({ id: `write-${path}`, name: "write_file", parameters: { path, content } });
+
+  it("\"*\" (full access) auto-approves approval-gated tools", async () => {
+    const orch = new ToolOrchestrator({
+      context: { workspaceRoot: localRoot, userId: "u", conversationId: "c" },
+      config: {
+        maxIterations: 5, autoApproveTools: ["*"], provider: "p", model: "m", baseUrl: "b", apiKey: "k"
+      }
+    });
+    const [result] = await orch.executeToolCallsInBatches([writeCall("full.txt")]);
+    expect(result!.success).toBe(true);
+    expect((result!.data as Record<string, unknown>).requiresApproval).toBeUndefined();
+  });
+
+  it("autonomous category list auto-approves filesystem tools", async () => {
+    const orch = new ToolOrchestrator({
+      context: { workspaceRoot: localRoot, userId: "u", conversationId: "c" },
+      config: {
+        maxIterations: 5, autoApproveTools: ["filesystem"], provider: "p", model: "m", baseUrl: "b", apiKey: "k"
+      }
+    });
+    const [result] = await orch.executeToolCallsInBatches([writeCall("auto.txt")]);
+    expect(result!.success).toBe(true);
+    expect((result!.data as Record<string, unknown>).requiresApproval).toBeUndefined();
+  });
+
+  it("default ask mode still requires approval for gated tools", async () => {
+    const orch = new ToolOrchestrator({
+      context: { workspaceRoot: localRoot, userId: "u", conversationId: "c" },
+      config: {
+        maxIterations: 5, autoApproveTools: [], provider: "p", model: "m", baseUrl: "b", apiKey: "k"
+      }
+    });
+    const [result] = await orch.executeToolCallsInBatches([writeCall("ask.txt")]);
+    expect(result!.success).toBe(false);
+    expect(String(result!.error)).toMatch(/requires approval/i);
+  });
+});

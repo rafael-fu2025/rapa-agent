@@ -24,6 +24,7 @@ import { getConversationMessages, deleteConversationMessages, type ChatAttachmen
 import { listAgentRuns, listPendingApprovals, type AgentRunSummary, type PendingApprovalInfo } from "../lib/agent-api";
 import { LIVE_MESSAGE_ID_PREFIX, reattachLiveRun } from "../lib/live-run-store";
 import { useAgentSettings } from "../lib/agent-settings";
+import type { SelectorPermissionMode } from "./components/permission-mode-selector";
 import { useKeyboardShortcuts } from "./hooks/use-keyboard-shortcuts";
 import { useChatStream } from "./hooks/use-chat-stream";
 import { getActiveWorkspace, type Workspace } from "../lib/workspace-api";
@@ -331,8 +332,18 @@ const Home = () => {
     setShowOnboarding(false);
   }, []);
 
-  const { settings: agentSettings } = useAgentSettings();
+  const { settings: agentSettings, setPermissionMode: setAgentPermissionMode } = useAgentSettings();
   const { showThinking } = agentSettings;
+  // Composer permission ladder — "plan" flips the interaction mode; the
+  // other three persist as the agent-run permission level.
+  const permissionValue: SelectorPermissionMode = mode === "plan" ? "plan" : agentSettings.permissionMode;
+  const handlePermissionModeChange = useCallback((next: SelectorPermissionMode) => {
+    if (next === "plan") {
+      setMode("plan");
+      return;
+    }
+    setAgentPermissionMode(next);
+  }, [setMode, setAgentPermissionMode]);
   const formattedError = error ? formatErrorState(error) : null;
 
   /* --- Active workspace tracking --- */
@@ -1122,6 +1133,8 @@ const Home = () => {
                     onSelectReasoningEffort={setSelectedReasoningEffort}
                     onModeCommand={setMode}
                     sessionUsage={sessionUsage}
+                    permissionMode={permissionValue}
+                    onPermissionModeChange={handlePermissionModeChange}
                   />
                 </div>
               </div>

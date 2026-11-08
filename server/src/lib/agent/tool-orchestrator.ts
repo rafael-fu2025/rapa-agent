@@ -217,7 +217,11 @@ export class ToolOrchestrator {
 
   isToolAutoApproved(definition: ToolDefinition): boolean {
     if (!definition.requiresApproval) return true;
-    return this.config.autoApproveTools.includes(definition.name)
+    // "*" (full-access permission mode) approves every tool; the
+    // dangerous-command severity overlay in resolveToolApproval still
+    // forces human approval for destructive/irreversible calls.
+    return this.config.autoApproveTools.includes("*")
+      || this.config.autoApproveTools.includes(definition.name)
       || this.config.autoApproveTools.includes(definition.category);
   }
 

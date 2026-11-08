@@ -28,12 +28,18 @@ export const AUTO_APPROVE_STORAGE_KEY = "rapa.agent.autoApproveCategories";
 export const SHOW_THINKING_STORAGE_KEY = "rapa.agent.showThinking";
 // Item 3 — command sandbox / auto-approve classifier / worktree isolation.
 export const SANDBOX_STORAGE_KEY = "rapa.agent.sandbox";
+export const PERMISSION_MODE_STORAGE_KEY = "rapa.agent.permissionMode";
 export const CLASSIFIER_STORAGE_KEY = "rapa.agent.classifier";
 export const WORKTREE_STORAGE_KEY = "rapa.agent.worktree";
 const AGENT_SETTINGS_UPDATED_EVENT = "rapa:agent-settings-updated";
 
 /** Shell-command sandbox strategy — mirrors the backend agentRequestSchema. */
 export type SandboxMode = "native" | "docker" | "off";
+
+/** Composer permission ladder (ZCode/Claude-Code style). "plan" is the
+ *  interaction-mode switch, not a stored permission level. */
+export type PermissionMode = "ask" | "autonomous" | "full";
+export const PERMISSION_MODES: ReadonlySet<string> = new Set(["ask", "autonomous", "full"]);
 
 export type AutoApproveClassifierSettings = {
   enabled: boolean;
@@ -46,6 +52,7 @@ export type AgentSettings = {
   autoApproveCategories: string[];
   showThinking: boolean;
   sandboxMode: SandboxMode;
+  permissionMode: PermissionMode;
   autoApproveClassifier: AutoApproveClassifierSettings;
   worktree: boolean;
 };
@@ -83,6 +90,12 @@ function readStoredBoolean(key: string, fallback: boolean) {
 
 const SANDBOX_MODES: ReadonlySet<string> = new Set(["native", "docker", "off"]);
 
+function readStoredPermissionMode(fallback: PermissionMode): PermissionMode {
+  if (typeof window === "undefined") return fallback;
+  const rawValue = window.localStorage.getItem(PERMISSION_MODE_STORAGE_KEY);
+  return rawValue && PERMISSION_MODES.has(rawValue) ? (rawValue as PermissionMode) : fallback;
+}
+
 function readStoredSandboxMode(fallback: SandboxMode): SandboxMode {
   if (typeof window === "undefined") return fallback;
   const rawValue = window.localStorage.getItem(SANDBOX_STORAGE_KEY);
@@ -113,6 +126,7 @@ export function readAgentSettings(): AgentSettings {
     autoApproveCategories: readStoredStringArray(AUTO_APPROVE_STORAGE_KEY, []),
     showThinking: readStoredBoolean(SHOW_THINKING_STORAGE_KEY, true),
     sandboxMode: readStoredSandboxMode("native"),
+    permissionMode: readStoredPermissionMode("ask"),
     autoApproveClassifier: readStoredClassifier(),
     worktree: readStoredBoolean(WORKTREE_STORAGE_KEY, false)
   };
@@ -125,6 +139,7 @@ function persistAgentSettings(settings: AgentSettings) {
   window.localStorage.setItem(AUTO_APPROVE_STORAGE_KEY, JSON.stringify(settings.autoApproveCategories));
   window.localStorage.setItem(SHOW_THINKING_STORAGE_KEY, String(settings.showThinking));
   window.localStorage.setItem(SANDBOX_STORAGE_KEY, settings.sandboxMode);
+  window.localStorage.setItem(PERMISSION_MODE_STORAGE_KEY, settings.permissionMode);
   window.localStorage.setItem(CLASSIFIER_STORAGE_KEY, JSON.stringify(settings.autoApproveClassifier));
   window.localStorage.setItem(WORKTREE_STORAGE_KEY, String(settings.worktree));
   window.dispatchEvent(new Event(AGENT_SETTINGS_UPDATED_EVENT));
@@ -172,6 +187,10 @@ export function useAgentSettings() {
     setSettings((current) => ({ ...current, showThinking: value }));
   }, [setSettings]);
 
+  const setPermissionMode = useCallback((value: PermissionMode) => {
+    setSettings((current) => ({ ...current, permissionMode: value }));
+  }, [setSettings]);
+
   const setSandboxMode = useCallback((value: SandboxMode) => {
     setSettings((current) => ({ ...current, sandboxMode: value }));
   }, [setSettings]);
@@ -192,6 +211,7 @@ export function useAgentSettings() {
     setShowThinking,
     setSandboxMode,
     setAutoApproveClassifier,
-    setWorktree
+    setWorktree,
+    setPermissionMode
   };
 }

@@ -6,6 +6,7 @@ import { cn } from "../../lib/utils";
 import { Hint } from "./ui/tooltip";
 
 import { ModelSelector } from "./model-selector";
+import { PermissionModeSelector, type SelectorPermissionMode } from "./permission-mode-selector";
 
 type ChatInputProps = {
   onSubmit: (prompt: string, attachments: ChatAttachment[]) => Promise<void> | void;
@@ -23,6 +24,10 @@ type ChatInputProps = {
   /** Session context/cost meter from useChatStream. Optional — routes wiring
    *  happens in a later wave; the chip renders nothing when absent. */
   sessionUsage?: SessionUsage;
+  /** Composer permission ladder (plan/ask/autonomous/full). Optional —
+   *  routes wiring; the selector renders nothing when absent. */
+  permissionMode?: SelectorPermissionMode;
+  onPermissionModeChange?: (next: SelectorPermissionMode) => void;
 };
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
@@ -84,6 +89,8 @@ export const ChatInput = ({
   onSelectReasoningEffort,
   onModeCommand,
   sessionUsage,
+  permissionMode,
+  onPermissionModeChange,
 }: ChatInputProps) => {
   const [value, setValue] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -491,6 +498,9 @@ export const ChatInput = ({
                   )}
                 </span>
               </Hint>
+            )}
+            {onPermissionModeChange && permissionMode && (
+              <PermissionModeSelector value={permissionMode} onChange={onPermissionModeChange} />
             )}
             <ModelSelector
               selectedProvider={selectedProvider}

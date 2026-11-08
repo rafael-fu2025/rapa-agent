@@ -101,7 +101,7 @@ export function useChatStream(params: UseChatStreamParams) {
 
   const navigate = useNavigate();
   const { settings: agentSettings } = useAgentSettings();
-  const { maxIterations, autoApproveCategories, sandboxMode, autoApproveClassifier, worktree: worktreeIsolation } = agentSettings;
+  const { maxIterations, autoApproveCategories, sandboxMode, autoApproveClassifier, worktree: worktreeIsolation, permissionMode } = agentSettings;
 
   // Detachable runs: the live-run store is the module-level source of truth
   // for in-flight stream state. The executors write every event into the
@@ -525,6 +525,7 @@ export function useChatStream(params: UseChatStreamParams) {
             // LLM auto-approve classifier, worktree-per-run isolation.
             // "native" is the server default, so only send non-defaults.
             ...(sandboxMode && sandboxMode !== "native" ? { sandboxMode } : {}),
+            ...(permissionMode && permissionMode !== "ask" ? { permissionMode } : {}),
             ...(autoApproveClassifier?.enabled ? { autoApproveClassifier } : {}),
             ...(worktreeIsolation ? { worktree: true } : {}),
           },
