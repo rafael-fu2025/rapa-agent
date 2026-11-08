@@ -17,6 +17,18 @@ export default defineConfig({
     },
   },
 
+  // The agent workspace IS this project root, so agent runs write scratch
+  // here: .rapa/ (working memory, evicted outputs, worktree-isolated run
+  // checkouts — which contain full project copies including index.html),
+  // dev.db WAL files, logs. Without these ignores, every agent file-write
+  // forced a Vite full page reload of the app the user is looking at.
+  // Real source edits in src/ still hot-reload normally.
+  server: {
+    watch: {
+      ignored: ['**/.rapa/**', '**/server/prisma/dev.db*', '**/*.log'],
+    },
+  },
+
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],
   build: {
