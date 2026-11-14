@@ -38,3 +38,18 @@
 /* Reduced-motion handling was removed by user decision: status indicators
    (spinners, pulse dots, pings) must always animate, and decorative motion
    follows the user's theme rather than an OS preference. */
+
+/* ── Sidebar prompt deep-link flash ─────────────────────────────── */
+@keyframes message-highlight {
+  0% {
+    background-color: color-mix(in srgb, var(--accent-blue) 20%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.message-highlight-flash {
+  animation: message-highlight 2.2s ease-out;
+  border-radius: 8px;
+}

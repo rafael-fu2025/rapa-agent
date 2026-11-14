@@ -546,6 +546,21 @@ const Home = () => {
         setShowScrollToBottom(false);
         setConversationId(selectedConversationId);
         setMessages(mapConversationToMessages(data.messages));
+        // Sidebar prompt deep-link (?c=…&m=…): scroll to the targeted
+        // exchange and flash-highlight it, then drop the m param so a
+        // refresh doesn't re-scroll.
+        const targetMessageId = new URLSearchParams(window.location.search).get("m");
+        if (targetMessageId) {
+          requestAnimationFrame(() => {
+            const el = document.querySelector(`[data-message-id="${targetMessageId}"]`);
+            if (el) {
+              el.scrollIntoView({ behavior: "smooth", block: "center" });
+              el.classList.add("message-highlight-flash");
+              window.setTimeout(() => el.classList.remove("message-highlight-flash"), 2400);
+            }
+            window.history.replaceState(null, "", `/?c=${encodeURIComponent(selectedConversationId)}`);
+          });
+        }
 
         // Restore the workspace context bound to this conversation
         if (data.workspaceId && data.workspace) {
@@ -602,6 +617,30 @@ const Home = () => {
     void loadConversation();
     return () => { mounted = false; };
   }, [selectedConversationId, loadNonce]);
+
+  // Sidebar prompt click deep-link (?c=…&m=…): scroll to the targeted
+  // exchange and flash-highlight it, then strip the m param. Polls briefly
+  // so cross-conversation clicks wait for the messages to render.
+  useEffect(() => {
+    const targetMessageId = new URLSearchParams(location.search).get("m");
+    if (!targetMessageId) return;
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      attempts += 1;
+      const el = document.querySelector(`[data-message-id="${targetMessageId}"]`);
+      if (el) {
+        window.clearInterval(timer);
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("message-highlight-flash");
+        window.setTimeout(() => el.classList.remove("message-highlight-flash"), 2400);
+        window.history.replaceState(null, "", `/?c=${encodeURIComponent(selectedConversationId ?? "")}`);
+      } else if (attempts > 20) {
+        window.clearInterval(timer);
+        window.history.replaceState(null, "", `/?c=${encodeURIComponent(selectedConversationId ?? "")}`);
+      }
+    }, 150);
+    return () => window.clearInterval(timer);
+  }, [location.search, selectedConversationId]);
 
   // Flush a conversation load that was deferred because a stream was running
   // when the user switched. Re-navigate if the URL moved on, otherwise just

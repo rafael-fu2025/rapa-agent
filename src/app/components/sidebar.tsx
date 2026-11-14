@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
@@ -35,6 +35,7 @@ import {
   type Provider
 } from "../../lib/api";
 import { useDebounce } from "../hooks/use-debounce";
+import { getConversationPrompts, type ConversationPrompt } from "../../lib/api";
 import { listWorkspaces, setActiveWorkspace, createWorkspace, pickWorkspaceFolder, deleteWorkspace, getWorkspaceRegistry, type Workspace, type WorkspaceRegistry } from "../../lib/workspace-api";
 import {
   AlertDialog,
@@ -177,6 +178,20 @@ const ThemeQuickToggle = () => {
   );
 };
 
+/** Compact relative time for prompt sub-items: 7m / 5h / 3d / Jun 2. */
+function promptTime(createdAt: string): string {
+  const then = new Date(createdAt).getTime();
+  if (Number.isNaN(then)) return "";
+  const minutes = Math.floor((Date.now() - then) / 60000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+  return new Date(then).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: SidebarProps) => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -197,6 +212,48 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
   // is page-capped at 50 — audit M3).
   const [deleteAllCount, setDeleteAllCount] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  // ZCode-style prompt index for the ACTIVE conversation: user messages as
+  // clickable sub-items that scroll the chat to that exchange.
+  const [promptsByConversation, setPromptsByConversation] = useState<
+    Record<string, ConversationPrompt[] | "loading">
+  >({});
+  // In-flight guard by ref — the fetch must NOT depend on the state it
+  // writes: "loading" re-triggers an effect that lists that state as a dep,
+  // the cleanup cancels the in-flight promise, and the sub-list sticks on
+  // "Loading prompts…" forever (live bug).
+  const promptsInFlightRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const conversationId = selectedConversationId;
+    if (!conversationId) return;
+    if (promptsByConversation[conversationId] || promptsInFlightRef.current.has(conversationId)) return;
+    promptsInFlightRef.current.add(conversationId);
+    setPromptsByConversation((current) => ({
+      ...current,
+      [conversationId]: "loading"
+    }));
+    getConversationPrompts(conversationId)
+      .then((data) => {
+        setPromptsByConversation((current) => ({
+          ...current,
+          [conversationId]: data.prompts
+        }));
+      })
+      .catch(() => {
+        setPromptsByConversation((current) => {
+          const next = { ...current };
+          delete next[conversationId];
+          return next;
+        });
+      })
+      .finally(() => {
+        promptsInFlightRef.current.delete(conversationId);
+      });
+    // promptsByConversation is intentionally not a dep — writes here are
+    // results of this effect, and re-running on them would cancel the
+    // in-flight fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedConversationId]);
   const [nextCursor, setNextCursor] = useState<string | undefined>(undefined);
   const [loadingMore, setLoadingMore] = useState(false);
   const { logout } = useAuth();
@@ -967,10 +1024,11 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                           {group.items.map((chat) => {
                         const isActiveConversation = selectedConversationId === chat.id;
                         const isRunning = runningConversationIds.has(chat.id);
+                        const sessionPrompts = isActiveConversation ? promptsByConversation[chat.id] : undefined;
 
                         return (
+                          <Fragment key={chat.id}>
                           <Hint
-                            key={chat.id}
                             label={
                               isRunning
                                 ? `${chat._count.messages} messages — agent is currently running`
@@ -1042,6 +1100,63 @@ export const Sidebar = ({ collapsed = false, onToggleCollapse, onNewChat }: Side
                             </DropdownMenu.Root>
                           </div>
                           </Hint>
+                          {isActiveConversation && sessionPrompts && (
+                            <div className="relative mb-1 ml-3 pl-6">
+                              {/* Session timeline rail — each tick on the
+                                  rail is one user prompt of this session;
+                                  clicking a tick navigates to that prompt
+                                  in the chat. */}
+                              <span
+                                aria-hidden
+                                className="absolute bottom-2 left-[9px] top-2 w-px bg-border/70"
+                              />
+                              {sessionPrompts === "loading" ? (
+                                <div className="relative py-1.5 text-[10px] font-sans text-muted-foreground/60">
+                                  Loading prompts…
+                                </div>
+                              ) : sessionPrompts.length === 0 ? (
+                                <div className="relative py-1.5 text-[10px] font-sans text-muted-foreground/50">
+                                  No prompts yet
+                                </div>
+                              ) : (
+                                sessionPrompts.map((prompt) => {
+                                  const isActivePrompt =
+                                    selectedConversationId === chat.id &&
+                                    searchParams.get("m") === prompt.id;
+                                  return (
+                                    <Link
+                                      key={prompt.id}
+                                      to={`/?c=${encodeURIComponent(chat.id)}&m=${encodeURIComponent(prompt.id)}`}
+                                      className={cn(
+                                        "group/prompt relative flex items-baseline gap-2 rounded px-1.5 py-1 transition-colors",
+                                        isActivePrompt
+                                          ? "bg-accent/40 text-foreground"
+                                          : "text-muted-foreground hover:bg-accent/25 hover:text-foreground"
+                                      )}
+                                    >
+                                      {/* Tick on the rail — one per prompt */}
+                                      <span
+                                        aria-hidden
+                                        className={cn(
+                                          "absolute left-[-7px] top-1/2 h-px w-3 -translate-y-1/2 transition-colors",
+                                          isActivePrompt
+                                            ? "bg-foreground"
+                                            : "bg-muted-foreground/40 group-hover/prompt:bg-foreground/80"
+                                        )}
+                                      />
+                                      <span className="min-w-0 flex-1 truncate">
+                                        {prompt.preview || "(empty prompt)"}
+                                      </span>
+                                      <span className="shrink-0 text-[9px] text-muted-foreground/50">
+                                        {promptTime(prompt.createdAt)}
+                                      </span>
+                                    </Link>
+                                  );
+                                })
+                              )}
+                            </div>
+                          )}
+                        </Fragment>
                         );
                           })}
                         </div>
