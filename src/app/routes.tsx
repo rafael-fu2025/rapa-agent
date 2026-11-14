@@ -5,6 +5,7 @@ import { useLocation, useNavigate, Navigate, Outlet } from "react-router";
 import { Sidebar } from "./components/sidebar";
 import { TopBar } from "./components/top-bar";
 import { ChatInput } from "./components/chat-input";
+import { PromptRail } from "./components/chat/prompt-rail";
 import { MessageList } from "./components/chat/message-list";
 import { ConversationSearch } from "./components/conversation-search";
 import { RightSidebar } from "./components/right-sidebar";
@@ -1032,6 +1033,10 @@ const Home = () => {
       <div className="flex-1 flex flex-col min-h-0 relative bg-app">
         <div className="flex h-full min-h-0 flex-col">
           <section className="relative flex min-h-0 flex-1 flex-col">
+            <PromptRail
+              messages={messages}
+              bottomOffset={inputDockHeight + (terminalOpen && terminalMinimized ? 10 : 0) + 16}
+            />
             <div
               ref={scrollContainerRef}
               onScroll={handleScroll}

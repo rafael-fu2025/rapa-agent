@@ -372,18 +372,6 @@ export function getConversationsCount() {
   return apiRequest<{ count: number }>("/conversations/count");
 }
 
-export type ConversationPrompt = {
-  id: string;
-  createdAt: string;
-  preview: string;
-};
-
-export function getConversationPrompts(conversationId: string) {
-  return apiRequest<{ prompts: ConversationPrompt[] }>(
-    `/conversations/${encodeURIComponent(conversationId)}/prompts`
-  );
-}
-
 export function getConversationMessages(id: string) {
   return apiRequest<{
     messages: ConversationMessage[];

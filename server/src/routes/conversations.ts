@@ -226,40 +226,6 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     return { ok: true, count: result.count };
   });
 
-  // Prompt index for the sidebar (ZCode-style clickable sub-list): the
-  // conversation's user messages only — id (scroll anchor), creation time,
-  // and a whitespace-collapsed preview. No content bodies; bounded to 200.
-  app.get("/conversations/:id/prompts", async (request, reply) => {
-    const params = conversationParamsSchema.safeParse(request.params);
-    if (!params.success) {
-      return reply.code(400).send({ message: "Invalid params", issues: params.error.issues });
-    }
-
-    const user = await getLocalUser();
-    const conversation = await prisma.conversation.findFirst({
-      where: { id: params.data.id, userId: user.id },
-      select: { id: true }
-    });
-    if (!conversation) {
-      return reply.code(404).send({ message: "Conversation not found" });
-    }
-
-    const rows = await prisma.message.findMany({
-      where: { conversationId: params.data.id, role: "user" },
-      orderBy: { createdAt: "asc" },
-      select: { id: true, content: true, createdAt: true },
-      take: 200
-    });
-
-    return {
-      prompts: rows.map((m) => ({
-        id: m.id,
-        createdAt: m.createdAt,
-        preview: m.content.replace(/\s+/g, " ").trim().slice(0, 140)
-      }))
-    };
-  });
-
   app.get("/conversations/:id/messages", async (request, reply) => {
     const params = conversationParamsSchema.safeParse(request.params);
     if (!params.success) {
