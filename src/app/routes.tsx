@@ -1035,6 +1035,7 @@ const Home = () => {
           <section className="relative flex min-h-0 flex-1 flex-col">
             <PromptRail
               messages={messages}
+              scrollRef={scrollContainerRef}
               bottomOffset={inputDockHeight + (terminalOpen && terminalMinimized ? 10 : 0) + 16}
             />
             <div

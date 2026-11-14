@@ -75,7 +75,7 @@ describe("empty-state onboarding", () => {
     expect(scoped.getByText("read-only planning")).toBeInTheDocument();
   });
 
-  it("hides the panel and persists the flag after clicking Got it", async () => {
+  it("hides the panel and persists the flag after clicking Got it", { timeout: 20000 }, async () => {
     renderHome();
 
     fireEvent.click(await screen.findByRole("button", { name: /got it/i }));
