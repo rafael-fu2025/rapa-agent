@@ -57,9 +57,11 @@ export function PromptRail({
     <div
       ref={railRef}
       aria-label="Prompt timeline"
-      className="pointer-events-none absolute left-0.5 z-20 w-3.5"
+      className="pointer-events-none absolute left-0.5 z-20 flex w-3.5 flex-col gap-3"
       style={{ top: 12, bottom: bottomOffset }}
     >
+      {/* Vertical rail line through the tick centers */}
+      <span aria-hidden className="absolute left-[6.5px] top-1 bottom-1 w-px bg-border/80" />
       {prompts.map((message, index) => {
         const isHovered = hovered?.index === index;
         return (
@@ -67,7 +69,7 @@ export function PromptRail({
             key={message.id}
             type="button"
             aria-label={`Go to prompt ${index + 1} of ${prompts.length}`}
-            className="pointer-events-auto group/tick relative flex h-[60px] w-3.5 items-center"
+            className="pointer-events-auto group/tick relative flex h-5 w-3.5 items-center justify-center"
             onMouseEnter={(e) => handleHover(index, e.currentTarget)}
             onFocus={(e) => handleHover(index, e.currentTarget)}
             onMouseLeave={scheduleClear}
@@ -77,10 +79,10 @@ export function PromptRail({
             <span
               aria-hidden
               className={cn(
-                "h-px transition-all duration-150",
+                "h-[2px] w-2.5 transition-all duration-150",
                 isHovered
                   ? "w-4 bg-foreground"
-                  : "w-2.5 bg-muted-foreground/35 group-hover/tick:w-4 group-hover/tick:bg-muted-foreground/70"
+                  : "w-2.5 bg-muted-foreground/50 group-hover/tick:w-4 group-hover/tick:bg-muted-foreground/80"
               )}
             />
           </button>
