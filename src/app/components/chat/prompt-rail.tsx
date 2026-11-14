@@ -11,8 +11,15 @@ function scrollToMessageElement(messageId: string): void {
 }
 
 /** ZCode-style prompt timeline rail: pinned to the left edge of the chat,
- *  one tick per user prompt. Clicking a tick scrolls the conversation to
- *  that exchange; hovering previews the prompt text. */
+ *  one tick per user prompt at a fixed compact rhythm. Clicking a tick
+ *  scrolls the conversation to that exchange; hovering previews the prompt
+ *  text.
+ *
+ * Hit-testing: the rail renders as a sibling BEFORE the scroll container in
+ * DOM order, so the container would paint over it and swallow every
+ * pointer event — the rail lifts itself with z-20 and keeps its own strip
+ * pointer-events-none (only the tick buttons take hits), so message text
+ * selection beside it is unaffected. */
 export function PromptRail({
   messages,
   bottomOffset
@@ -26,7 +33,7 @@ export function PromptRail({
   return (
     <div
       aria-label="Prompt timeline"
-      className="absolute left-0.5 flex w-3.5 flex-col items-start justify-evenly"
+      className="pointer-events-none absolute left-0.5 z-20 flex w-3.5 flex-col items-start gap-10"
       style={{ top: 12, bottom: bottomOffset }}
     >
       {prompts.map((message) => (
@@ -35,7 +42,7 @@ export function PromptRail({
             type="button"
             aria-label="Scroll to this prompt"
             onClick={() => scrollToMessageElement(message.id)}
-            className="group/tick flex h-5 w-3.5 items-center"
+            className="pointer-events-auto group/tick flex h-5 w-3.5 items-center"
           >
             <span
               aria-hidden
